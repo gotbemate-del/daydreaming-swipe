@@ -1,0 +1,92 @@
+# 滑動勇者 (Daydreaming Swipe)
+
+姊妹作:[bozhan9527-ux/daydreaming-](https://github.com/bozhan9527-ux/daydreaming-)(勇者發呆中,放置型)。
+兩款**共用同一套數值資料層與像素美術**,但核心迴圈完全不同,不要把兩邊的設計混在一起想。
+
+## 這款是什麼
+
+**左右滑動的即時動作戰鬥。** 怪物出招時畫面會有預示動作,玩家要在反應窗內往正確方向滑開,
+閃掉就自動反擊、連段累積傷害倍率;滑錯邊或太慢就挨打、連段歸零。
+
+## 跟姊妹作最關鍵的差異(別搞混)
+
+| | 勇者發呆中 | 滑動勇者(本作) |
+|---|---|---|
+| 核心賣點 | 不玩也在成長 | 玩得好才打得贏 |
+| 戰鬥模型 | 連續進度條(`fightElapsedMs / fightDurationMs`),沒有單次攻擊事件 | 離散事件(每次出招各自判定) |
+| 難度來源 | 數值養成 | **反應窗長度**(見 `game/swipeCombat.ts`) |
+| 離線收益 | 核心系統 | **不存在**,不要加回來 |
+| 關卡長度 | 3000 關 | 待定,一定會遠短於 3000 |
+
+**鐵則:裝備/技能只加傷害與血量,絕對不放寬反應窗。** 一旦數值能買到操作寬容度,這款就退化成
+放置遊戲,失去存在意義。
+
+## 目前進度
+
+- [x] 資料層搬遷(裝備 3000 件、怪物 120 種、寵物坐騎、技能樹、成就、材料)
+- [x] 美術資產搬遷(`assets/sprites` 1500+ 檔 + `game/sprites` 程序化像素圖)
+- [x] 滑動戰鬥數值核心 `game/swipeCombat.ts`(37 項數值驗證通過)
+- [ ] 滑動手勢層 + 戰鬥畫面
+- [ ] 關卡結構重新設計(取代姊妹作的 3000 關)
+- [ ] 經驗曲線重新校準(原本是為掛機設計的)
+- [ ] 存檔 schema(全新,不沿用姊妹作的 v36)
+
+## 專案結構
+
+```
+app/          Expo Router 頁面層(只做組裝)
+components/   UI 元件
+game/         遊戲核心邏輯(純函式,禁止 import React)
+  swipeCombat.ts  滑動戰鬥判定/連段/出招表 ← 本作的心臟
+  equipment.ts    3000 件裝備(自姊妹作搬入,未改)
+  monsters.ts     120 種怪物(自姊妹作搬入,未改)
+  sprites/        程序化像素美術
+hooks/        自訂 hooks
+lib/          storage.ts 儲存封裝
+assets/       圖片、音效
+scripts/      驗證腳本
+```
+
+**分層鐵律**:`game/` 是純邏輯層,必須能在 Node 單獨跑。任何 React/RN/Expo 的 import
+出現在 `game/` 內都算錯誤。
+
+## 驗證流程(每次修改後必跑,順序固定)
+
+1. `npx tsc --noEmit` → 必須零錯誤
+2. 改動 `game/` 內任何檔案 → 跑對應的驗證腳本
+   (例:`npx tsx scripts/verify-swipe-combat.ts`,必須全部 PASS)
+3. 改動畫面 → Playwright 實機測試 + 截圖,並用 Read 工具實際看過截圖
+4. 改動存檔結構 → 附遷移邏輯,並模擬一次「舊存檔載入」
+
+## 圖示鐵則:一律不用 emoji
+
+畫面上任何位置的圖示都不能用 emoji,包含「先佔位之後再換」。理由:emoji 字體逐平台不同、
+全彩高飽和跟本作的莫蘭迪暗色像素風格衝突、而且不是我們能調整的資產。
+
+| 需求 | 做法 |
+|---|---|
+| 16x16 小圖示 | `game/sprites/` 加 frame,用 `PixelSprite` 渲染 |
+| 面板外框、進度環、大尺寸橫幅 | 手寫 SVG + `react-native-svg` |
+
+純排版符號 `✕`(關閉)、`✓`(已完成)、`→`(前往)不算 emoji,但不要擴大使用。
+
+## 調色盤(沿用姊妹作,兩款視覺一致)
+
+```
+前景/文字   #f2f2f2   次要文字 #8a8a95
+面板底      #2a2a35   面板亮階 #3a3448
+強調金      #e0a95c   莫蘭迪紫 #9691a5
+生命綠      #5ec26a   危險紅   #e05050
+畫面底      #16161c
+```
+
+## 開發指令
+
+- `npx expo start --web` — 啟動開發伺服器
+- `npx tsc --noEmit` — 型別檢查
+- `npx tsx scripts/verify-swipe-combat.ts` — 戰鬥數值驗證
+
+## 部署
+
+push 到 `main` 會自動觸發 `.github/workflows/deploy-web.yml` 部署到 GitHub Pages。
+**第一次要先到 repo Settings → Pages,把 Source 改成「GitHub Actions」。**

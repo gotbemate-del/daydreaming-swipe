@@ -1,1 +1,11 @@
-# daydreaming-swipe
+# 滑動勇者 (Daydreaming Swipe)
+
+左滑右滑的即時動作打怪闖關遊戲。
+
+怪物出招時畫面有預示動作,在反應窗內往正確方向滑開就能閃掉並自動反擊,
+連段累積傷害倍率;滑錯邊或太慢就挨打、連段歸零。
+
+姊妹作:[勇者發呆中](https://github.com/bozhan9527-ux/daydreaming-)(放置型)。
+兩款共用同一套數值資料層與像素美術,核心迴圈不同。
+
+開發規範與驗證流程見 [CLAUDE.md](CLAUDE.md)。
