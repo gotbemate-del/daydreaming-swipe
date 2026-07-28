@@ -1,8 +1,11 @@
 // 跑道闖關核心(純邏輯,禁止 import React)。
 //
-// 玩法:角色自動往前跑,畫面分三條跑道,左右滑各切換一條。路上會一排一排出現節點——
-// 閘門(加成/陷阱)、敵人、金幣——只有「你所在那條跑道」的那個節點會生效。
-// 核心決策是「下一排我要站哪一條」,在很短的時間內。
+// 玩法:角色自動往前跑,玩家用手指把角色左右拉著移動。路上會一排一排出現節點——
+// 閘門(加成/陷阱)、敵人、金幣——只有「角色當下站的那一格」的節點會生效。
+// 核心決策是「下一排我要站哪一格」,在很短的時間內。
+//
+// 位置是連續的(見下方 clampOffset/laneFromOffset):手指拉到哪角色就在哪,不是三選一的跳格。
+// 跑道只在「結算那一瞬間」有意義——腳踩在哪一格,就吃那一格的節點。
 //
 // 這一版取代了先前的「定點閃避」設計(game/swipeCombat.ts)。兩者都叫左右滑,但體驗完全不同:
 //   - 定點閃避:滑動是「反應」,目標是躲開,滑對就沒事
@@ -13,8 +16,30 @@
 //   1. 跑速——越後面的關卡跑得越快,看到閘門到抵達的時間越短
 //   2. 閘門的好壞差距——後期陷阱更毒,選錯一次就很難補回來
 
+import { pickMonster } from './monsters';
+import type { Rarity } from './trigger';
+
 export const LANE_COUNT = 3;
 export type Lane = 0 | 1 | 2;
+
+// ---- 角色的橫向位置 ----
+// offset 是連續值:0 = 跑道最左緣、1 = 最右緣。玩家是「拉著角色走」,所以中間任何位置都合法,
+// 包含騎在兩格交界上;交界的歸屬由 laneFromOffset 決定(往左邊那格算),不會出現無主狀態。
+export function clampOffset(offset: number): number {
+  if (!Number.isFinite(offset)) return 0.5;
+  return Math.min(1, Math.max(0, offset));
+}
+
+/** 某條跑道的正中央。按鈕/方向鍵是「移到隔壁跑道中央」,滑動則是任意位置。 */
+export function laneCenterOffset(lane: Lane): number {
+  return (lane + 0.5) / LANE_COUNT;
+}
+
+/** 角色站在 offset 時腳下踩的是哪一格。結算時才呼叫,平常不需要知道。 */
+export function laneFromOffset(offset: number): Lane {
+  const index = Math.floor(clampOffset(offset) * LANE_COUNT);
+  return Math.min(LANE_COUNT - 1, Math.max(0, index)) as Lane;
+}
 
 export type NodeKind = 'gate' | 'enemy' | 'coin';
 
@@ -28,6 +53,11 @@ export interface GateEffect {
 export interface EnemyEffect {
   power: number;
   reward: number;
+  /** 對應 game/monsters.ts 的 MonsterSpec.id,畫面拿它去抓既有的怪物素材 */
+  monsterId: string;
+  name: string;
+  /** 畫面上要擺幾隻。戰力是指數成長的,數字看久了會無感,擺成一群才看得出「這排比上一排難」。 */
+  units: number;
 }
 
 export interface RunNode {
@@ -46,6 +76,10 @@ export interface RunRow {
 }
 
 export interface RunState {
+  /**
+   * 結算時腳下踩的那一格。畫面上的實際橫向位置是連續的、存在 hooks/useLaneRun.ts,
+   * 這裡只保留「換算成格子」的結果——純邏輯層不需要知道手指拖到哪個像素。
+   */
   lane: Lane;
   attack: number;
   hp: number;
@@ -152,24 +186,50 @@ function makeGateRow(rng: () => number, stage: number, rowIndex: number): RunNod
   return effects.map((gate, lane) => ({ lane: lane as Lane, kind: 'gate' as const, gate }));
 }
 
-function makeEnemyRow(stage: number, rowIndex: number): RunNode[] {
+/** 敵人的「量」:第幾波敵人就擺幾隻,封頂 3 隻(再多在一格裡就擠成一團看不出是什麼)。 */
+export const MAX_ENEMY_UNITS = 3;
+export function enemyUnitCount(rowIndex: number): number {
+  return Math.min(MAX_ENEMY_UNITS, Math.floor(rowIndex / ENEMY_EVERY) + 1);
+}
+
+/** 越後面的敵人挑越稀有的造型,讓「看起來更兇」跟「戰力更高」對得上。 */
+export function enemyRarityForRow(rowIndex: number): Rarity {
+  const tier = Math.floor(rowIndex / ENEMY_EVERY) + 1;
+  if (tier <= 1) return 'common';
+  if (tier === 2) return 'rare';
+  if (tier === 3) return 'epic';
+  return 'legendary';
+}
+
+function makeEnemyRow(rng: () => number, stage: number, rowIndex: number): RunNode[] {
   const power = enemyPowerForRow(stage, rowIndex);
+  const monster = pickMonster(enemyRarityForRow(rowIndex), rng);
+  const enemy: EnemyEffect = {
+    power,
+    reward: Math.round(power * 0.4),
+    monsterId: monster.id,
+    name: monster.name,
+    units: enemyUnitCount(rowIndex),
+  };
   return Array.from({ length: LANE_COUNT }, (_, lane) => ({
     lane: lane as Lane,
     kind: 'enemy' as const,
-    enemy: { power, reward: Math.round(power * 0.4) },
+    enemy,
   }));
 }
 
 export function createRun(seed: number, stage: number): RunRow[] {
   const rng = createRng(seed);
+  // 挑怪物造型用獨立的亂數流。混用同一條的話,加一次抽選就會把後面所有閘門的內容整個位移,
+  // 已經驗證過的過關率(scripts/verify-lane-run.ts)全部要重跑——造型是外觀,不該動到數值。
+  const artRng = createRng((seed ^ 0x9e3779b9) >>> 0);
   const rows: RunRow[] = [];
   for (let i = 0; i < ROWS_PER_RUN; i++) {
     const isEnemy = (i + 1) % ENEMY_EVERY === 0;
     rows.push({
       index: i,
       distance: LEAD_IN_DISTANCE + i * ROW_SPACING,
-      nodes: isEnemy ? makeEnemyRow(stage, i) : makeGateRow(rng, stage, i),
+      nodes: isEnemy ? makeEnemyRow(artRng, stage, i) : makeGateRow(rng, stage, i),
     });
   }
   return rows;
@@ -215,7 +275,7 @@ export function resolveEnemy(state: RunState, enemy: EnemyEffect): RowResolution
   const next = { ...state };
   if (shortfall === 0) {
     next.coins += enemy.reward;
-    return { state: next, message: `擊倒敵人 +${enemy.reward} 金幣`, hpDelta: 0, attackDelta: 0 };
+    return { state: next, message: `擊倒${enemy.name} +${enemy.reward} 金幣`, hpDelta: 0, attackDelta: 0 };
   }
   next.hp = Math.max(0, next.hp - shortfall);
   if (next.hp <= 0) next.phase = 'dead';

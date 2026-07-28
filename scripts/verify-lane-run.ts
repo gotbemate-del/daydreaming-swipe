@@ -1,8 +1,14 @@
 // 跑道闖關數值驗證。核心要證明的只有一件事:勝負取決於「有沒有選對閘門」,不是運氣也不是數值。
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import {
-  bestLane, createRun, ENEMY_EVERY, initialRunState, LANE_COUNT, moveLane, resolveRow,
-  ROWS_PER_RUN, runSpeed, secondsPerRow, worstLane, type Lane, type RunState,
+  bestLane, clampOffset, createRun, ENEMY_EVERY, enemyUnitCount, initialRunState, LANE_COUNT,
+  laneCenterOffset, laneFromOffset, MAX_ENEMY_UNITS, moveLane, resolveRow, ROWS_PER_RUN, runSpeed,
+  secondsPerRow, worstLane, type Lane, type RunState,
 } from '../game/laneRun';
+import { hasMonsterVisual } from '../game/sprites/monsters';
 
 let fail = 0;
 const check = (name: string, cond: boolean, extra = '') => {
@@ -23,6 +29,19 @@ check('往左到底不會超出', moveLane(0, 'left') === 0);
 check('往右到底不會超出', moveLane((LANE_COUNT - 1) as Lane, 'right') === LANE_COUNT - 1);
 check('中間左右都能動', moveLane(1, 'left') === 0 && moveLane(1, 'right') === 2);
 
+// --- 連續位置(手指拖到哪,角色就在哪)---
+const lanes = Array.from({ length: LANE_COUNT }, (_, i) => i as Lane);
+check('跑道中央換算回原本那條', lanes.every((l) => laneFromOffset(laneCenterOffset(l)) === l));
+check('兩端不會算到跑道外', laneFromOffset(0) === 0 && laneFromOffset(1) === LANE_COUNT - 1);
+check('拖出跑道會被夾回範圍內', clampOffset(-3) === 0 && clampOffset(4) === 1 && clampOffset(0.42) === 0.42);
+check('非數值不會讓角色消失', clampOffset(Number.NaN) === 0.5);
+check('交界剛好落在右邊那格', laneFromOffset(1 / 3) === 1 && laneFromOffset(1 / 3 - 1e-9) === 0);
+// 拖曳是連續的,所以「一路慢慢拖過去」中間每一步都要有明確歸屬,不能出現跳號或無主區間。
+const walk = Array.from({ length: 301 }, (_, i) => laneFromOffset(i / 300));
+check('從左拖到右,格子只會 0→1→2 依序遞增',
+  walk.every((l, i) => i === 0 || l === walk[i - 1] || l === walk[i - 1] + 1) && walk[0] === 0
+  && walk[walk.length - 1] === LANE_COUNT - 1 && new Set(walk).size === LANE_COUNT);
+
 // --- 跑圖結構 ---
 const run = createRun(1234, 5);
 check('排數正確', run.length === ROWS_PER_RUN);
@@ -37,6 +56,25 @@ check('閘門排三格效果不完全相同', gateRows.every((r) =>
   new Set(r.nodes.map((n) => JSON.stringify(n.gate))).size >= 2));
 check('同一 seed 可重現', JSON.stringify(createRun(1234, 5)) === JSON.stringify(run));
 check('不同 seed 不一樣', JSON.stringify(createRun(999, 5)) !== JSON.stringify(run));
+
+// --- 敵人的量化呈現(每隻敵人都要指得到既有素材)---
+const ART_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'sprites', 'monsters', 'ai');
+const archetypeOf = (id: string) => (id.includes('-') ? id.slice(0, id.lastIndexOf('-')) : id);
+const allEnemies = [1, 5, 20, 40].flatMap((s) =>
+  Array.from({ length: 40 }, (_, t) => createRun(t * 17 + 3, s))
+    .flatMap((r) => r.flatMap((row) => row.nodes))
+    .flatMap((n) => (n.kind === 'enemy' && n.enemy ? [n.enemy] : [])));
+check('每隻敵人都有名字與造型 id', allEnemies.every((e) => e.name.length > 0 && e.monsterId.length > 0));
+check('敵人造型 id 都在怪物圖庫裡', allEnemies.every((e) => hasMonsterVisual(e.monsterId)),
+  `${new Set(allEnemies.map((e) => e.monsterId)).size} 種造型`);
+check('每種造型都有對應的既有素材檔', allEnemies.every((e) => existsSync(join(ART_DIR, `${archetypeOf(e.monsterId)}_open.png`))),
+  [...new Set(allEnemies.map((e) => archetypeOf(e.monsterId)))].join(' '));
+check('同一排的三格是同一批敵人', run.filter((r) => r.nodes.every((n) => n.kind === 'enemy'))
+  .every((r) => new Set(r.nodes.map((n) => n.enemy!.monsterId)).size === 1));
+const unitsByRow = run.filter((r) => r.nodes.every((n) => n.kind === 'enemy')).map((r) => r.nodes[0].enemy!.units);
+check('越後面的敵人擺越多隻(數量看得出難度)', unitsByRow.every((u, i) => i === 0 || u >= unitsByRow[i - 1]),
+  unitsByRow.join(' → '));
+check(`數量封頂 ${MAX_ENEMY_UNITS} 隻`, enemyUnitCount(999) === MAX_ENEMY_UNITS && enemyUnitCount(0) === 1);
 
 // --- 三種玩家跑同一場 ---
 type Picker = (s: RunState, row: ReturnType<typeof createRun>[number], rng: () => number) => Lane;
