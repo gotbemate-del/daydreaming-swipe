@@ -15,6 +15,9 @@ export const HERO_FRAMES: ImageSourcePropType[] = [
 
 export const HERO_ASPECT = 353 / 746; // 原圖尺寸,拿來由高度反推寬度
 
+/** 勇者擲出去的武器。沿用既有的傳承之劍,不另外畫特效圖。 */
+export const PROJECTILE_ART: ImageSourcePropType = require('../assets/sprites/items/legacy_sword.png');
+
 // 12 種身體原型,對應 game/monsters.ts 的 ARCHETYPE_CATALOG.key。怪物 id 是 `${archetype}-${slot}`,
 // slot(強度稱號)共用同一張原型圖——這跟 game/sprites/monsters.ts 的做法一致:一副骨架、多種強度。
 const MONSTER_ART: Record<string, ImageSourcePropType> = {

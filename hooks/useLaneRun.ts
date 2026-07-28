@@ -3,16 +3,23 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   clampOffset,
   createRun,
+  fireIntervalMs,
+  HITS_PER_MONSTER,
   initialRunState,
+  MAX_FIRE_INTERVAL_MS,
   laneCenterOffset,
   laneFromOffset,
   moveLane,
   resolveRow,
   runLength,
   runSpeed,
+  VISIBLE_AHEAD,
+  waveKillCount,
+  waveMonsters,
   type Lane,
   type RunRow,
   type RunState,
+  type WaveMonster,
 } from '../game/laneRun';
 
 const TICK_MS = 33; // ~30fps
@@ -23,11 +30,38 @@ const TICK_MS = 33; // ~30fps
 const EASE_PER_TICK = 0.3;
 const SNAP_EPSILON = 0.002;
 
+/** 丟出去的武器相對於勇者往前飛的速度(距離單位/秒)。夠快才看得出是「擲出去」而不是飄走。 */
+const PROJECTILE_SPEED = 420;
+/** 進到這個距離內才開始丟。太遠就開丟的話,武器會在畫面外飛很久,看起來像亂丟。 */
+const FIRE_RANGE = 260;
+
 export interface RunFeedback {
   key: number;
   message: string;
   hpDelta: number;
   attackDelta: number;
+}
+
+/** 飛行中的武器。位置跟排、跟小怪同一個座標系(絕對距離),畫面才不用換算兩套。 */
+export interface Projectile {
+  id: number;
+  distance: number;
+  fromDistance: number;
+  fromOffset: number;
+  toOffset: number;
+  targetIndex: number;
+}
+
+export interface WaveView {
+  rowIndex: number;
+  monsterId: string;
+  monsters: WaveMonster[];
+  /** 每一隻倒了沒。倒下的不再畫,活著的會一路衝到勇者頭上。 */
+  down: boolean[];
+}
+
+function sameFlags(a: boolean[], b: boolean[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
 export interface LaneRunView {
@@ -39,14 +73,27 @@ export interface LaneRunView {
   heroOffset: number;
   /** 還沒通過的排(畫面上要畫出來的) */
   upcoming: RunRow[];
+  /** 正在衝過來的那一波小怪(沒有就是 null) */
+  wave: WaveView | null;
+  projectiles: Projectile[];
   feedback: RunFeedback | null;
   speed: number;
   /** 手指拖曳:直接把角色放到這個位置 */
   dragTo: (offset: number) => void;
-  /** 按鈕/方向鍵:滑順移到隔壁跑道中央 */
+  /** 方向鍵:滑順移到隔壁跑道中央 */
   steer: (direction: 'left' | 'right') => void;
   restart: (nextStage?: number) => void;
   stage: number;
+}
+
+interface WaveRuntime {
+  rowIndex: number;
+  monsterId: string;
+  power: number;
+  monsters: WaveMonster[];
+  /** 每一隻各自挨了幾下。打不倒的那幾隻也會累加——勇者照樣丟,只是丟不倒。 */
+  hitsOn: number[];
+  lastFireAt: number;
 }
 
 export function useLaneRun(initialStage: number): LaneRunView {
@@ -55,11 +102,21 @@ export function useLaneRun(initialStage: number): LaneRunView {
   const [state, setState] = useState<RunState>(() => initialRunState(initialStage));
   const [distance, setDistance] = useState(0);
   const [feedback, setFeedback] = useState<RunFeedback | null>(null);
+  const [wave, setWave] = useState<WaveView | null>(null);
+  const [projectiles, setProjectiles] = useState<Projectile[]>([]);
 
   const startedAtRef = useRef(Date.now());
   // 已結算過的排。跟判定同步讀寫,走 state 會慢一拍導致同一排被結算兩次。
   const passedRef = useRef<Set<number>>(new Set());
   const feedbackKeyRef = useRef(0);
+  // 戰鬥演出要讀當下的攻擊力(波次中途吃到 x2 閘門,打得掉的隻數要立刻跟著變),
+  // 但它跑在 setInterval 裡,閉包抓到的會是舊的 state,所以另外鏡射一份。
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
+  const waveRef = useRef<WaveRuntime | null>(null);
+  const projectilesRef = useRef<Projectile[]>([]);
+  const projectileIdRef = useRef(0);
 
   // 角色位置同時放在 ref 與 state:ref 給結算用(要拿到「這一瞬間」的位置,不能慢一拍,
   // 慢一拍就會發生「明明已經拉到隔壁格了卻吃到原本那格」),state 只是拿來觸發重畫。
@@ -82,21 +139,137 @@ export function useLaneRun(initialStage: number): LaneRunView {
     offsetRef.current = centerOffset;
     targetRef.current = centerOffset;
     setHeroOffset(centerOffset);
+    waveRef.current = null;
+    projectilesRef.current = [];
+    setWave(null);
+    setProjectiles([]);
   }, [stage, centerOffset]);
 
   useEffect(() => {
     if (state.phase !== 'running') return;
     const id = setInterval(() => {
-      setDistance(((Date.now() - startedAtRef.current) / 1000) * speed);
+      const now = Date.now();
+      const travelled = ((now - startedAtRef.current) / 1000) * speed;
+      setDistance(travelled);
+
       const gap = targetRef.current - offsetRef.current;
       if (gap !== 0) {
         const next = Math.abs(gap) < SNAP_EPSILON ? targetRef.current : offsetRef.current + gap * EASE_PER_TICK;
         offsetRef.current = next;
         setHeroOffset(next);
       }
+
+      stepWave(now, travelled);
     }, TICK_MS);
     return () => clearInterval(id);
   }, [state.phase, speed, rows]);
+
+  /** 一波小怪的演出:該冒出來的冒出來、該丟的武器丟出去、打中的就消失。 */
+  function stepWave(now: number, travelled: number) {
+    // 找出「正在逼近」的那一排敵人。排距 100、每 4 排一次敵人,所以同時最多只會有一波在畫面上。
+    const enemyRow = rows.find(
+      (r) =>
+        !passedRef.current.has(r.index) &&
+        r.nodes[0]?.kind === 'enemy' &&
+        r.distance - travelled <= VISIBLE_AHEAD,
+    );
+
+    if (!enemyRow) {
+      if (waveRef.current !== null) {
+        waveRef.current = null;
+        projectilesRef.current = [];
+        setWave(null);
+        setProjectiles([]);
+      }
+      return;
+    }
+
+    const enemy = enemyRow.nodes[0].enemy!;
+    let current = waveRef.current;
+    if (current === null || current.rowIndex !== enemyRow.index) {
+      current = {
+        rowIndex: enemyRow.index,
+        monsterId: enemy.monsterId,
+        power: enemy.power,
+        monsters: waveMonsters(enemyRow.index, enemy.units, enemyRow.distance),
+        hitsOn: new Array(enemy.units).fill(0),
+        lastFireAt: 0,
+      };
+      waveRef.current = current;
+      projectilesRef.current = [];
+    }
+
+    // 打得掉幾隻每個 tick 重算:波次中途吃到閘門,攻擊力一變,能清掉的隻數就跟著變。
+    // 前 kills 隻是「打得倒的」,後面那幾隻挨再多下也不會倒——那就是戰力壓不過的部分。
+    const kills = waveKillCount(stateRef.current.attack, current.power, current.monsters.length);
+    const isDown = (i: number) => i < kills && current!.hitsOn[i] >= HITS_PER_MONSTER;
+
+    // --- 丟武器 ---
+    // 打不倒的也照丟。丟到打得倒的都倒了就停手的話,剩下那段路上小怪一直衝過來、勇者卻站著
+    // 不動,看起來像當掉;照丟才看得出「不是他不打,是打不動」。
+    const inFlightOn = new Array(current.monsters.length).fill(0);
+    for (const p of projectilesRef.current) inFlightOn[p.targetIndex] += 1;
+
+    let targetIndex = -1;
+    let remainingDoomedShots = 0;
+    for (let i = 0; i < current.monsters.length; i++) {
+      if (isDown(i)) continue;
+      if (current.monsters[i].distance <= travelled) continue; // 已經越過勇者,不用再丟
+      if (i < kills) remainingDoomedShots += Math.max(0, HITS_PER_MONSTER - current.hitsOn[i] - inFlightOn[i]);
+      if (targetIndex < 0 && current.monsters[i].distance - travelled <= FIRE_RANGE) targetIndex = i;
+    }
+
+    if (targetIndex >= 0) {
+      const lastDoomed = current.monsters[Math.max(0, kills - 1)];
+      const msUntilLastKill = Math.max(0, ((lastDoomed.distance - travelled) / speed) * 1000);
+      const interval =
+        remainingDoomedShots > 0 ? fireIntervalMs(msUntilLastKill, remainingDoomedShots) : MAX_FIRE_INTERVAL_MS;
+      if (now - current.lastFireAt >= interval) {
+        current.lastFireAt = now;
+        projectileIdRef.current += 1;
+        projectilesRef.current = [
+          ...projectilesRef.current,
+          {
+            id: projectileIdRef.current,
+            distance: travelled,
+            fromDistance: travelled,
+            fromOffset: offsetRef.current,
+            toOffset: laneCenterOffset(current.monsters[targetIndex].lane),
+            targetIndex,
+          },
+        ];
+      }
+    }
+
+    // --- 武器往前飛,飛到目標身上就算命中,挨滿 HITS_PER_MONSTER 下的(打得倒的那些)就倒 ---
+    if (projectilesRef.current.length > 0) {
+      const step = ((speed + PROJECTILE_SPEED) * TICK_MS) / 1000;
+      const flying: Projectile[] = [];
+      for (const p of projectilesRef.current) {
+        const moved = { ...p, distance: p.distance + step };
+        const target = current.monsters[p.targetIndex];
+        if (target && moved.distance >= target.distance) {
+          current.hitsOn[p.targetIndex] += 1;
+          continue; // 命中就收掉,不再畫
+        }
+        flying.push(moved);
+      }
+      projectilesRef.current = flying;
+      setProjectiles(flying);
+    }
+
+    const down = current.monsters.map((m) => isDown(m.index));
+    setWave((prev) =>
+      prev !== null && prev.rowIndex === current!.rowIndex && sameFlags(prev.down, down)
+        ? prev
+        : {
+            rowIndex: current!.rowIndex,
+            monsterId: current!.monsterId,
+            monsters: current!.monsters,
+            down,
+          },
+    );
+  }
 
   // 跑過某一排就結算那一排
   useEffect(() => {
@@ -143,7 +316,21 @@ export function useLaneRun(initialStage: number): LaneRunView {
 
   const upcoming = rows.filter((r) => !passedRef.current.has(r.index));
 
-  return { rows, state, distance, heroOffset, upcoming, feedback, speed, dragTo, steer, restart, stage };
+  return {
+    rows,
+    state,
+    distance,
+    heroOffset,
+    upcoming,
+    wave,
+    projectiles,
+    feedback,
+    speed,
+    dragTo,
+    steer,
+    restart,
+    stage,
+  };
 }
 
 export type { Lane };

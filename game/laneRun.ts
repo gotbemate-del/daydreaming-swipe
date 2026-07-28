@@ -56,7 +56,7 @@ export interface EnemyEffect {
   /** 對應 game/monsters.ts 的 MonsterSpec.id,畫面拿它去抓既有的怪物素材 */
   monsterId: string;
   name: string;
-  /** 畫面上要擺幾隻。戰力是指數成長的,數字看久了會無感,擺成一群才看得出「這排比上一排難」。 */
+  /** 這一波總共幾隻小怪。戰力是指數成長的,數字看久了會無感,一波湧幾隻才看得出「這波比上一波難」。 */
   units: number;
 }
 
@@ -108,6 +108,12 @@ export function secondsPerRow(stage: number): number {
 
 /** 起跑到第一排之間的緩衝距離。玩家要先看到自己在哪條跑道才會開始想選哪條。 */
 export const LEAD_IN_DISTANCE = 140;
+
+/**
+ * 玩家一次能看到多遠。這決定「看到 → 決定 → 拉過去」有多少反應時間,是設計數值不是畫面數值,
+ * 所以放在這裡跟跑速一起管:改畫面高度不該影響難度,改這個數字才該。
+ */
+export const VISIBLE_AHEAD = ROW_SPACING * 3.2;
 
 export const ROWS_PER_RUN = 12;
 /** 每隔幾排出現一排敵人(敵人排三條跑道都是敵人,一定要正面對上)。 */
@@ -186,10 +192,70 @@ function makeGateRow(rng: () => number, stage: number, rowIndex: number): RunNod
   return effects.map((gate, lane) => ({ lane: lane as Lane, kind: 'gate' as const, gate }));
 }
 
-/** 敵人的「量」:第幾波敵人就擺幾隻,封頂 3 隻(再多在一格裡就擠成一團看不出是什麼)。 */
-export const MAX_ENEMY_UNITS = 3;
-export function enemyUnitCount(rowIndex: number): number {
-  return Math.min(MAX_ENEMY_UNITS, Math.floor(rowIndex / ENEMY_EVERY) + 1);
+// ---- 敵人波次 ----
+// 一波敵人不是「三隻站在那裡等你撞上去」,而是一串小怪從遠處一隻一隻衝過來,勇者同時不斷
+// 擲出武器把牠們打掉。打得完打不完由攻擊力決定(waveKillCount),打不完的那幾隻會衝到勇者
+// 面前——那正好就是 resolveEnemy 算出來的那筆傷害,只是用「幾隻漏過來」演出來而不是只給數字。
+//
+// 結算本身沒有變:傷害仍然只在這一排的結算點算一次。小怪的生死是「把那個數字畫出來」,
+// 不是另一套獨立的戰鬥判定——兩套判定會各自漂移,最後畫面演的跟實際扣的血對不起來。
+
+/** 一波小怪散布的距離。最後一隻抵達的位置就是這一排的結算點,前面的排在它前方。 */
+export const WAVE_LENGTH = 150;
+/** 一波幾隻。越後面的波次越多隻,「一直冒出來」的壓迫感就是靠這個。 */
+export const MAX_WAVE_SIZE = 9;
+export function waveSize(rowIndex: number): number {
+  return Math.min(MAX_WAVE_SIZE, 5 + Math.floor(rowIndex / ENEMY_EVERY) * 2);
+}
+
+export interface WaveMonster {
+  index: number;
+  lane: Lane;
+  /** 這隻小怪在跑道上的絕對位置(跟 RunRow.distance 同一個座標系) */
+  distance: number;
+}
+
+// 每隻散到哪一條跑道用雜湊算,不存也不抽:同一排永遠長一樣(重播、驗證都對得起來),
+// 又不會出現「整波都在同一條」這種一眼看破的規律。
+// 乘數要用 Math.imul(32 位元繞回)並且做一次位移混合,不能只是「兩個大數相加再取餘數」——
+// 常數只要含有 LANE_COUNT 的因數,取餘數之後每一隻就會算出同一條跑道,整波擠成一直線。
+function laneForWaveMonster(rowIndex: number, index: number): Lane {
+  let h = Math.imul(rowIndex + 1, 374761393) ^ Math.imul(index + 1, 668265263);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return (((h ^ (h >>> 16)) >>> 0) % LANE_COUNT) as Lane;
+}
+
+export function waveMonsters(rowIndex: number, size: number, rowDistance: number): WaveMonster[] {
+  return Array.from({ length: size }, (_, index) => ({
+    index,
+    lane: laneForWaveMonster(rowIndex, index),
+    distance: rowDistance - (WAVE_LENGTH * (size - 1 - index)) / size,
+  }));
+}
+
+/**
+ * 這一波打得掉幾隻。攻擊力壓過戰力就全清,壓不過就照比例清掉一部分——比例跟 resolveEnemy
+ * 算傷害的比例是同一條線,所以「漏過來幾隻」跟「扣多少血」永遠是同一件事的兩種說法。
+ */
+export function waveKillCount(attack: number, power: number, size: number): number {
+  if (power <= 0) return size;
+  return Math.max(0, Math.min(size, Math.round((attack / power) * size)));
+}
+
+/**
+ * 一隻小怪要挨幾下才倒。設成 1 的話「打得掉幾隻」就等於「丟幾把武器」,一波只丟個位數次、
+ * 中間一直在空等,看起來像沒在打;分成幾下之後同樣的結果會攤成一串連續的投擲。
+ * 打掉的總隻數完全沒變(還是 waveKillCount),變的只有演出的密度。
+ */
+export const HITS_PER_MONSTER = 3;
+
+/** 武器要在小怪撞到勇者之前丟完,所以間隔是「剩下的時間 ÷ 還要丟幾下」,不是固定值。 */
+export const MIN_FIRE_INTERVAL_MS = 90;
+export const MAX_FIRE_INTERVAL_MS = 360;
+export function fireIntervalMs(msUntilLastKill: number, remainingShots: number): number {
+  if (remainingShots <= 0) return Number.POSITIVE_INFINITY;
+  const spread = msUntilLastKill / remainingShots;
+  return Math.min(MAX_FIRE_INTERVAL_MS, Math.max(MIN_FIRE_INTERVAL_MS, spread));
 }
 
 /** 越後面的敵人挑越稀有的造型,讓「看起來更兇」跟「戰力更高」對得上。 */
@@ -209,7 +275,7 @@ function makeEnemyRow(rng: () => number, stage: number, rowIndex: number): RunNo
     reward: Math.round(power * 0.4),
     monsterId: monster.id,
     name: monster.name,
-    units: enemyUnitCount(rowIndex),
+    units: waveSize(rowIndex),
   };
   return Array.from({ length: LANE_COUNT }, (_, lane) => ({
     lane: lane as Lane,

@@ -4,9 +4,10 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  bestLane, clampOffset, createRun, ENEMY_EVERY, enemyUnitCount, initialRunState, LANE_COUNT,
-  laneCenterOffset, laneFromOffset, MAX_ENEMY_UNITS, moveLane, resolveRow, ROWS_PER_RUN, runSpeed,
-  secondsPerRow, worstLane, type Lane, type RunState,
+  bestLane, clampOffset, createRun, ENEMY_EVERY, fireIntervalMs, initialRunState, LANE_COUNT,
+  laneCenterOffset, laneFromOffset, MAX_FIRE_INTERVAL_MS, MAX_WAVE_SIZE, MIN_FIRE_INTERVAL_MS,
+  HITS_PER_MONSTER, moveLane, resolveEnemy, resolveRow, ROWS_PER_RUN, runSpeed, secondsPerRow, WAVE_LENGTH,
+  waveKillCount, waveMonsters, waveSize, worstLane, type Lane, type RunState,
 } from '../game/laneRun';
 import { hasMonsterVisual } from '../game/sprites/monsters';
 
@@ -72,9 +73,59 @@ check('每種造型都有對應的既有素材檔', allEnemies.every((e) => exis
 check('同一排的三格是同一批敵人', run.filter((r) => r.nodes.every((n) => n.kind === 'enemy'))
   .every((r) => new Set(r.nodes.map((n) => n.enemy!.monsterId)).size === 1));
 const unitsByRow = run.filter((r) => r.nodes.every((n) => n.kind === 'enemy')).map((r) => r.nodes[0].enemy!.units);
-check('越後面的敵人擺越多隻(數量看得出難度)', unitsByRow.every((u, i) => i === 0 || u >= unitsByRow[i - 1]),
+check('越後面的波次小怪越多(數量看得出難度)', unitsByRow.every((u, i) => i === 0 || u >= unitsByRow[i - 1]),
   unitsByRow.join(' → '));
-check(`數量封頂 ${MAX_ENEMY_UNITS} 隻`, enemyUnitCount(999) === MAX_ENEMY_UNITS && enemyUnitCount(0) === 1);
+check(`一波封頂 ${MAX_WAVE_SIZE} 隻`, waveSize(999) === MAX_WAVE_SIZE && waveSize(0) === 5);
+
+// --- 一波小怪的排列 ---
+const waveRow = run.find((r) => r.nodes.every((n) => n.kind === 'enemy'))!;
+const wave = waveMonsters(waveRow.index, 9, waveRow.distance);
+check('小怪數量等於這一波的隻數', wave.length === 9);
+check('小怪一隻一隻排開,不會疊在同一點', wave.every((m, i) => i === 0 || m.distance > wave[i - 1].distance));
+check('最後一隻剛好落在結算點', wave[wave.length - 1].distance === waveRow.distance);
+check('整波都在結算點前方一個波長內', wave.every((m) =>
+  m.distance > waveRow.distance - WAVE_LENGTH - 0.001 && m.distance <= waveRow.distance));
+check('小怪散在不同跑道(不會整波擠同一條)',
+  new Set(wave.map((m) => m.lane)).size >= 2, `用到 ${new Set(wave.map((m) => m.lane)).size} 條`);
+// 單一波沒用滿三條是正常的,但長期分佈不能偏——偏掉就代表雜湊常數又跟 LANE_COUNT 共因數了。
+const laneTally = [0, 0, 0];
+for (let row = 0; row < 400; row++) {
+  for (const m of waveMonsters(row, MAX_WAVE_SIZE, 1000)) laneTally[m.lane]++;
+}
+const laneShare = laneTally.map((n) => n / (400 * MAX_WAVE_SIZE));
+check('長期看三條跑道分佈平均', laneShare.every((s) => s > 0.28 && s < 0.39),
+  laneShare.map((s) => (s * 100).toFixed(0) + '%').join(' / '));
+check('同一波每次算出來都一樣(重播對得起來)',
+  JSON.stringify(waveMonsters(waveRow.index, 9, waveRow.distance)) === JSON.stringify(wave));
+
+// --- 打掉幾隻 vs 扣多少血:同一件事的兩種說法 ---
+const powerSample = 200;
+const baseState: RunState = { ...initialRunState(1), attack: 0 };
+const damageAt = (atk: number) => {
+  const before = { ...baseState, attack: atk };
+  const after = resolveEnemy(before, { power: powerSample, reward: 0, monsterId: 'blob-1', name: '史', units: 9 });
+  return before.hp - after.state.hp;
+};
+check('攻擊力壓過戰力 -> 全部打掉、零傷害',
+  waveKillCount(powerSample, powerSample, 9) === 9 && damageAt(powerSample) === 0);
+check('攻擊力遠超過 -> 一樣是全部打掉(不會算出超過總數)',
+  waveKillCount(powerSample * 5, powerSample, 9) === 9 && damageAt(powerSample * 5) === 0);
+check('攻擊力不足 -> 有漏過來的,而且確實有扣血',
+  waveKillCount(powerSample / 2, powerSample, 9) < 9 && damageAt(powerSample / 2) > 0);
+check('打掉的比例跟擋掉的傷害比例一致',
+  Math.abs(waveKillCount(powerSample / 2, powerSample, 9) / 9
+    - (1 - damageAt(powerSample / 2) / powerSample)) < 0.06);
+check('攻擊力越高漏過來的越少', [0.2, 0.4, 0.6, 0.8, 1].map((f) => waveKillCount(powerSample * f, powerSample, 9))
+  .every((k, i, a) => i === 0 || k >= a[i - 1]));
+
+// --- 擲武器的節奏 ---
+check('一隻要挨好幾下才倒(投擲才會連續)', HITS_PER_MONSTER >= 2);
+// 兩邊都要落在夾擠範圍內才測得到斜率:剩 5 下 -> 200ms、剩 10 下 -> 100ms。
+check('丟得完:剩越多下要丟就丟越快',
+  fireIntervalMs(1000, 5) === 200 && fireIntervalMs(1000, 10) === 100);
+check('連射有下限(不會變成雷射)', fireIntervalMs(10, 9) === MIN_FIRE_INTERVAL_MS);
+check('間隔有上限(不會久到看起來沒在打)', fireIntervalMs(99999, 1) === MAX_FIRE_INTERVAL_MS);
+check('沒有要打的目標就不丟', fireIntervalMs(3000, 0) === Number.POSITIVE_INFINITY);
 
 // --- 三種玩家跑同一場 ---
 type Picker = (s: RunState, row: ReturnType<typeof createRun>[number], rng: () => number) => Lane;
