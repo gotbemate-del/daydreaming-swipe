@@ -206,6 +206,10 @@ export function createRng(seed: number): () => number {
   };
 }
 
+// 一場戰鬥開始到第一次出招之間的緩衝。不隨關卡縮短——它解的是「畫面剛出現、玩家還沒進入
+// 狀況」的問題,跟關卡難度無關。
+export const BATTLE_LEAD_IN_MS = 1500;
+
 // 出招間隔 = 反應窗 + 喘息時間。喘息時間隨關卡從 500ms 壓到 180ms,跟反應窗一起構成難度曲線。
 export const BREATH_START_MS = 500;
 export const BREATH_FLOOR_MS = 180;
@@ -224,7 +228,10 @@ export function createThreatSequence(seed: number, stage: number, threatCount: n
   const windowMs = reactionWindowMs(stage);
   const breath = breathMs(stage);
   const threats: Threat[] = [];
-  let cursor = breath;
+  // 開場緩衝要獨立於 breath 之外:breath 在後期只有 180ms,不夠玩家把視線放到畫面上。
+  // 實測(Playwright)沒有緩衝時,網頁載入完的頭 3.5 秒內玩家就已經被偷打兩下、血量剩 172/240
+  // ——那不是難度,是還沒開始玩就先扣血。
+  let cursor = BATTLE_LEAD_IN_MS + breath;
   for (let i = 0; i < threatCount; i++) {
     threats.push({
       index: i,

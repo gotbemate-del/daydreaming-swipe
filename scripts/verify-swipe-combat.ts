@@ -1,5 +1,6 @@
 // 滑動戰鬥數值驗證(照 CLAUDE.md 的驗證流程,改 game/ 就要跑)。
 import {
+  BATTLE_LEAD_IN_MS,
   COMBO_CAP, PERFECT_WINDOW_RATIO, REACTION_WINDOW_FLOOR_MS, REACTION_WINDOW_FLOOR_STAGE,
   REACTION_WINDOW_START_MS, breathMs, comboMultiplier, createBattleState, createRng,
   createThreatSequence, judgeSwipe, reactionWindowMs, resolveSwipe, threatCountForEncounter,
@@ -83,6 +84,7 @@ const n = threatCountForEncounter(hero, monster);
 check('出招數多於「全 good 打死」所需', n > allGood.turns, `出招 ${n} vs 需要 ${allGood.turns}`);
 const seq = createThreatSequence(12345, 10, n);
 check('出招表長度正確', seq.length === n);
+check('第一招在開場緩衝之後才出現', seq[0].telegraphAt >= BATTLE_LEAD_IN_MS, `${seq[0].telegraphAt}ms`);
 check('出招時間嚴格遞增', seq.every((x, i) => i === 0 || x.telegraphAt > seq[i - 1].telegraphAt));
 check('相鄰出招不重疊', seq.every((x, i) => i === 0 || x.telegraphAt >= seq[i - 1].telegraphAt + seq[i - 1].windowMs));
 check('同一 seed 產生一樣的表', JSON.stringify(createThreatSequence(12345, 10, n)) === JSON.stringify(seq));
