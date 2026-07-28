@@ -1,27 +1,20 @@
 import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
-import { SwipeArena } from '../components/SwipeArena';
-import { expectedLevelForStage } from '../game/swipeEncounter';
+import { LaneRunner } from '../components/LaneRunner';
 
-// 骨架階段的主畫面:直接進戰鬥,不做選單。等級暫時由關卡推導(expectedLevelForStage),
-// 存檔與養成系統還沒接上——先把「滑動戰鬥好不好玩」這件事做到能實際玩,再談外圍系統。
+// 骨架階段的主畫面:直接進跑圖,不做選單。存檔與養成系統還沒接上——先把「左右滑選閘門」
+// 這件事做到能實際玩,再談外圍系統。
 export default function HomeScreen() {
   const [stage, setStage] = useState(1);
-  const level = expectedLevelForStage(stage);
 
   return (
     <View style={styles.screen}>
       <View style={styles.header}>
         <Text style={styles.title}>滑動勇者</Text>
-        <Text style={styles.subtitle}>Lv.{level}</Text>
+        <Text style={styles.subtitle}>第 {stage} 關</Text>
       </View>
-      <SwipeArena
-        key={stage}
-        stage={stage}
-        level={level}
-        onCleared={(cleared) => setStage(cleared + 1)}
-      />
+      <LaneRunner key={stage} stage={stage} onCleared={(cleared) => setStage(cleared + 1)} />
     </View>
   );
 }
@@ -32,8 +25,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#16161c',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 18,
-    gap: 14,
+    padding: 16,
+    gap: 12,
   },
   header: {
     width: '100%',
