@@ -43,6 +43,24 @@ export function laneFromOffset(offset: number): Lane {
   return Math.min(LANE_COUNT - 1, Math.max(0, index)) as Lane;
 }
 
+// ---- 閘門的寬度 ----
+// 閘門不佔滿整條跑道:跑道寬 1/LANE_COUNT = 0.5,閘門只佔 GATE_WIDTH,左右各留一段空隙。
+// 沒對準就整格漏掉——好處沒吃到,陷阱也沒踩到。這是刺激感的來源:光是「站對邊」還不夠,
+// 手指得真的把勇者拉到那一格上面。
+export const GATE_WIDTH = 0.34;
+
+export function gateSpan(lane: Lane): { from: number; to: number } {
+  const center = laneCenterOffset(lane);
+  return { from: center - GATE_WIDTH / 2, to: center + GATE_WIDTH / 2 };
+}
+
+/** 勇者站在 offset 時有沒有真的踩到這一格的閘門。 */
+export function hitsGate(offset: number, lane: Lane): boolean {
+  const { from, to } = gateSpan(lane);
+  const at = clampOffset(offset);
+  return at >= from && at <= to;
+}
+
 export type NodeKind = 'gate' | 'enemy' | 'coin';
 
 /**
@@ -58,11 +76,21 @@ export interface GateEffect {
   value: number;
 }
 
+export interface WaveSpecies {
+  /** 對應 game/monsters.ts 的 MonsterSpec.id,畫面拿它去抓既有的怪物素材 */
+  id: string;
+  name: string;
+}
+
 export interface EnemyEffect {
   power: number;
   reward: number;
-  /** 對應 game/monsters.ts 的 MonsterSpec.id,畫面拿它去抓既有的怪物素材 */
-  monsterId: string;
+  /**
+   * 這一波有哪幾種怪。一波只有一種的話,整關看起來就像同一隻複製貼上;混幾種進來,
+   * 每一波的長相才不一樣。種類只影響外觀,戰力是整波共用一個數字。
+   */
+  species: WaveSpecies[];
+  /** 給提示列用的代表名(species 的第一種)。 */
   name: string;
   /** 這一波總共幾隻小怪。戰力是指數成長的,數字看久了會無感,一波湧幾隻才看得出「這波比上一波難」。 */
   units: number;
@@ -163,6 +191,16 @@ export const LEAD_IN_DISTANCE = 140;
  * 所以放在這裡跟跑速一起管:改畫面高度不該影響難度,改這個數字才該。
  */
 export const VISIBLE_AHEAD = ROW_SPACING * 3.2;
+
+// ---- 地形 ----
+// 每一關換一種地面。純粹是視覺,不影響任何數值——但少了它整條跑道就是一塊深色底,
+// 玩家沒有「我在往前跑」以外的任何場景感,關卡之間也長得一模一樣。
+export type TerrainId = 'grass' | 'dirt' | 'asphalt' | 'stone';
+export const TERRAINS: TerrainId[] = ['grass', 'dirt', 'asphalt', 'stone'];
+export function terrainForStage(stage: number): TerrainId {
+  const index = Math.max(0, Math.floor((stage - 1) / 2)) % TERRAINS.length;
+  return TERRAINS[index];
+}
 
 export const ROWS_PER_RUN = 12;
 /** 每隔幾排出現一排敵人(敵人排三條跑道都是敵人,一定要正面對上)。 */
@@ -272,6 +310,10 @@ export function waveSize(rowIndex: number): number {
 export interface WaveMonster {
   index: number;
   lane: Lane;
+  /** 橫向位置(0~1)。刻意不是跑道正中央——整波站成一直線看起來像閱兵,不像一群怪衝過來。 */
+  offset: number;
+  /** 這一隻長什麼樣:EnemyEffect.species 的索引 */
+  speciesIndex: number;
   /** 這隻小怪在跑道上的絕對位置(跟 RunRow.distance 同一個座標系) */
   distance: number;
 }
@@ -286,12 +328,28 @@ function laneForWaveMonster(rowIndex: number, index: number): Lane {
   return (((h ^ (h >>> 16)) >>> 0) % LANE_COUNT) as Lane;
 }
 
-export function waveMonsters(rowIndex: number, size: number, rowDistance: number): WaveMonster[] {
-  return Array.from({ length: size }, (_, index) => ({
-    index,
-    lane: laneForWaveMonster(rowIndex, index),
-    distance: rowDistance - (WAVE_LENGTH * (size - 1 - index)) / size,
-  }));
+/** 小怪可以偏離跑道中心多遠(offset 單位)。太大會跑到隔壁跑道上,看起來像站錯格。 */
+export const MONSTER_JITTER = 0.11;
+
+// 同一個雜湊源再取不同的位元,拿來決定抖動量與怪種——不另外開亂數,重播才對得起來。
+function hashFor(rowIndex: number, index: number, salt: number): number {
+  let h = Math.imul(rowIndex + 1, 374761393) ^ Math.imul(index + 1, 668265263) ^ Math.imul(salt + 1, 2246822519);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 0x100000000;
+}
+
+export function waveMonsters(rowIndex: number, size: number, rowDistance: number, speciesCount = 1): WaveMonster[] {
+  return Array.from({ length: size }, (_, index) => {
+    const lane = laneForWaveMonster(rowIndex, index);
+    const jitter = (hashFor(rowIndex, index, 1) * 2 - 1) * MONSTER_JITTER;
+    return {
+      index,
+      lane,
+      offset: clampOffset(laneCenterOffset(lane) + jitter),
+      speciesIndex: Math.min(speciesCount - 1, Math.floor(hashFor(rowIndex, index, 2) * speciesCount)),
+      distance: rowDistance - (WAVE_LENGTH * (size - 1 - index)) / size,
+    };
+  });
 }
 
 /**
@@ -309,6 +367,16 @@ export function waveKillCount(attack: number, power: number, size: number): numb
  * 打掉的總隻數完全沒變(還是 waveKillCount),變的只有演出的密度。
  */
 export const HITS_PER_MONSTER = 3;
+
+/**
+ * 人多就丟得密。開根號是為了讓 64 人不會變成一秒鐘 60 把武器——畫面會糊掉,而且結果不變
+ * (打得掉幾隻仍然只看 waveKillCount)。人數是玩家最有感的成長,投擲密度要跟著長,
+ * 不然「人變多了」在戰鬥畫面上完全看不出來。
+ */
+export const MAX_VOLLEY_RATE = 4;
+export function volleyRate(heroes: number): number {
+  return Math.min(MAX_VOLLEY_RATE, Math.max(1, Math.sqrt(Math.max(1, heroes))));
+}
 
 /** 武器要在小怪撞到勇者之前丟完,所以間隔是「剩下的時間 ÷ 還要丟幾下」,不是固定值。 */
 export const MIN_FIRE_INTERVAL_MS = 90;
@@ -328,14 +396,29 @@ export function enemyRarityForRow(rowIndex: number): Rarity {
   return 'legendary';
 }
 
+/** 一波混幾種怪。種類只影響外觀,不影響戰力——所以可以放心多抽幾種。 */
+export const SPECIES_PER_WAVE = 3;
+
 function makeEnemyRow(rng: () => number, stage: number, rowIndex: number): RunNode[] {
   const power = enemyPowerForRow(stage, rowIndex);
-  const monster = pickMonster(enemyRarityForRow(rowIndex), rng);
+  const rarity = enemyRarityForRow(rowIndex);
+  // 抽到重複的就換一階稀有度再抽,盡量湊滿不同的造型;湊不滿也不強求(池子有限)。
+  const species: WaveSpecies[] = [];
+  const rarities: Rarity[] = [rarity, 'common', 'rare', 'epic'];
+  for (let i = 0; i < SPECIES_PER_WAVE; i++) {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const m = pickMonster(rarities[(i + attempt) % rarities.length], rng);
+      if (!species.some((sp) => sp.id === m.id)) {
+        species.push({ id: m.id, name: m.name });
+        break;
+      }
+    }
+  }
   const enemy: EnemyEffect = {
     power,
     reward: Math.round(power * 0.4),
-    monsterId: monster.id,
-    name: monster.name,
+    species,
+    name: species[0].name,
     units: waveSize(rowIndex),
   };
   return Array.from({ length: LANE_COUNT }, (_, lane) => ({
@@ -417,8 +500,12 @@ export function resolveEnemy(state: RunState, enemy: EnemyEffect): RowResolution
   return { state: next, message: `戰力不足 -${shortfall} 血`, hpDelta: -shortfall, attackDelta: 0 };
 }
 
-/** 走過一排:只有玩家所在跑道的節點會生效。 */
-export function resolveRow(state: RunState, row: RunRow): RowResolution {
+/**
+ * 走過一排:只有玩家所在跑道的節點會生效,而且閘門還要真的踩到(見 hitsGate)。
+ * offset 不給的話當作站在該跑道正中央——驗證腳本用跑道模擬時就是這個意思。
+ */
+export function resolveRow(state: RunState, row: RunRow, offset?: number): RowResolution {
+  const at = offset ?? laneCenterOffset(state.lane);
   const node = row.nodes.find((n) => n.lane === state.lane);
   const advanced = { ...state, rowIndex: row.index + 1 };
 
@@ -441,6 +528,10 @@ export function resolveRow(state: RunState, row: RunRow): RowResolution {
   }
 
   if (node.kind === 'gate' && node.gate) {
+    // 站在這一格,但沒踩在閘門上——整格漏掉。好處沒吃到,陷阱也沒踩到。
+    if (!hitsGate(at, node.lane)) {
+      return { state: advanced, message: '沒碰到', hpDelta: 0, attackDelta: 0 };
+    }
     const after = applyGate(advanced, node.gate);
     if (after.hp <= 0) after.phase = 'dead';
     return {

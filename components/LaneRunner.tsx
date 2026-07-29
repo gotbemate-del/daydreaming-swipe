@@ -4,12 +4,15 @@ import { Image, PanResponder, Platform, Pressable, StyleSheet, Text, View } from
 import { jobTitle, runStartFor, type LaneJob } from '../game/laneJobs';
 import {
   gateLabel,
-  laneCenterOffset,
+  gateSpan,
+  GATE_WIDTH,
   LANE_COUNT,
   runLength,
+  terrainForStage,
   totalAttack,
   VISIBLE_AHEAD,
   type RunRow,
+  type TerrainId,
 } from '../game/laneRun';
 import { useLaneRun, type Projectile, type WaveView } from '../hooks/useLaneRun';
 import { HERO_ASPECT, HERO_FRAMES, jobHeroArt, monsterArt, weaponArt } from './artAssets';
@@ -50,17 +53,39 @@ function bottomYFor(ahead: number): number {
   return HEAD_Y - (ahead / VISIBLE_AHEAD) * (HEAD_Y + SPAWN_MARGIN);
 }
 
-// 隊形:主角在最前面(畫面最下),其他人往後往兩側散開。畫面上最多畫這幾個,人數再多只加數字——
+// 隊形:主角在最前面(畫面最下),其他人往後往兩側散開成一團。人數再多只加數字——
 // 真的畫 64 個人的話一格會被塞滿、看不出跑道,而且每個 tick 要重排 64 個絕對定位的圖。
+// 後排刻意畫小一點(scale)並且各自用不同的相位晃動,看起來才像一群人在跑而不是貼圖陣列。
 const SQUAD_SLOTS = [
-  { dx: 0, dy: 0 },
-  { dx: -20, dy: -13 },
-  { dx: 20, dy: -13 },
-  { dx: -38, dy: -25 },
-  { dx: 38, dy: -25 },
-  { dx: -13, dy: -30 },
-  { dx: 13, dy: -30 },
+  { dx: 0, dy: 0, scale: 1 },
+  { dx: -22, dy: -12, scale: 0.94 },
+  { dx: 22, dy: -12, scale: 0.94 },
+  { dx: -42, dy: -22, scale: 0.88 },
+  { dx: 42, dy: -22, scale: 0.88 },
+  { dx: -14, dy: -26, scale: 0.86 },
+  { dx: 14, dy: -26, scale: 0.86 },
+  { dx: -62, dy: -34, scale: 0.8 },
+  { dx: 62, dy: -34, scale: 0.8 },
+  { dx: -34, dy: -38, scale: 0.78 },
+  { dx: 34, dy: -38, scale: 0.78 },
+  { dx: 0, dy: -42, scale: 0.76 },
+  { dx: -52, dy: -50, scale: 0.72 },
+  { dx: 52, dy: -50, scale: 0.72 },
 ];
+
+// 地面。純視覺,每一關換一種,讓關卡之間不會長得一模一樣。
+const TERRAIN_STYLE: Record<TerrainId, { base: string; speck: string; edge: string }> = {
+  grass: { base: '#22301f', speck: '#33452b', edge: '#3d4a33' },
+  dirt: { base: '#2e2620', speck: '#3d322a', edge: '#4a3c31' },
+  asphalt: { base: '#20202a', speck: '#2a2a36', edge: '#46465a' },
+  stone: { base: '#262630', speck: '#33333f', edge: '#454554' },
+};
+// 地面碎點:位置固定(不亂數),整片跟著跑動往下捲。密度夠看得出在前進就好,不必鋪滿。
+const SPECKS = Array.from({ length: 26 }, (_, i) => ({
+  x: ((i * 37) % 100) / 100,
+  phase: (i * 61) % 520,
+  size: 3 + (i % 3) * 2,
+}));
 
 interface Props {
   stage: number;
@@ -131,47 +156,62 @@ export function LaneRunner({ stage, job, onCleared, onRetry }: Props) {
   const bob = state.phase === 'running' ? Math.round(Math.sin(distance / 7) * 2) : 0;
   // 由後往前畫(slice 之後 reverse),主角才會蓋在隊友上面而不是被壓在後面。
   const drawnSlots = SQUAD_SLOTS.slice(0, Math.min(state.heroes, SQUAD_SLOTS.length)).reverse();
+  const terrain = TERRAIN_STYLE[terrainForStage(stage)];
   const incoming = wave ? upcoming.find((r) => r.index === wave.rowIndex)?.nodes[0].enemy : undefined;
 
+  /**
+   * 閘門排。每一格不佔滿整條跑道(見 laneRun 的 GATE_WIDTH),左右都留空隙——
+   * 沒把勇者拉到框上面就整格漏掉,所以框畫多寬就必須等於判定多寬,不能為了好看畫大一點。
+   */
   function renderGateRow(row: RunRow) {
     if (row.nodes[0]?.kind === 'enemy') return null; // 敵人排改由 renderWave 演出
     const ahead = row.distance - distance;
     if (ahead > VISIBLE_AHEAD || ahead < -GATE_CULL_PAST) return null;
-    return (
-      <View key={row.index} style={[styles.rowLayer, { top: bottomYFor(ahead) - GATE_HEIGHT }]} pointerEvents="none">
-        {row.nodes.map((node) => {
-          const trap = node.gate ? isTrap(node.gate.op, node.gate.value) : false;
-          return (
-            <View key={node.lane} style={styles.cell}>
-              <View style={[styles.gate, trap ? styles.gateTrap : styles.gateGood]}>
-                <Text style={styles.gateText} numberOfLines={2}>
-                  {node.gate ? gateLabel(node.gate) : ''}
-                </Text>
-              </View>
-            </View>
-          );
-        })}
-      </View>
-    );
+    if (trackWidth <= 0) return null;
+    const top = bottomYFor(ahead) - GATE_HEIGHT;
+    return row.nodes.map((node) => {
+      const trap = node.gate ? isTrap(node.gate.op, node.gate.value) : false;
+      const span = gateSpan(node.lane);
+      return (
+        <View
+          key={`${row.index}-${node.lane}`}
+          pointerEvents="none"
+          style={[
+            styles.gate,
+            trap ? styles.gateTrap : styles.gateGood,
+            { left: span.from * trackWidth, width: GATE_WIDTH * trackWidth, top, height: GATE_HEIGHT },
+          ]}
+        >
+          <Text style={styles.gateText} numberOfLines={2}>
+            {node.gate ? gateLabel(node.gate) : ''}
+          </Text>
+        </View>
+      );
+    });
   }
 
-  /** 一波小怪:一隻一隻從遠處衝過來,被打掉的就不再畫,漏過來的會走到勇者頭上。 */
+  /**
+   * 一波小怪:一隻一隻從遠處衝過來,被打掉的就不再畫,漏過來的會走到勇者頭上。
+   * 每隻的種類與橫向位置都由 laneRun 決定(混幾種怪、各自偏離跑道中心多少),
+   * 這裡只負責畫——同一波不同長相、不站成一直線,看起來才像一群怪而不是閱兵。
+   */
   function renderWave(w: WaveView) {
     if (trackWidth <= 0) return null;
     return w.monsters.map((m) => {
       if (w.down[m.index]) return null;
       const ahead = m.distance - distance;
       if (ahead > VISIBLE_AHEAD || ahead < 0) return null;
+      const species = w.species[m.speciesIndex] ?? w.species[0];
       return (
         <Image
           key={m.index}
-          source={monsterArt(w.monsterId)}
+          source={monsterArt(species.id)}
           resizeMode="contain"
           style={[
             styles.pixelArt,
             styles.floating,
             {
-              left: laneCenterOffset(m.lane) * trackWidth - MONSTER_SIZE / 2,
+              left: m.offset * trackWidth - MONSTER_SIZE / 2,
               top: bottomYFor(ahead) - MONSTER_SIZE,
               width: MONSTER_SIZE,
               height: MONSTER_SIZE,
@@ -195,7 +235,7 @@ export function LaneRunner({ stage, job, onCleared, onRetry }: Props) {
     return (
       <Image
         key={p.id}
-        source={weaponArt(job?.archetype ?? null, state.gear)}
+        source={weaponArt(job?.archetype ?? null, state.gear, p.id)}
         resizeMode="contain"
         style={[
           styles.pixelArt,
@@ -240,7 +280,7 @@ export function LaneRunner({ stage, job, onCleared, onRetry }: Props) {
       </View>
 
       <View
-        style={styles.track}
+        style={[styles.track, { backgroundColor: terrain.base }]}
         onLayout={(e) => {
           const w = e.nativeEvent.layout.width;
           trackWidthRef.current = w;
@@ -250,7 +290,28 @@ export function LaneRunner({ stage, job, onCleared, onRetry }: Props) {
       >
         <View style={styles.laneLines} pointerEvents="none">
           {Array.from({ length: LANE_COUNT }, (_, i) => (
-            <View key={i} style={[styles.laneLine, state.lane === i && styles.laneLineActive]} />
+            <View
+              key={i}
+              style={[styles.laneLine, { borderRightColor: terrain.edge }, state.lane === i && styles.laneLineActive]}
+            />
+          ))}
+        </View>
+
+        {/* 地面碎點:草皮的草叢、土地的石礫、柏油路的補丁。跟著跑動往下捲,是「地面在動」的主要線索。 */}
+        <View style={styles.laneLines} pointerEvents="none">
+          {SPECKS.map((sp, i) => (
+            <View
+              key={i}
+              style={{
+                position: 'absolute',
+                left: sp.x * trackWidth,
+                top: ((distance * 1.6 + sp.phase) % (TRACK_HEIGHT + 40)) - 40,
+                width: sp.size,
+                height: Math.max(2, Math.round(sp.size * 0.6)),
+                borderRadius: 1,
+                backgroundColor: terrain.speck,
+              }}
+            />
           ))}
         </View>
 
@@ -263,6 +324,7 @@ export function LaneRunner({ stage, job, onCleared, onRetry }: Props) {
                 style={[
                   styles.dash,
                   {
+                    backgroundColor: terrain.edge,
                     left: laneWidth * (i + 1) - 1,
                     top: ((distance * 1.6 + phase) % (TRACK_HEIGHT + DASH_LENGTH)) - DASH_LENGTH,
                   },
@@ -278,24 +340,30 @@ export function LaneRunner({ stage, job, onCleared, onRetry }: Props) {
 
         {/* 勇者群:橫向位置完全跟著手指(heroOffset),不吸附到跑道中央。
             由後往前畫,主角才會蓋在隊友上面。 */}
-        {drawnSlots.map((slot, i) => (
-          <Image
-            key={i}
-            source={job === null ? HERO_FRAMES[BLINK_SEQUENCE[blinkStep]] : heroArt}
-            resizeMode="contain"
-            style={[
-              styles.hero,
-              styles.pixelArt,
-              {
-                left: heroLeft + slot.dx,
-                bottom: HERO_BOTTOM + bob - slot.dy,
-                width: HERO_WIDTH,
-                height: HERO_HEIGHT,
-                zIndex: i + 1,
-              },
-            ]}
-          />
-        ))}
+        {drawnSlots.map((slot, i) => {
+          // 每個人用不同的相位晃動,整團才像各自在跑;同相位的話會像同一張圖被複製。
+          const phase = distance / 7 + i * 1.7;
+          const wanderX = Math.round(Math.sin(phase * 0.9) * 3);
+          const wanderY = Math.round(Math.sin(phase) * 2);
+          return (
+            <Image
+              key={i}
+              source={job === null ? HERO_FRAMES[BLINK_SEQUENCE[blinkStep]] : heroArt}
+              resizeMode="contain"
+              style={[
+                styles.hero,
+                styles.pixelArt,
+                {
+                  left: heroLeft + slot.dx + wanderX,
+                  bottom: HERO_BOTTOM + bob - slot.dy + wanderY,
+                  width: Math.round(HERO_WIDTH * slot.scale),
+                  height: Math.round(HERO_HEIGHT * slot.scale),
+                  zIndex: i + 1,
+                },
+              ]}
+            />
+          );
+        })}
         {state.heroes > SQUAD_SLOTS.length && (
           <Text style={[styles.squadCount, { left: heroLeft - 12, bottom: HERO_BOTTOM + HERO_HEIGHT - 6 }]}>
             x{state.heroes}
@@ -367,28 +435,16 @@ const styles = StyleSheet.create({
   track: {
     height: TRACK_HEIGHT,
     borderRadius: 12,
-    backgroundColor: '#1c1c23',
     borderWidth: 1,
     borderColor: '#3a3a45',
     overflow: 'hidden',
   },
   laneLines: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, flexDirection: 'row' },
-  laneLine: { flex: 1, borderRightWidth: 1, borderRightColor: '#2a2a35', backgroundColor: '#1c1c23' },
-  laneLineActive: { backgroundColor: '#23232e' },
+  laneLine: { flex: 1, borderRightWidth: 1 },
+  laneLineActive: { backgroundColor: '#ffffff10' },
   dash: { position: 'absolute', width: 2, height: DASH_LENGTH, borderRadius: 1, backgroundColor: '#46465a' },
-  rowLayer: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    height: GATE_HEIGHT,
-    flexDirection: 'row',
-    paddingHorizontal: 4,
-    gap: 4,
-  },
-  cell: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   gate: {
-    width: '100%',
-    height: GATE_HEIGHT,
+    position: 'absolute',
     borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',

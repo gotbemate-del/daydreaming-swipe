@@ -16,6 +16,7 @@ import {
   START_OFFSET,
   totalAttack,
   VISIBLE_AHEAD,
+  volleyRate,
   waveKillCount,
   waveMonsters,
   DEFAULT_RUN_START,
@@ -24,6 +25,7 @@ import {
   type RunStart,
   type RunState,
   type WaveMonster,
+  type WaveSpecies,
 } from '../game/laneRun';
 
 const TICK_MS = 33; // ~30fps
@@ -58,7 +60,7 @@ export interface Projectile {
 
 export interface WaveView {
   rowIndex: number;
-  monsterId: string;
+  species: WaveSpecies[];
   monsters: WaveMonster[];
   /** 每一隻倒了沒。倒下的不再畫,活著的會一路衝到勇者頭上。 */
   down: boolean[];
@@ -91,7 +93,7 @@ export interface LaneRunView {
 
 interface WaveRuntime {
   rowIndex: number;
-  monsterId: string;
+  species: WaveSpecies[];
   power: number;
   monsters: WaveMonster[];
   /** 每一隻各自挨了幾下。打不倒的那幾隻也會累加——勇者照樣丟,只是丟不倒。 */
@@ -175,9 +177,9 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
     if (current === null || current.rowIndex !== enemyRow.index) {
       current = {
         rowIndex: enemyRow.index,
-        monsterId: enemy.monsterId,
+        species: enemy.species,
         power: enemy.power,
-        monsters: waveMonsters(enemyRow.index, enemy.units, enemyRow.distance),
+        monsters: waveMonsters(enemyRow.index, enemy.units, enemyRow.distance, enemy.species.length),
         hitsOn: new Array(enemy.units).fill(0),
         lastFireAt: 0,
       };
@@ -208,19 +210,25 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
     if (targetIndex >= 0) {
       const lastDoomed = current.monsters[Math.max(0, kills - 1)];
       const msUntilLastKill = Math.max(0, ((lastDoomed.distance - travelled) / speed) * 1000);
-      const interval =
+      const base =
         remainingDoomedShots > 0 ? fireIntervalMs(msUntilLastKill, remainingDoomedShots) : MAX_FIRE_INTERVAL_MS;
+      // 人越多丟越密。這是「人數變多」在戰鬥畫面上唯一看得出來的地方。
+      const interval = base / volleyRate(stateRef.current.heroes);
       if (now - current.lastFireAt >= interval) {
         current.lastFireAt = now;
         projectileIdRef.current += 1;
+        const id = projectileIdRef.current;
+        // 每一把從隊伍裡不同的人手上飛出去(依 id 散開),不是全部從同一個點噴出來。
+        const spread = Math.min(0.09, 0.02 * Math.min(stateRef.current.heroes, 6));
+        const fromOffset = clampOffset(offsetRef.current + ((id % 5) / 4 - 0.5) * 2 * spread);
         projectilesRef.current = [
           ...projectilesRef.current,
           {
-            id: projectileIdRef.current,
+            id,
             distance: travelled,
             fromDistance: travelled,
-            fromOffset: offsetRef.current,
-            toOffset: laneCenterOffset(current.monsters[targetIndex].lane),
+            fromOffset,
+            toOffset: current.monsters[targetIndex].offset,
             targetIndex,
           },
         ];
@@ -250,7 +258,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         ? prev
         : {
             rowIndex: current!.rowIndex,
-            monsterId: current!.monsterId,
+            species: current!.species,
             monsters: current!.monsters,
             down,
           },
@@ -266,7 +274,8 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
       setState((prev) => {
         // 踩到哪一格是「通過這一排的當下」才決定的,所以直接讀 ref 換算,不用 prev.lane。
         const landed = { ...prev, lane: laneFromOffset(offsetRef.current) };
-        const r = resolveRow(landed, due);
+        // 帶著連續位置去結算:站對邊還不夠,得真的踩在閘門上(見 laneRun 的 hitsGate)。
+        const r = resolveRow(landed, due, offsetRef.current);
         feedbackKeyRef.current += 1;
         setFeedback({
           key: feedbackKeyRef.current,

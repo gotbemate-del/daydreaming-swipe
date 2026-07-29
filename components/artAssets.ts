@@ -159,8 +159,48 @@ const WEAPON_ART: Record<string, ImageSourcePropType> = {
   'magicSupport-5': require('../assets/sprites/items/magicSupport/magicSupport_t5_1h.png'),
 };
 
-export function weaponArt(archetype: string | null, gear: number): ImageSourcePropType {
+// 同一階還有雙手武器版本。一支隊伍丟出來的東西全部一模一樣會很平,交錯丟兩種就有「一群人
+// 各拿各的武器」的感覺,而且不必另外畫圖。
+const WEAPON_ART_2H: Record<string, ImageSourcePropType> = {
+  'physicalMelee-1': require('../assets/sprites/items/physicalMelee/physicalMelee_t1_2h.png'),
+  'physicalMelee-2': require('../assets/sprites/items/physicalMelee/physicalMelee_t2_2h.png'),
+  'physicalMelee-3': require('../assets/sprites/items/physicalMelee/physicalMelee_t3_2h.png'),
+  'physicalMelee-4': require('../assets/sprites/items/physicalMelee/physicalMelee_t4_2h.png'),
+  'physicalMelee-5': require('../assets/sprites/items/physicalMelee/physicalMelee_t5_2h.png'),
+  'physicalRanged-1': require('../assets/sprites/items/physicalRanged/physicalRanged_t1_2h.png'),
+  'physicalRanged-2': require('../assets/sprites/items/physicalRanged/physicalRanged_t2_2h.png'),
+  'physicalRanged-3': require('../assets/sprites/items/physicalRanged/physicalRanged_t3_2h.png'),
+  'physicalRanged-4': require('../assets/sprites/items/physicalRanged/physicalRanged_t4_2h.png'),
+  'physicalRanged-5': require('../assets/sprites/items/physicalRanged/physicalRanged_t5_2h.png'),
+  'physicalSupport-1': require('../assets/sprites/items/physicalSupport/physicalSupport_t1_2h.png'),
+  'physicalSupport-2': require('../assets/sprites/items/physicalSupport/physicalSupport_t2_2h.png'),
+  'physicalSupport-3': require('../assets/sprites/items/physicalSupport/physicalSupport_t3_2h.png'),
+  'physicalSupport-4': require('../assets/sprites/items/physicalSupport/physicalSupport_t4_2h.png'),
+  'physicalSupport-5': require('../assets/sprites/items/physicalSupport/physicalSupport_t5_2h.png'),
+  'magicMelee-1': require('../assets/sprites/items/magicMelee/magicMelee_t1_2h.png'),
+  'magicMelee-2': require('../assets/sprites/items/magicMelee/magicMelee_t2_2h.png'),
+  'magicMelee-3': require('../assets/sprites/items/magicMelee/magicMelee_t3_2h.png'),
+  'magicMelee-4': require('../assets/sprites/items/magicMelee/magicMelee_t4_2h.png'),
+  'magicMelee-5': require('../assets/sprites/items/magicMelee/magicMelee_t5_2h.png'),
+  'magicRanged-1': require('../assets/sprites/items/magicRanged/magicRanged_t1_2h.png'),
+  'magicRanged-2': require('../assets/sprites/items/magicRanged/magicRanged_t2_2h.png'),
+  'magicRanged-3': require('../assets/sprites/items/magicRanged/magicRanged_t3_2h.png'),
+  'magicRanged-4': require('../assets/sprites/items/magicRanged/magicRanged_t4_2h.png'),
+  'magicRanged-5': require('../assets/sprites/items/magicRanged/magicRanged_t5_2h.png'),
+  'magicSupport-1': require('../assets/sprites/items/magicSupport/magicSupport_t1_2h.png'),
+  'magicSupport-2': require('../assets/sprites/items/magicSupport/magicSupport_t2_2h.png'),
+  'magicSupport-3': require('../assets/sprites/items/magicSupport/magicSupport_t3_2h.png'),
+  'magicSupport-4': require('../assets/sprites/items/magicSupport/magicSupport_t4_2h.png'),
+  'magicSupport-5': require('../assets/sprites/items/magicSupport/magicSupport_t5_2h.png'),
+};
+
+/**
+ * 擲出去的武器。variant 讓同一支隊伍交錯丟單手/雙手兩種,不是全部同一把。
+ * 還沒轉職的學生沒有職業武器,沿用傳承之劍。
+ */
+export function weaponArt(archetype: string | null, gear: number, variant = 0): ImageSourcePropType {
   const tier = Math.min(5, Math.max(1, Math.round(gear)));
   if (archetype === null) return PROJECTILE_ART;
-  return WEAPON_ART[`${archetype}-${tier}`] ?? PROJECTILE_ART;
+  const table = variant % 2 === 0 ? WEAPON_ART : WEAPON_ART_2H;
+  return table[`${archetype}-${tier}`] ?? WEAPON_ART[`${archetype}-${tier}`] ?? PROJECTILE_ART;
 }

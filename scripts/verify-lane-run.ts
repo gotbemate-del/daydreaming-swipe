@@ -7,7 +7,8 @@ import {
   bestLane, clampOffset, createRun, ENEMY_EVERY, fireIntervalMs, initialRunState, LANE_COUNT,
   laneCenterOffset, laneFromOffset, MAX_FIRE_INTERVAL_MS, MAX_WAVE_SIZE, MIN_FIRE_INTERVAL_MS,
   HITS_PER_MONSTER, moveLane, resolveEnemy, resolveRow, ROWS_PER_RUN, runSpeed, secondsPerRow, WAVE_LENGTH,
-  START_OFFSET, totalAttack, waveKillCount, waveMonsters, waveSize, worstLane,
+  GATE_WIDTH, gateSpan, hitsGate, MONSTER_JITTER, SPECIES_PER_WAVE, START_OFFSET, terrainForStage,
+  TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane,
   type Lane, type RunState,
 } from '../game/laneRun';
 import { hasMonsterVisual } from '../game/sprites/monsters';
@@ -67,13 +68,18 @@ const allEnemies = [1, 5, 20, 40].flatMap((s) =>
   Array.from({ length: 40 }, (_, t) => createRun(t * 17 + 3, s))
     .flatMap((r) => r.flatMap((row) => row.nodes))
     .flatMap((n) => (n.kind === 'enemy' && n.enemy ? [n.enemy] : [])));
-check('每隻敵人都有名字與造型 id', allEnemies.every((e) => e.name.length > 0 && e.monsterId.length > 0));
-check('敵人造型 id 都在怪物圖庫裡', allEnemies.every((e) => hasMonsterVisual(e.monsterId)),
-  `${new Set(allEnemies.map((e) => e.monsterId)).size} 種造型`);
-check('每種造型都有對應的既有素材檔', allEnemies.every((e) => existsSync(join(ART_DIR, `${archetypeOf(e.monsterId)}_open.png`))),
-  [...new Set(allEnemies.map((e) => archetypeOf(e.monsterId)))].join(' '));
+const allSpecies = allEnemies.flatMap((e) => e.species);
+check('每一波都混了好幾種怪(整關不會只看到同一隻)',
+  allEnemies.every((e) => e.species.length === SPECIES_PER_WAVE),
+  `每波 ${SPECIES_PER_WAVE} 種`);
+check('同一波裡的怪種不重複', allEnemies.every((e) => new Set(e.species.map((sp) => sp.id)).size === e.species.length));
+check('每隻敵人都有名字與造型 id', allSpecies.every((sp) => sp.name.length > 0 && sp.id.length > 0));
+check('敵人造型 id 都在怪物圖庫裡', allSpecies.every((sp) => hasMonsterVisual(sp.id)),
+  `${new Set(allSpecies.map((sp) => sp.id)).size} 種造型`);
+check('每種造型都有對應的既有素材檔', allSpecies.every((sp) => existsSync(join(ART_DIR, `${archetypeOf(sp.id)}_open.png`))),
+  [...new Set(allSpecies.map((sp) => archetypeOf(sp.id)))].join(' '));
 check('同一排的每一格都是同一批敵人', run.filter((r) => r.nodes.every((n) => n.kind === 'enemy'))
-  .every((r) => new Set(r.nodes.map((n) => n.enemy!.monsterId)).size === 1));
+  .every((r) => new Set(r.nodes.map((n) => JSON.stringify(n.enemy!.species))).size === 1));
 const unitsByRow = run.filter((r) => r.nodes.every((n) => n.kind === 'enemy')).map((r) => r.nodes[0].enemy!.units);
 check('越後面的波次小怪越多(數量看得出難度)', unitsByRow.every((u, i) => i === 0 || u >= unitsByRow[i - 1]),
   unitsByRow.join(' → '));
@@ -81,7 +87,7 @@ check(`一波封頂 ${MAX_WAVE_SIZE} 隻`, waveSize(999) === MAX_WAVE_SIZE && wa
 
 // --- 一波小怪的排列 ---
 const waveRow = run.find((r) => r.nodes.every((n) => n.kind === 'enemy'))!;
-const wave = waveMonsters(waveRow.index, 9, waveRow.distance);
+const wave = waveMonsters(waveRow.index, 9, waveRow.distance, SPECIES_PER_WAVE);
 check('小怪數量等於這一波的隻數', wave.length === 9);
 check('小怪一隻一隻排開,不會疊在同一點', wave.every((m, i) => i === 0 || m.distance > wave[i - 1].distance));
 check('最後一隻剛好落在結算點', wave[wave.length - 1].distance === waveRow.distance);
@@ -99,7 +105,44 @@ const evenShare = 1 / LANE_COUNT;
 check('長期看每條跑道分佈平均', laneShare.every((s: number) => Math.abs(s - evenShare) < evenShare * 0.15),
   laneShare.map((s: number) => (s * 100).toFixed(0) + '%').join(' / '));
 check('同一波每次算出來都一樣(重播對得起來)',
-  JSON.stringify(waveMonsters(waveRow.index, 9, waveRow.distance)) === JSON.stringify(wave));
+  JSON.stringify(waveMonsters(waveRow.index, 9, waveRow.distance, SPECIES_PER_WAVE)) === JSON.stringify(wave));
+check('小怪不會站成一直線(橫向位置各自偏移)',
+  new Set(wave.map((m) => m.offset.toFixed(4))).size >= wave.length - 1);
+check('偏移不會把小怪推出跑道', wave.every((m) => m.offset >= 0 && m.offset <= 1));
+check('偏移幅度不超過設定值', wave.every((m) =>
+  Math.abs(m.offset - laneCenterOffset(m.lane)) <= MONSTER_JITTER + 1e-9));
+check('同一波裡不同隻會用到不同造型',
+  new Set(wave.map((m) => m.speciesIndex)).size >= 2, `用到 ${new Set(wave.map((m) => m.speciesIndex)).size} 種`);
+check('造型索引不會超出 species 陣列', wave.every((m) => m.speciesIndex >= 0 && m.speciesIndex < SPECIES_PER_WAVE));
+
+// --- 閘門有寬度,沒踩到就漏掉 ---
+check('閘門沒有佔滿整條跑道', GATE_WIDTH < 1 / LANE_COUNT,
+  `閘門 ${GATE_WIDTH} vs 跑道 ${(1 / LANE_COUNT).toFixed(2)}`);
+check('站在跑道正中央一定踩得到', lanes.every((l) => hitsGate(laneCenterOffset(l), l)));
+check('兩格中間有空隙(站在那裡兩邊都碰不到)', !hitsGate(0.5, 0) && !hitsGate(0.5, 1));
+check('起跑位置就在空隙上(不動就什麼都吃不到,一定得自己拉)',
+  !hitsGate(START_OFFSET, 0) && !hitsGate(START_OFFSET, 1));
+check('跑道最外緣也碰不到閘門', !hitsGate(0, 0) && !hitsGate(1, 1));
+check('閘門邊界內外剛好一線之隔',
+  hitsGate(gateSpan(0).to, 0) && !hitsGate(gateSpan(0).to + 0.001, 0));
+const gateRow = gateRows[0];
+const missState = initialRunState(5);
+const missed = resolveRow({ ...missState, lane: 0 }, gateRow, 0.5);
+check('沒踩到就整格漏掉(好處沒吃到,陷阱也沒踩到)',
+  missed.message === '沒碰到' && missed.state.heroes === missState.heroes
+  && missed.state.perHero === missState.perHero && missed.state.hp === missState.hp);
+const landed = resolveRow({ ...missState, lane: 0 }, gateRow, laneCenterOffset(0));
+check('踩到就生效', landed.message !== '沒碰到');
+
+// --- 投擲密度隨人數上升 ---
+check('人越多丟越密', volleyRate(1) < volleyRate(9) && volleyRate(9) < volleyRate(64));
+check('投擲密度有封頂(不會變成彈幕)', volleyRate(10000) === volleyRate(16) && volleyRate(1) === 1);
+
+// --- 地面 ---
+check('每一關都有地面,而且會輪替',
+  new Set([1, 3, 5, 7].map(terrainForStage)).size === TERRAINS.length,
+  [1, 3, 5, 7].map(terrainForStage).join(' → '));
+check('同一關永遠是同一種地面', terrainForStage(9) === terrainForStage(9));
 
 // --- 打掉幾隻 vs 扣多少血:同一件事的兩種說法 ---
 const powerSample = 200;
@@ -163,6 +206,35 @@ for (const stage of [1, 5, 20, 40, 100]) {
   rows2.push({ stage, b, r, w });
   console.log(`  第${String(stage).padStart(3)}關  ${[b, r, w].map((v) => (v * 100).toFixed(0).padStart(4) + '%').join('  ')}`);
 }
+
+// 手不準的玩家:每排都挑對邊,但站的位置在該格中心 ±sloppy 之間亂飄,所以有機率整格漏掉。
+// 這一組是「留空隙」這個設計的實測值——漏接要有代價,但不能懲罰到「選對了還是會死」。
+function sloppyRate(stage: number, sloppy: number, trials = 300) {
+  let cleared = 0;
+  for (let t = 0; t < trials; t++) {
+    const rows = createRun(t * 31 + 1, stage);
+    let st = initialRunState(stage);
+    let x = t + 11;
+    const rnd = () => { x = (x * 1103515245 + 12345) & 0x7fffffff; return x / 0x7fffffff; };
+    for (const row of rows) {
+      const lane = bestLane(st, row);
+      const offset = laneCenterOffset(lane) + (rnd() * 2 - 1) * sloppy;
+      st = resolveRow({ ...st, lane }, row, offset).state;
+      if (st.phase === 'dead') break;
+    }
+    if (st.phase !== 'dead') cleared++;
+  }
+  return cleared / trials;
+}
+console.log('\n選對邊但手不準(漏接率隨手抖幅度上升):');
+console.log('          第20關  第100關');
+for (const sloppy of [0, 0.08, 0.16, 0.25]) {
+  console.log(`  ±${sloppy.toFixed(2)}   ${(sloppyRate(20, sloppy) * 100).toFixed(0).padStart(4)}%`
+    + `  ${(sloppyRate(100, sloppy) * 100).toFixed(0).padStart(5)}%`);
+}
+check('選對邊而且拉得準 -> 一定過關', sloppyRate(20, 0) >= 0.99);
+check('手抖一點還過得去(漏接有代價但不是死刑)', sloppyRate(20, 0.08) >= 0.8);
+check('隨便亂拉就會開始漏接', sloppyRate(20, 0.25) < sloppyRate(20, 0.08));
 
 check('每排都挑最好的 -> 一定過關', rows2.every((x) => x.b >= 0.99));
 check('每排都挑最爛的 -> 幾乎必死', rows2.every((x) => x.w <= 0.05));
