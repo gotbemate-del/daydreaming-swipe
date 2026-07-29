@@ -61,6 +61,10 @@ export interface Projectile {
 export interface WaveView {
   rowIndex: number;
   species: WaveSpecies[];
+  boss: boolean;
+  /** 每隻的血條:已挨幾下 / 要挨幾下。魔王打很久,沒有進度條會不知道打到哪了。 */
+  hitsOn: number[];
+  hitsPerUnit: number;
   monsters: WaveMonster[];
   /** 每一隻倒了沒。倒下的不再畫,活著的會一路衝到勇者頭上。 */
   down: boolean[];
@@ -95,6 +99,9 @@ interface WaveRuntime {
   rowIndex: number;
   species: WaveSpecies[];
   power: number;
+  /** 這一波每隻要挨幾下。一般小怪 3 下,大魔王 12 下——所以魔王戰才有「打很久」的過程。 */
+  hitsPerUnit: number;
+  boss: boolean;
   monsters: WaveMonster[];
   /** 每一隻各自挨了幾下。打不倒的那幾隻也會累加——勇者照樣丟,只是丟不倒。 */
   hitsOn: number[];
@@ -179,6 +186,8 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         rowIndex: enemyRow.index,
         species: enemy.species,
         power: enemy.power,
+        hitsPerUnit: enemy.hitsPerUnit ?? HITS_PER_MONSTER,
+        boss: enemy.boss === true,
         monsters: waveMonsters(enemyRow.index, enemy.units, enemyRow.distance, enemy.species.length),
         hitsOn: new Array(enemy.units).fill(0),
         lastFireAt: 0,
@@ -190,7 +199,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
     // 打得掉幾隻每個 tick 重算:波次中途吃到閘門,攻擊力一變,能清掉的隻數就跟著變。
     // 前 kills 隻是「打得倒的」,後面那幾隻挨再多下也不會倒——那就是戰力壓不過的部分。
     const kills = waveKillCount(totalAttack(stateRef.current), current.power, current.monsters.length);
-    const isDown = (i: number) => i < kills && current!.hitsOn[i] >= HITS_PER_MONSTER;
+    const isDown = (i: number) => i < kills && current!.hitsOn[i] >= current!.hitsPerUnit;
 
     // --- 丟武器 ---
     // 打不倒的也照丟。丟到打得倒的都倒了就停手的話,剩下那段路上小怪一直衝過來、勇者卻站著
@@ -203,7 +212,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
     for (let i = 0; i < current.monsters.length; i++) {
       if (isDown(i)) continue;
       if (current.monsters[i].distance <= travelled) continue; // 已經越過勇者,不用再丟
-      if (i < kills) remainingDoomedShots += Math.max(0, HITS_PER_MONSTER - current.hitsOn[i] - inFlightOn[i]);
+      if (i < kills) remainingDoomedShots += Math.max(0, current.hitsPerUnit - current.hitsOn[i] - inFlightOn[i]);
       if (targetIndex < 0 && current.monsters[i].distance - travelled <= FIRE_RANGE) targetIndex = i;
     }
 
@@ -254,11 +263,17 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
 
     const down = current.monsters.map((m) => isDown(m.index));
     setWave((prev) =>
-      prev !== null && prev.rowIndex === current!.rowIndex && sameFlags(prev.down, down)
+      prev !== null
+      && prev.rowIndex === current!.rowIndex
+      && sameFlags(prev.down, down)
+      && prev.hitsOn.every((h, i) => h === current!.hitsOn[i])
         ? prev
         : {
             rowIndex: current!.rowIndex,
             species: current!.species,
+            boss: current!.boss,
+            hitsOn: [...current!.hitsOn],
+            hitsPerUnit: current!.hitsPerUnit,
             monsters: current!.monsters,
             down,
           },

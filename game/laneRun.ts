@@ -16,7 +16,8 @@
 //   1. 跑速——越後面的關卡跑得越快,看到閘門到抵達的時間越短
 //   2. 閘門的好壞差距——後期陷阱更毒,選錯一次就很難補回來
 
-import { pickMonster } from './monsters';
+import { FINAL_BOSS_MONSTER, getStageBossMonster, pickMonster } from './monsters';
+import type { JobTier } from './combat';
 import type { Rarity } from './trigger';
 
 // 兩條跑道。三條的時候「中間」是個安全的預設位置,玩家不動也常常沒事;兩條沒有中立選項,
@@ -85,6 +86,10 @@ export interface WaveSpecies {
 export interface EnemyEffect {
   power: number;
   reward: number;
+  /** 大魔王排:一隻巨大的,不是一群小怪。畫面要畫大、要多打幾下才倒。 */
+  boss?: boolean;
+  /** 一隻要挨幾下才倒。不給就用 HITS_PER_MONSTER;大魔王要拖長,不然一擊就結束。 */
+  hitsPerUnit?: number;
   /**
    * 這一波有哪幾種怪。一波只有一種的話,整關看起來就像同一隻複製貼上;混幾種進來,
    * 每一波的長相才不一樣。種類只影響外觀,戰力是整波共用一個數字。
@@ -202,6 +207,24 @@ export function terrainForStage(stage: number): TerrainId {
   return TERRAINS[index];
 }
 
+// ---- 大魔王 ----
+// 每 10 關一場。放在整場跑圖的最後一排,所以前面的閘門怎麼選,到這裡一次結算。
+// 造型沿用姊妹作的 STAGE_BOSS_MONSTERS(依階級 5 款)與 FINAL_BOSS_MONSTER。
+export const BOSS_EVERY = 10;
+/** 大魔王比同一排的一般波次強多少。太高會變成「沒滿裝就是死」,太低則感覺不出是魔王。 */
+export const BOSS_POWER_MULTIPLIER = 1.45;
+/** 大魔王要挨幾下才倒。一擊就倒的話沒有「打魔王」的過程。 */
+export const BOSS_HITS = 12;
+
+export function isBossStage(stage: number): boolean {
+  return stage > 0 && stage % BOSS_EVERY === 0;
+}
+
+/** 第幾場魔王(1、2、3…),用來挑造型。 */
+export function bossIndexForStage(stage: number): number {
+  return Math.floor(stage / BOSS_EVERY);
+}
+
 export const ROWS_PER_RUN = 12;
 /** 每隔幾排出現一排敵人(敵人排三條跑道都是敵人,一定要正面對上)。 */
 export const ENEMY_EVERY = 4;
@@ -249,7 +272,7 @@ export function baseHpForStage(stage: number): number {
 // 「亂選幾乎必死」——那不是難度是勸退。1.6 是 30%/24%,1.4 是 45%/35%(太寬鬆)。
 // 1.5 時亂選是第 1 關 59%、第 20 關 35%、第 100 關 29%:前期容錯、後期真的要看懂閘門,
 // 而「每排都挑最好」在所有關卡仍是 100% 過關(選對就一定過,不靠運氣)。
-export const GOOD_PATH_MARGIN = 1.5;
+export const GOOD_PATH_MARGIN = 1.2;
 
 export function enemyPowerForRow(stage: number, rowIndex: number): number {
   const base = baseAttackForStage(stage);
@@ -262,23 +285,21 @@ export function enemyPowerForRow(stage: number, rowIndex: number): number {
 // 兩條跑道就是二選一,所以每一排固定「一好一壞」:兩格都正面的話玩家隨便選都在變強,
 // 左右滑就失去意義了。陷阱那格用扣除而不是歸零,選錯還有救,但會很痛。
 //
-// 好的那格三選一,三種資源輪流出現,玩家才需要真的比較「這排我缺人、缺裝備、還是缺血」:
+// 好的那格二選一,兩種都直接影響戰力,玩家要比的是「這排我缺人還是缺裝備」:
 //   勇者 x2   —— 爆發,人數翻倍
 //   裝備強化  —— 全隊每個人都變強,人越多越划算
-//   血量 +N   —— 不加戰力,但撐得過下一波打不完的漏網之魚
 //
-// 三種好處刻意都跟「目前有幾個人」無關(乘法或加在血上)。這裡曾經放過「勇者 +N」,
-// 但那一格的價值是 N x 每人攻擊力——轉職成人多但每人較弱的路線之後,同一格的實際收益會
-// 縮水好幾倍,結果是「滿階職業反而比未轉職難過」。閘門的好壞不該取決於玩家怎麼轉職。
+// 曾經放過另外兩種好格,都拿掉了,理由記在這裡免得又被加回來:
+//   勇者 +N —— 價值是 N x 每人攻擊力。轉職成「人多但每人較弱」的路線之後同一格收益縮水
+//              好幾倍,變成「滿階職業反而比未轉職難過」。閘門好壞不該取決於玩家怎麼轉職。
+//   血量 +N —— 不加戰力,吃了也打不動下一波,實際上是「這排跳過」。二選一的節奏下,
+//              一個不影響戰力的選項等於沒得選。血量只留在陷阱那側(扣血)。
 function makeGateRow(rng: () => number, stage: number, rowIndex: number): RunNode[] {
   const tier = Math.floor(rowIndex / ENEMY_EVERY) + 1;
-  const goodRoll = rng();
   const good: GateEffect =
-    goodRoll < 0.4
+    rng() < 0.45
       ? { stat: 'heroes', op: 'mul', value: 2 }
-      : goodRoll < 0.75
-        ? { stat: 'gear', op: 'add', value: 1 }
-        : { stat: 'hp', op: 'add', value: Math.round(baseHpForStage(stage) * 0.3 * tier) };
+      : { stat: 'gear', op: 'add', value: 1 };
   const badRoll = rng();
   const bad: GateEffect =
     badRoll < 0.45
@@ -399,8 +420,45 @@ export function enemyRarityForRow(rowIndex: number): Rarity {
 /** 一波混幾種怪。種類只影響外觀,不影響戰力——所以可以放心多抽幾種。 */
 export const SPECIES_PER_WAVE = 3;
 
+/** 這一排是不是大魔王:魔王關的最後一排敵人。 */
+function isBossRow(stage: number, rowIndex: number): boolean {
+  return isBossStage(stage) && rowIndex === lastEnemyRowIndex();
+}
+
+export function lastEnemyRowIndex(): number {
+  return Math.floor(ROWS_PER_RUN / ENEMY_EVERY) * ENEMY_EVERY - 1;
+}
+
+/** 這一場的魔王長什麼樣。前 5 場用 5 款關卡魔王,第 6 場以後都是大魔王本尊。 */
+export function bossSpeciesForStage(stage: number): WaveSpecies {
+  const index = bossIndexForStage(stage);
+  if (index >= 1 && index <= 5) {
+    const spec = getStageBossMonster(index as JobTier);
+    return { id: spec.id, name: spec.name };
+  }
+  return { id: FINAL_BOSS_MONSTER.id, name: FINAL_BOSS_MONSTER.name };
+}
+
 function makeEnemyRow(rng: () => number, stage: number, rowIndex: number): RunNode[] {
-  const power = enemyPowerForRow(stage, rowIndex);
+  const boss = isBossRow(stage, rowIndex);
+  const power = Math.round(enemyPowerForRow(stage, rowIndex) * (boss ? BOSS_POWER_MULTIPLIER : 1));
+  if (boss) {
+    const species = bossSpeciesForStage(stage);
+    const enemy: EnemyEffect = {
+      power,
+      reward: Math.round(power * 0.6),
+      boss: true,
+      hitsPerUnit: BOSS_HITS,
+      species: [species],
+      name: species.name,
+      units: 1,
+    };
+    return Array.from({ length: LANE_COUNT }, (_, lane) => ({
+      lane: lane as Lane,
+      kind: 'enemy' as const,
+      enemy,
+    }));
+  }
   const rarity = enemyRarityForRow(rowIndex);
   // 抽到重複的就換一階稀有度再抽,盡量湊滿不同的造型;湊不滿也不強求(池子有限)。
   const species: WaveSpecies[] = [];
@@ -465,12 +523,14 @@ export function applyGate(state: RunState, gate: GateEffect): RunState {
     // 人數下限 1:連吃幾次減半會趨近 0,全隊死光之後怎麼跑都沒有意義,那不是懲罰是卡死。
     next.heroes = Math.max(1, Math.round(next.heroes));
   } else if (gate.stat === 'gear') {
-    // 裝備等級有上下限:上限是因為只有 5 階武器美術,下限 1 是不能沒有武器。
-    // 已經頂級還吃到強化就只剩「賺到一次沒作用的好格」,比讓數值無限膨脹好。
-    const nextGear = Math.min(MAX_GEAR, Math.max(1, next.gear + gate.value));
-    const delta = nextGear - next.gear;
-    next.gear = nextGear;
-    next.perHero = Math.max(1, Math.round(next.perHero * Math.pow(GEAR_STEP, delta)));
+    // 等級只是「拿哪一把武器」的外觀,夾在 1~5(只有 5 階武器美術);**傷害的增減照算,不受夾擠影響**。
+    //
+    // 先前是連傷害一起夾:結果 1 階的人吃到「裝備損壞」完全不痛(已經最低了),而起跑就 2 階的
+    // 近戰職業會實打實被扣一次。實測滿階職業對亂選玩家反而是負的(-0.4 ~ -1.7 個百分點),
+    // 因為「起跑裝備好」在這個規則下等於「更怕裝備損壞」——養成越高越吃虧,完全反了。
+    // 現在等級與傷害分開算:等級到頂/到底只是圖不再換,閘門的效果永遠生效。
+    next.gear = Math.min(MAX_GEAR, Math.max(1, next.gear + gate.value));
+    next.perHero = Math.max(1, Math.round(next.perHero * Math.pow(GEAR_STEP, gate.value)));
   } else {
     next.maxHp = gate.op === 'mul' ? Math.round(next.maxHp * gate.value) : next.maxHp + gate.value;
     next.maxHp = Math.max(1, next.maxHp);

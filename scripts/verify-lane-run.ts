@@ -63,21 +63,31 @@ check('不同 seed 不一樣', JSON.stringify(createRun(999, 5)) !== JSON.string
 
 // --- 敵人的量化呈現(每隻敵人都要指得到既有素材)---
 const ART_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'sprites', 'monsters', 'ai');
-const archetypeOf = (id: string) => (id.includes('-') ? id.slice(0, id.lastIndexOf('-')) : id);
+// 一般小怪的檔名是 {原型}_open.png,魔王另外一組命名(stage_boss_tierN → boss_tierN_open.png)。
+const artFileFor = (id: string) => {
+  if (id === 'final_boss') return 'boss_final_open.png';
+  if (id.startsWith('stage_boss_')) return `${id.replace('stage_boss_', 'boss_')}_open.png`;
+  return `${id.includes('-') ? id.slice(0, id.lastIndexOf('-')) : id}_open.png`;
+};
 const allEnemies = [1, 5, 20, 40].flatMap((s) =>
   Array.from({ length: 40 }, (_, t) => createRun(t * 17 + 3, s))
     .flatMap((r) => r.flatMap((row) => row.nodes))
     .flatMap((n) => (n.kind === 'enemy' && n.enemy ? [n.enemy] : [])));
 const allSpecies = allEnemies.flatMap((e) => e.species);
-check('每一波都混了好幾種怪(整關不會只看到同一隻)',
-  allEnemies.every((e) => e.species.length === SPECIES_PER_WAVE),
+const mobWaves = allEnemies.filter((e) => !e.boss);
+const bossWaves = allEnemies.filter((e) => e.boss);
+check('每一波小怪都混了好幾種(整關不會只看到同一隻)',
+  mobWaves.every((e) => e.species.length === SPECIES_PER_WAVE),
   `每波 ${SPECIES_PER_WAVE} 種`);
+check('大魔王只有一隻', bossWaves.every((e) => e.units === 1 && e.species.length === 1),
+  `${bossWaves.length} 場魔王`);
 check('同一波裡的怪種不重複', allEnemies.every((e) => new Set(e.species.map((sp) => sp.id)).size === e.species.length));
 check('每隻敵人都有名字與造型 id', allSpecies.every((sp) => sp.name.length > 0 && sp.id.length > 0));
 check('敵人造型 id 都在怪物圖庫裡', allSpecies.every((sp) => hasMonsterVisual(sp.id)),
   `${new Set(allSpecies.map((sp) => sp.id)).size} 種造型`);
-check('每種造型都有對應的既有素材檔', allSpecies.every((sp) => existsSync(join(ART_DIR, `${archetypeOf(sp.id)}_open.png`))),
-  [...new Set(allSpecies.map((sp) => archetypeOf(sp.id)))].join(' '));
+check('每種造型都有對應的既有素材檔(含魔王)',
+  allSpecies.every((sp) => existsSync(join(ART_DIR, artFileFor(sp.id)))),
+  [...new Set(allSpecies.map((sp) => artFileFor(sp.id)))].length + ' 個檔案');
 check('同一排的每一格都是同一批敵人', run.filter((r) => r.nodes.every((n) => n.kind === 'enemy'))
   .every((r) => new Set(r.nodes.map((n) => JSON.stringify(n.enemy!.species))).size === 1));
 const unitsByRow = run.filter((r) => r.nodes.every((n) => n.kind === 'enemy')).map((r) => r.nodes[0].enemy!.units);

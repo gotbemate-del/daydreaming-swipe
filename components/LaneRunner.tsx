@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Image, PanResponder, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { jobTitle, runStartFor, type LaneJob } from '../game/laneJobs';
+import { jobTitle, type LaneJob } from '../game/laneJobs';
 import {
   gateLabel,
   gateSpan,
@@ -12,6 +12,7 @@ import {
   totalAttack,
   VISIBLE_AHEAD,
   type RunRow,
+  type RunStart,
   type TerrainId,
 } from '../game/laneRun';
 import { useLaneRun, type Projectile, type WaveView } from '../hooks/useLaneRun';
@@ -38,6 +39,8 @@ const SPAWN_MARGIN = 72;
 const GATE_CULL_PAST = 25;
 const GATE_HEIGHT = 50;
 const MONSTER_SIZE = 42;
+/** 大魔王畫多大。要一眼看出「這不是小怪」,但不能寬到蓋掉兩條跑道。 */
+const BOSS_SIZE = 132;
 const PROJECTILE_SIZE = 30;
 
 /** 眨眼:三張圖是睜眼→半闔→閉眼,不是三個動作,所以來回播而不是循環播。 */
@@ -90,12 +93,14 @@ const SPECKS = Array.from({ length: 26 }, (_, i) => ({
 interface Props {
   stage: number;
   job: LaneJob;
+  /** 起跑數值(轉職 + 技能算完的結果)。畫面不自己算養成,由 app 層算好傳進來。 */
+  start: RunStart;
   onCleared: () => void;
   onRetry: () => void;
 }
 
-export function LaneRunner({ stage, job, onCleared, onRetry }: Props) {
-  const run = useLaneRun(stage, runStartFor(job));
+export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
+  const run = useLaneRun(stage, start);
   const { state, distance, heroOffset, upcoming, wave, projectiles, feedback, steer, dragTo } = run;
   const heroArt = jobHeroArt(job?.archetype ?? null, job?.branch ?? 'A', job?.tier ?? 1);
   const attack = totalAttack(state);
@@ -197,27 +202,25 @@ export function LaneRunner({ stage, job, onCleared, onRetry }: Props) {
    */
   function renderWave(w: WaveView) {
     if (trackWidth <= 0) return null;
+    const size = w.boss ? BOSS_SIZE : MONSTER_SIZE;
     return w.monsters.map((m) => {
       if (w.down[m.index]) return null;
       const ahead = m.distance - distance;
       if (ahead > VISIBLE_AHEAD || ahead < 0) return null;
       const species = w.species[m.speciesIndex] ?? w.species[0];
+      // 魔王固定站在跑道正中央:牠佔滿兩條跑道,躲不掉,也不該讓玩家以為躲得掉。
+      const left = (w.boss ? 0.5 : m.offset) * trackWidth - size / 2;
+      const top = bottomYFor(ahead) - size;
+      const hpLeft = Math.max(0, 1 - w.hitsOn[m.index] / w.hitsPerUnit);
       return (
-        <Image
-          key={m.index}
-          source={monsterArt(species.id)}
-          resizeMode="contain"
-          style={[
-            styles.pixelArt,
-            styles.floating,
-            {
-              left: m.offset * trackWidth - MONSTER_SIZE / 2,
-              top: bottomYFor(ahead) - MONSTER_SIZE,
-              width: MONSTER_SIZE,
-              height: MONSTER_SIZE,
-            },
-          ]}
-        />
+        <View key={m.index} style={[styles.floating, { left, top, width: size }]} pointerEvents="none">
+          <Image source={monsterArt(species.id)} resizeMode="contain" style={[styles.pixelArt, { width: size, height: size }]} />
+          {w.boss && (
+            <View style={styles.bossHpTrack}>
+              <View style={[styles.bossHpFill, { width: `${hpLeft * 100}%` }]} />
+            </View>
+          )}
+        </View>
       );
     });
   }
@@ -274,7 +277,9 @@ export function LaneRunner({ stage, job, onCleared, onRetry }: Props) {
       <View style={styles.alertRow}>
         {incoming && (
           <Text style={styles.alertText} numberOfLines={1}>
-            來襲 {incoming.name} x{incoming.units} · 戰力 {incoming.power}
+            {incoming.boss
+              ? `大魔王 ${incoming.name} · 戰力 ${incoming.power}`
+              : `來襲 ${incoming.name} x${incoming.units} · 戰力 ${incoming.power}`}
           </Text>
         )}
       </View>
@@ -455,6 +460,16 @@ const styles = StyleSheet.create({
   gateTrap: { backgroundColor: '#3a2323', borderColor: '#e05050' },
   gateText: { color: '#f2f2f2', fontSize: 13, fontWeight: '700', textAlign: 'center' },
   floating: { position: 'absolute' },
+  bossHpTrack: {
+    height: 6,
+    borderRadius: 3,
+    marginTop: 2,
+    backgroundColor: '#2a2a35',
+    borderWidth: 1,
+    borderColor: '#e05050',
+    overflow: 'hidden',
+  },
+  bossHpFill: { height: '100%', backgroundColor: '#e05050' },
   pixelArt: Platform.OS === 'web' ? ({ imageRendering: 'pixelated' } as object) : {},
   hero: { position: 'absolute' },
   feedbackRow: { height: 22, alignItems: 'center', justifyContent: 'center' },
