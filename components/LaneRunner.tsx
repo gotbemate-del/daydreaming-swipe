@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Image, PanResponder, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { jobTitle, runStartFor, type LaneJob } from '../game/laneJobs';
 import {
   gateLabel,
   laneCenterOffset,
   LANE_COUNT,
   runLength,
+  totalAttack,
   VISIBLE_AHEAD,
   type RunRow,
 } from '../game/laneRun';
 import { useLaneRun, type Projectile, type WaveView } from '../hooks/useLaneRun';
-import { HERO_ASPECT, HERO_FRAMES, monsterArt, PROJECTILE_ART } from './artAssets';
+import { HERO_ASPECT, HERO_FRAMES, jobHeroArt, monsterArt, weaponArt } from './artAssets';
 
 // 跑道畫面。角色固定在跑道底部、物件由上往下逼近——這是「角色在跑」最省效能的表現方式:
 // 真的移動角色的話背景要跟著捲、視差要對齊,在 RN 上等於自己寫一個 2D 引擎;讓物件往下移
@@ -18,7 +20,7 @@ import { HERO_ASPECT, HERO_FRAMES, monsterArt, PROJECTILE_ART } from './artAsset
 //
 // 橫向則相反:角色是真的跟著手指走的(見 panResponder),位置連續、不是三格跳。
 const TRACK_HEIGHT = 500;
-const HERO_HEIGHT = 96;
+const HERO_HEIGHT = 84;
 const HERO_WIDTH = Math.round(HERO_HEIGHT * HERO_ASPECT);
 const HERO_BOTTOM = 10;
 /** 勇者的頭頂。所有物件都是「底邊碰到這條線」的瞬間結算,跟 laneRun 的結算點對齊。 */
@@ -48,14 +50,30 @@ function bottomYFor(ahead: number): number {
   return HEAD_Y - (ahead / VISIBLE_AHEAD) * (HEAD_Y + SPAWN_MARGIN);
 }
 
+// 隊形:主角在最前面(畫面最下),其他人往後往兩側散開。畫面上最多畫這幾個,人數再多只加數字——
+// 真的畫 64 個人的話一格會被塞滿、看不出跑道,而且每個 tick 要重排 64 個絕對定位的圖。
+const SQUAD_SLOTS = [
+  { dx: 0, dy: 0 },
+  { dx: -20, dy: -13 },
+  { dx: 20, dy: -13 },
+  { dx: -38, dy: -25 },
+  { dx: 38, dy: -25 },
+  { dx: -13, dy: -30 },
+  { dx: 13, dy: -30 },
+];
+
 interface Props {
   stage: number;
-  onCleared: (stage: number) => void;
+  job: LaneJob;
+  onCleared: () => void;
+  onRetry: () => void;
 }
 
-export function LaneRunner({ stage, onCleared }: Props) {
-  const run = useLaneRun(stage);
-  const { state, distance, heroOffset, upcoming, wave, projectiles, feedback, steer, dragTo, restart } = run;
+export function LaneRunner({ stage, job, onCleared, onRetry }: Props) {
+  const run = useLaneRun(stage, runStartFor(job));
+  const { state, distance, heroOffset, upcoming, wave, projectiles, feedback, steer, dragTo } = run;
+  const heroArt = jobHeroArt(job?.archetype ?? null, job?.branch ?? 'A', job?.tier ?? 1);
+  const attack = totalAttack(state);
 
   const [trackWidth, setTrackWidth] = useState(0);
   const trackWidthRef = useRef(0);
@@ -111,6 +129,8 @@ export function LaneRunner({ stage, onCleared }: Props) {
   );
   // 跑起來的上下微晃。用已跑距離當相位,所以跑得越快晃得越快,不必另外開一個計時器。
   const bob = state.phase === 'running' ? Math.round(Math.sin(distance / 7) * 2) : 0;
+  // 由後往前畫(slice 之後 reverse),主角才會蓋在隊友上面而不是被壓在後面。
+  const drawnSlots = SQUAD_SLOTS.slice(0, Math.min(state.heroes, SQUAD_SLOTS.length)).reverse();
   const incoming = wave ? upcoming.find((r) => r.index === wave.rowIndex)?.nodes[0].enemy : undefined;
 
   function renderGateRow(row: RunRow) {
@@ -175,7 +195,7 @@ export function LaneRunner({ stage, onCleared }: Props) {
     return (
       <Image
         key={p.id}
-        source={PROJECTILE_ART}
+        source={weaponArt(job?.archetype ?? null, state.gear)}
         resizeMode="contain"
         style={[
           styles.pixelArt,
@@ -195,9 +215,14 @@ export function LaneRunner({ stage, onCleared }: Props) {
   return (
     <View style={styles.wrapper}>
       <View style={styles.hud}>
-        <Text style={styles.hudStat}>攻擊 {state.attack}</Text>
-        <Text style={styles.hudStat}>血量 {state.hp}/{state.maxHp}</Text>
-        <Text style={styles.hudStat}>金幣 {state.coins}</Text>
+        <Text style={styles.hudStat}>勇者 {state.heroes}</Text>
+        <Text style={styles.hudStat}>裝備 {state.gear} 階</Text>
+        <Text style={styles.hudStat}>戰力 {attack}</Text>
+      </View>
+      <View style={styles.hud}>
+        <Text style={styles.hudSub}>{jobTitle(job)}</Text>
+        <Text style={styles.hudSub}>血量 {state.hp}/{state.maxHp}</Text>
+        <Text style={styles.hudSub}>金幣 {state.coins}</Text>
       </View>
       <View style={styles.hpTrack}>
         <View style={[styles.hpFill, { width: `${hpRatio * 100}%` }, hpRatio <= 0.25 && styles.hpFillDanger]} />
@@ -251,16 +276,31 @@ export function LaneRunner({ stage, onCleared }: Props) {
         {wave && renderWave(wave)}
         {projectiles.map(renderProjectile)}
 
-        {/* 角色:橫向位置完全跟著手指(heroOffset),不吸附到跑道中央 */}
-        <Image
-          source={HERO_FRAMES[BLINK_SEQUENCE[blinkStep]]}
-          resizeMode="contain"
-          style={[
-            styles.hero,
-            styles.pixelArt,
-            { left: heroLeft, bottom: HERO_BOTTOM + bob, width: HERO_WIDTH, height: HERO_HEIGHT },
-          ]}
-        />
+        {/* 勇者群:橫向位置完全跟著手指(heroOffset),不吸附到跑道中央。
+            由後往前畫,主角才會蓋在隊友上面。 */}
+        {drawnSlots.map((slot, i) => (
+          <Image
+            key={i}
+            source={job === null ? HERO_FRAMES[BLINK_SEQUENCE[blinkStep]] : heroArt}
+            resizeMode="contain"
+            style={[
+              styles.hero,
+              styles.pixelArt,
+              {
+                left: heroLeft + slot.dx,
+                bottom: HERO_BOTTOM + bob - slot.dy,
+                width: HERO_WIDTH,
+                height: HERO_HEIGHT,
+                zIndex: i + 1,
+              },
+            ]}
+          />
+        ))}
+        {state.heroes > SQUAD_SLOTS.length && (
+          <Text style={[styles.squadCount, { left: heroLeft - 12, bottom: HERO_BOTTOM + HERO_HEIGHT - 6 }]}>
+            x{state.heroes}
+          </Text>
+        )}
       </View>
 
       <View style={styles.feedbackRow}>
@@ -278,7 +318,7 @@ export function LaneRunner({ stage, onCleared }: Props) {
       </View>
 
       {state.phase === 'running' ? (
-        <Text style={styles.hint}>第 {run.stage} 關 · 拖著勇者左右移動</Text>
+        <Text style={styles.hint}>第 {stage} 關 · 拖著勇者左右移動</Text>
       ) : (
         <View style={styles.controls}>
           <Text style={state.phase === 'cleared' ? styles.resultWin : styles.resultLose}>
@@ -286,14 +326,7 @@ export function LaneRunner({ stage, onCleared }: Props) {
           </Text>
           <Pressable
             style={styles.againButton}
-            onPress={() => {
-              if (state.phase === 'cleared') {
-                onCleared(run.stage);
-                restart(run.stage + 1);
-              } else {
-                restart(run.stage);
-              }
-            }}
+            onPress={() => (state.phase === 'cleared' ? onCleared() : onRetry())}
           >
             <Text style={styles.againLabel}>{state.phase === 'cleared' ? '下一關' : '再來一次'}</Text>
           </Pressable>
@@ -316,6 +349,14 @@ const styles = StyleSheet.create({
   wrapper: { width: '100%', maxWidth: 380, alignSelf: 'center', gap: 6 },
   hud: { flexDirection: 'row', justifyContent: 'space-between' },
   hudStat: { color: '#f2f2f2', fontSize: 13, fontWeight: '700' },
+  hudSub: { color: '#8a8a95', fontSize: 11 },
+  squadCount: {
+    position: 'absolute',
+    color: '#e0a95c',
+    fontSize: 15,
+    fontWeight: '700',
+    zIndex: 20,
+  },
   hpTrack: { height: 8, borderRadius: 4, backgroundColor: '#2a2a35', overflow: 'hidden' },
   hpFill: { height: '100%', backgroundColor: '#5ec26a' },
   hpFillDanger: { backgroundColor: '#e05050' },

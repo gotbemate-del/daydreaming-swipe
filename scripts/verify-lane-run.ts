@@ -7,7 +7,8 @@ import {
   bestLane, clampOffset, createRun, ENEMY_EVERY, fireIntervalMs, initialRunState, LANE_COUNT,
   laneCenterOffset, laneFromOffset, MAX_FIRE_INTERVAL_MS, MAX_WAVE_SIZE, MIN_FIRE_INTERVAL_MS,
   HITS_PER_MONSTER, moveLane, resolveEnemy, resolveRow, ROWS_PER_RUN, runSpeed, secondsPerRow, WAVE_LENGTH,
-  waveKillCount, waveMonsters, waveSize, worstLane, type Lane, type RunState,
+  START_OFFSET, totalAttack, waveKillCount, waveMonsters, waveSize, worstLane,
+  type Lane, type RunState,
 } from '../game/laneRun';
 import { hasMonsterVisual } from '../game/sprites/monsters';
 
@@ -28,7 +29,8 @@ check('一排的反應時間 2.2s -> 0.9s', Math.abs(secs[0] - 2.22) < 0.05 && M
 // --- 跑道切換 ---
 check('往左到底不會超出', moveLane(0, 'left') === 0);
 check('往右到底不會超出', moveLane((LANE_COUNT - 1) as Lane, 'right') === LANE_COUNT - 1);
-check('中間左右都能動', moveLane(1, 'left') === 0 && moveLane(1, 'right') === 2);
+check('兩條跑道之間來回切得動', moveLane(0, 'right') === 1 && moveLane(1, 'left') === 0);
+check('起跑站在正中央(兩條跑道沒有中立格,但也不能偏袒某一邊)', START_OFFSET === 0.5);
 
 // --- 連續位置(手指拖到哪,角色就在哪)---
 const lanes = Array.from({ length: LANE_COUNT }, (_, i) => i as Lane);
@@ -36,25 +38,25 @@ check('跑道中央換算回原本那條', lanes.every((l) => laneFromOffset(lan
 check('兩端不會算到跑道外', laneFromOffset(0) === 0 && laneFromOffset(1) === LANE_COUNT - 1);
 check('拖出跑道會被夾回範圍內', clampOffset(-3) === 0 && clampOffset(4) === 1 && clampOffset(0.42) === 0.42);
 check('非數值不會讓角色消失', clampOffset(Number.NaN) === 0.5);
-check('交界剛好落在右邊那格', laneFromOffset(1 / 3) === 1 && laneFromOffset(1 / 3 - 1e-9) === 0);
+check('交界剛好落在右邊那格', laneFromOffset(0.5) === 1 && laneFromOffset(0.5 - 1e-9) === 0);
 // 拖曳是連續的,所以「一路慢慢拖過去」中間每一步都要有明確歸屬,不能出現跳號或無主區間。
 const walk = Array.from({ length: 301 }, (_, i) => laneFromOffset(i / 300));
-check('從左拖到右,格子只會 0→1→2 依序遞增',
+check('從左拖到右,格子只會依序遞增不跳號',
   walk.every((l, i) => i === 0 || l === walk[i - 1] || l === walk[i - 1] + 1) && walk[0] === 0
   && walk[walk.length - 1] === LANE_COUNT - 1 && new Set(walk).size === LANE_COUNT);
 
 // --- 跑圖結構 ---
 const run = createRun(1234, 5);
 check('排數正確', run.length === ROWS_PER_RUN);
-check('每排都有 3 個節點', run.every((r) => r.nodes.length === LANE_COUNT));
-check('每排三條跑道各一個節點', run.every((r) => new Set(r.nodes.map((n) => n.lane)).size === LANE_COUNT));
+check(`每排都有 ${LANE_COUNT} 個節點`, run.every((r) => r.nodes.length === LANE_COUNT));
+check('每條跑道各一個節點', run.every((r) => new Set(r.nodes.map((n) => n.lane)).size === LANE_COUNT));
 check('距離嚴格遞增', run.every((r, i) => i === 0 || r.distance > run[i - 1].distance));
 const enemyRows = run.filter((r) => r.nodes.every((n) => n.kind === 'enemy'));
 check(`每 ${ENEMY_EVERY} 排一次敵人`, enemyRows.length === Math.floor(ROWS_PER_RUN / ENEMY_EVERY),
   `${enemyRows.length} 排敵人`);
 const gateRows = run.filter((r) => r.nodes.every((n) => n.kind === 'gate'));
-check('閘門排三格效果不完全相同', gateRows.every((r) =>
-  new Set(r.nodes.map((n) => JSON.stringify(n.gate))).size >= 2));
+check('閘門排兩格效果一定不一樣(不然就不用選了)', gateRows.every((r) =>
+  new Set(r.nodes.map((n) => JSON.stringify(n.gate))).size === 2));
 check('同一 seed 可重現', JSON.stringify(createRun(1234, 5)) === JSON.stringify(run));
 check('不同 seed 不一樣', JSON.stringify(createRun(999, 5)) !== JSON.stringify(run));
 
@@ -70,7 +72,7 @@ check('敵人造型 id 都在怪物圖庫裡', allEnemies.every((e) => hasMonste
   `${new Set(allEnemies.map((e) => e.monsterId)).size} 種造型`);
 check('每種造型都有對應的既有素材檔', allEnemies.every((e) => existsSync(join(ART_DIR, `${archetypeOf(e.monsterId)}_open.png`))),
   [...new Set(allEnemies.map((e) => archetypeOf(e.monsterId)))].join(' '));
-check('同一排的三格是同一批敵人', run.filter((r) => r.nodes.every((n) => n.kind === 'enemy'))
+check('同一排的每一格都是同一批敵人', run.filter((r) => r.nodes.every((n) => n.kind === 'enemy'))
   .every((r) => new Set(r.nodes.map((n) => n.enemy!.monsterId)).size === 1));
 const unitsByRow = run.filter((r) => r.nodes.every((n) => n.kind === 'enemy')).map((r) => r.nodes[0].enemy!.units);
 check('越後面的波次小怪越多(數量看得出難度)', unitsByRow.every((u, i) => i === 0 || u >= unitsByRow[i - 1]),
@@ -87,22 +89,23 @@ check('整波都在結算點前方一個波長內', wave.every((m) =>
   m.distance > waveRow.distance - WAVE_LENGTH - 0.001 && m.distance <= waveRow.distance));
 check('小怪散在不同跑道(不會整波擠同一條)',
   new Set(wave.map((m) => m.lane)).size >= 2, `用到 ${new Set(wave.map((m) => m.lane)).size} 條`);
-// 單一波沒用滿三條是正常的,但長期分佈不能偏——偏掉就代表雜湊常數又跟 LANE_COUNT 共因數了。
-const laneTally = [0, 0, 0];
+// 單一波沒用滿每一條是正常的,但長期分佈不能偏——偏掉就代表雜湊常數又跟 LANE_COUNT 共因數了。
+const laneTally = new Array(LANE_COUNT).fill(0);
 for (let row = 0; row < 400; row++) {
   for (const m of waveMonsters(row, MAX_WAVE_SIZE, 1000)) laneTally[m.lane]++;
 }
-const laneShare = laneTally.map((n) => n / (400 * MAX_WAVE_SIZE));
-check('長期看三條跑道分佈平均', laneShare.every((s) => s > 0.28 && s < 0.39),
-  laneShare.map((s) => (s * 100).toFixed(0) + '%').join(' / '));
+const laneShare = laneTally.map((n: number) => n / (400 * MAX_WAVE_SIZE));
+const evenShare = 1 / LANE_COUNT;
+check('長期看每條跑道分佈平均', laneShare.every((s: number) => Math.abs(s - evenShare) < evenShare * 0.15),
+  laneShare.map((s: number) => (s * 100).toFixed(0) + '%').join(' / '));
 check('同一波每次算出來都一樣(重播對得起來)',
   JSON.stringify(waveMonsters(waveRow.index, 9, waveRow.distance)) === JSON.stringify(wave));
 
 // --- 打掉幾隻 vs 扣多少血:同一件事的兩種說法 ---
 const powerSample = 200;
-const baseState: RunState = { ...initialRunState(1), attack: 0 };
+const baseState: RunState = initialRunState(1);
 const damageAt = (atk: number) => {
-  const before = { ...baseState, attack: atk };
+  const before = { ...baseState, heroes: 1, perHero: atk };
   const after = resolveEnemy(before, { power: powerSample, reward: 0, monsterId: 'blob-1', name: '史', units: 9 });
   return before.hp - after.state.hp;
 };
@@ -172,15 +175,16 @@ check('亂選一定比選最爛好', rows2.every((x) => x.r > x.w));
 let minAttack = Infinity;
 for (let t = 0; t < 200; t++) {
   const res = play(t * 13 + 5, 20, pickWorst);
-  minAttack = Math.min(minAttack, res.st.attack);
+  minAttack = Math.min(minAttack, totalAttack(res.st));
 }
-check('攻擊力永遠 >= 1(不會被連續陷阱卡死)', minAttack >= 1, `最低 ${minAttack}`);
+check('戰力永遠 >= 1(不會被連續陷阱卡死)', minAttack >= 1, `最低 ${minAttack}`);
 
 // --- 選最佳時數值的成長感 ---
 const sample = play(42, 10, pickBest);
-console.log(`\n第10關全選最佳:攻擊 ${initialRunState(10).attack} -> ${sample.st.attack}、`
+console.log(`\n第10關全選最佳:戰力 ${totalAttack(initialRunState(10))} -> ${totalAttack(sample.st)}`
+  + `(${sample.st.heroes} 人 x 每人 ${sample.st.perHero}、裝備 ${sample.st.gear} 階)、`
   + `血量 ${sample.st.hp}/${sample.st.maxHp}、金幣 ${sample.st.coins}`);
-check('全選最佳時攻擊力明顯成長(>= 8 倍)', sample.st.attack >= initialRunState(10).attack * 8);
+check('全選最佳時戰力明顯成長(>= 8 倍)', totalAttack(sample.st) >= totalAttack(initialRunState(10)) * 8);
 
 console.log(fail === 0 ? '\n全部通過' : `\n${fail} 項失敗`);
 process.exit(fail === 0 ? 0 : 1);

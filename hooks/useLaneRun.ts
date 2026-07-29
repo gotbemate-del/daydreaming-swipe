@@ -13,11 +13,15 @@ import {
   resolveRow,
   runLength,
   runSpeed,
+  START_OFFSET,
+  totalAttack,
   VISIBLE_AHEAD,
   waveKillCount,
   waveMonsters,
+  DEFAULT_RUN_START,
   type Lane,
   type RunRow,
+  type RunStart,
   type RunState,
   type WaveMonster,
 } from '../game/laneRun';
@@ -82,7 +86,6 @@ export interface LaneRunView {
   dragTo: (offset: number) => void;
   /** 方向鍵:滑順移到隔壁跑道中央 */
   steer: (direction: 'left' | 'right') => void;
-  restart: (nextStage?: number) => void;
   stage: number;
 }
 
@@ -96,10 +99,12 @@ interface WaveRuntime {
   lastFireAt: number;
 }
 
-export function useLaneRun(initialStage: number): LaneRunView {
-  const [stage, setStage] = useState(initialStage);
-  const [rows, setRows] = useState<RunRow[]>(() => createRun(Math.floor(Math.random() * 1e9), initialStage));
-  const [state, setState] = useState<RunState>(() => initialRunState(initialStage));
+// 一場跑圖就是一個 hook 實例:重跑、下一關都由外層換 key 重新掛載,不在 hook 裡自己 reset。
+// 自己 reset 要記得清掉的東西有八個(波次、飛行中的武器、已結算的排、計時起點…),
+// 漏掉任何一個就會出現「上一場的怪出現在這一場」這種難查的殘留。
+export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): LaneRunView {
+  const [rows] = useState<RunRow[]>(() => createRun(Math.floor(Math.random() * 1e9), stage));
+  const [state, setState] = useState<RunState>(() => initialRunState(stage, start));
   const [distance, setDistance] = useState(0);
   const [feedback, setFeedback] = useState<RunFeedback | null>(null);
   const [wave, setWave] = useState<WaveView | null>(null);
@@ -120,30 +125,11 @@ export function useLaneRun(initialStage: number): LaneRunView {
 
   // 角色位置同時放在 ref 與 state:ref 給結算用(要拿到「這一瞬間」的位置,不能慢一拍,
   // 慢一拍就會發生「明明已經拉到隔壁格了卻吃到原本那格」),state 只是拿來觸發重畫。
-  const centerOffset = laneCenterOffset(1);
-  const offsetRef = useRef(centerOffset);
-  const targetRef = useRef(centerOffset);
-  const [heroOffset, setHeroOffset] = useState(centerOffset);
+  const offsetRef = useRef(START_OFFSET);
+  const targetRef = useRef(START_OFFSET);
+  const [heroOffset, setHeroOffset] = useState(START_OFFSET);
 
   const speed = runSpeed(stage);
-
-  const restart = useCallback((nextStage?: number) => {
-    const s = nextStage ?? stage;
-    setStage(s);
-    setRows(createRun(Math.floor(Math.random() * 1e9), s));
-    setState(initialRunState(s));
-    setDistance(0);
-    setFeedback(null);
-    passedRef.current = new Set();
-    startedAtRef.current = Date.now();
-    offsetRef.current = centerOffset;
-    targetRef.current = centerOffset;
-    setHeroOffset(centerOffset);
-    waveRef.current = null;
-    projectilesRef.current = [];
-    setWave(null);
-    setProjectiles([]);
-  }, [stage, centerOffset]);
 
   useEffect(() => {
     if (state.phase !== 'running') return;
@@ -201,7 +187,7 @@ export function useLaneRun(initialStage: number): LaneRunView {
 
     // 打得掉幾隻每個 tick 重算:波次中途吃到閘門,攻擊力一變,能清掉的隻數就跟著變。
     // 前 kills 隻是「打得倒的」,後面那幾隻挨再多下也不會倒——那就是戰力壓不過的部分。
-    const kills = waveKillCount(stateRef.current.attack, current.power, current.monsters.length);
+    const kills = waveKillCount(totalAttack(stateRef.current), current.power, current.monsters.length);
     const isDown = (i: number) => i < kills && current!.hitsOn[i] >= HITS_PER_MONSTER;
 
     // --- 丟武器 ---
@@ -328,7 +314,6 @@ export function useLaneRun(initialStage: number): LaneRunView {
     speed,
     dragTo,
     steer,
-    restart,
     stage,
   };
 }

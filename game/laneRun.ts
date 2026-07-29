@@ -19,8 +19,10 @@
 import { pickMonster } from './monsters';
 import type { Rarity } from './trigger';
 
-export const LANE_COUNT = 3;
-export type Lane = 0 | 1 | 2;
+// 兩條跑道。三條的時候「中間」是個安全的預設位置,玩家不動也常常沒事;兩條沒有中立選項,
+// 每一排都是二選一,一定要表態——這才是短影音廣告裡那種節奏。
+export const LANE_COUNT = 2;
+export type Lane = 0 | 1;
 
 // ---- 角色的橫向位置 ----
 // offset 是連續值:0 = 跑道最左緣、1 = 最右緣。玩家是「拉著角色走」,所以中間任何位置都合法,
@@ -43,9 +45,15 @@ export function laneFromOffset(offset: number): Lane {
 
 export type NodeKind = 'gate' | 'enemy' | 'coin';
 
-/** 閘門效果。加法給穩定成長,乘法給爆發——兩種混在同一排,玩家才需要真的算一下。 */
+/**
+ * 閘門效果。三種資源各有各的手感,混在一起玩家才需要真的比較:
+ *   heroes 勇者人數——乘法成長最快,是畫面上最爽的那一種(一排變兩排)
+ *   gear   裝備等級——每升一級全隊每個人都變強,乘上人數之後才是總戰力
+ *   hp     血量——只讓你活著,不會讓你打得動
+ * 加法給穩定成長、乘法給爆發,兩種混在同一排,玩家才需要真的算一下。
+ */
 export interface GateEffect {
-  stat: 'attack' | 'hp';
+  stat: 'heroes' | 'gear' | 'hp';
   op: 'add' | 'mul';
   value: number;
 }
@@ -81,13 +89,54 @@ export interface RunState {
    * 這裡只保留「換算成格子」的結果——純邏輯層不需要知道手指拖到哪個像素。
    */
   lane: Lane;
-  attack: number;
+  /** 場上的勇者人數。閘門 x2 加的是這個——畫面上真的會多出一排人。 */
+  heroes: number;
+  /** 每名勇者的攻擊力。換裝備加的是這個,乘上人數才是總戰力。 */
+  perHero: number;
+  /** 裝備等級。只決定「拿哪一把武器」的外觀與升降級的落點,傷害本身看 perHero。 */
+  gear: number;
   hp: number;
   maxHp: number;
   coins: number;
   rowIndex: number;
   phase: 'running' | 'cleared' | 'dead';
 }
+
+/**
+ * 總戰力 = 人數 x 每人攻擊力。這是唯一拿去跟敵人比的數字。
+ * 兩個乘數缺一不可:只堆人數沒換裝備,人再多也打不動後面的怪;只換裝備沒堆人數,
+ * 一個人再強也擋不住一整波。玩家每一排都在決定要補哪一邊。
+ */
+export function totalAttack(state: Pick<RunState, 'heroes' | 'perHero'>): number {
+  return Math.max(1, Math.round(state.heroes * state.perHero));
+}
+
+/**
+ * 起跑數值。轉職之後由 game/laneJobs.ts 換算出來,是養成唯一能影響跑圖的地方。
+ *
+ * attackMultiplier 乘的是**總戰力**,不是每個人的攻擊力——heroes 與 gear 只決定這份總戰力
+ * 怎麼分配(幾個人、拿第幾階武器),不會讓它變多。這條界線是整個養成系統的安全帶:
+ * 讓人數與裝備各自再乘上去的話,滿階職業起跑就有 7 倍多,實測第 25 關「亂選」的過關率會從
+ * 38% 衝到 85%——那就是養成買到了勝利,這款存在的意義也就沒了(見 CLAUDE.md 的鐵則)。
+ */
+export interface RunStart {
+  /** 起跑幾個人。只影響總戰力怎麼拆,不影響總戰力多少。 */
+  heroes: number;
+  /** 起跑拿第幾階武器。決定外觀,以及之後吃到裝備閘門時的落點。 */
+  gear: number;
+  /** 總戰力倍率。這是轉職唯一真正加強的地方,幅度要小。 */
+  attackMultiplier: number;
+  hpMultiplier: number;
+}
+
+export const DEFAULT_RUN_START: RunStart = { heroes: 1, gear: 1, attackMultiplier: 1, hpMultiplier: 1 };
+
+/** 起跑位置:跑道正中央。兩條跑道沒有「中立格」,站中間只是還沒表態,第一排之前一定要選邊。 */
+export const START_OFFSET = 0.5;
+
+/** 換一級裝備等於每個人的攻擊力乘/除這個數。 */
+export const GEAR_STEP = 1.6;
+export const MAX_GEAR = 5;
 
 // ---- 節奏 ----
 // 一排到下一排的距離固定,難度靠跑速調。第 1 關 2.2 秒看一排,第 40 關壓到 0.9 秒。
@@ -127,12 +176,16 @@ export function createRng(seed: number): () => number {
   };
 }
 
-export function initialRunState(stage: number): RunState {
+export function initialRunState(stage: number, start: RunStart = DEFAULT_RUN_START): RunState {
+  const hp = Math.round(baseHpForStage(stage) * start.hpMultiplier);
   return {
-    lane: 1,
-    attack: baseAttackForStage(stage),
-    hp: baseHpForStage(stage),
-    maxHp: baseHpForStage(stage),
+    lane: laneFromOffset(START_OFFSET),
+    heroes: start.heroes,
+    // 總戰力 = base x 倍率,再除以人數攤到每個人身上——所以起跑幾個人不會讓總戰力變多。
+    perHero: Math.max(1, Math.round((baseAttackForStage(stage) * start.attackMultiplier) / start.heroes)),
+    gear: start.gear,
+    hp,
+    maxHp: hp,
     coins: 0,
     rowIndex: 0,
     phase: 'running',
@@ -152,11 +205,13 @@ export function baseHpForStage(stage: number): number {
  * 敵人戰力:設計成「一路都挑好閘門會贏、一路挑爛閘門會輸」。
  * 係數 GOOD_PATH_MARGIN 決定這條線畫在哪——越接近 1 越懲罰失誤。
  */
-// 1.7 是掃參數挑的。0.62 時「隨便亂選」也有 89~95% 過關率,左右滑等於沒有意義;
-// 一路加到 1.2 才降到 61~81%,曲線很平——因為亂選還是有 1/3 機率吃到 x2 閘門。
-// 1.7 時亂選是第 1 關 56%、第 20 關 37%、第 100 關 33%:前期容錯、後期真的要看懂閘門,
+// 1.5 是掃參數挑的,而且是「兩條跑道」重掃過的值(三條跑道時是 1.7)。
+// 跑道從三條減成兩條之後亂選的命中率從 1/3 變成 1/2,曲線整個往上平移,所以係數要跟著往下修:
+// 1.7 時亂選只剩第 20 關 25%、第 100 關 21%,貼著「選擇有意義」的下限,再飄一點就變成
+// 「亂選幾乎必死」——那不是難度是勸退。1.6 是 30%/24%,1.4 是 45%/35%(太寬鬆)。
+// 1.5 時亂選是第 1 關 59%、第 20 關 35%、第 100 關 29%:前期容錯、後期真的要看懂閘門,
 // 而「每排都挑最好」在所有關卡仍是 100% 過關(選對就一定過,不靠運氣)。
-export const GOOD_PATH_MARGIN = 1.7;
+export const GOOD_PATH_MARGIN = 1.5;
 
 export function enemyPowerForRow(stage: number, rowIndex: number): number {
   const base = baseAttackForStage(stage);
@@ -166,29 +221,35 @@ export function enemyPowerForRow(stage: number, rowIndex: number): number {
 }
 
 // ---- 產生一場跑圖 ----
-// 每一排閘門刻意做成「一好、一普、一陷阱」,而不是三個都正面:三個都正面的話玩家隨便選都在變強,
+// 兩條跑道就是二選一,所以每一排固定「一好一壞」:兩格都正面的話玩家隨便選都在變強,
 // 左右滑就失去意義了。陷阱那格用扣除而不是歸零,選錯還有救,但會很痛。
+//
+// 好的那格三選一,三種資源輪流出現,玩家才需要真的比較「這排我缺人、缺裝備、還是缺血」:
+//   勇者 x2   —— 爆發,人數翻倍
+//   裝備強化  —— 全隊每個人都變強,人越多越划算
+//   血量 +N   —— 不加戰力,但撐得過下一波打不完的漏網之魚
+//
+// 三種好處刻意都跟「目前有幾個人」無關(乘法或加在血上)。這裡曾經放過「勇者 +N」,
+// 但那一格的價值是 N x 每人攻擊力——轉職成人多但每人較弱的路線之後,同一格的實際收益會
+// 縮水好幾倍,結果是「滿階職業反而比未轉職難過」。閘門的好壞不該取決於玩家怎麼轉職。
 function makeGateRow(rng: () => number, stage: number, rowIndex: number): RunNode[] {
   const tier = Math.floor(rowIndex / ENEMY_EVERY) + 1;
+  const goodRoll = rng();
   const good: GateEffect =
-    rng() < 0.5
-      ? { stat: 'attack', op: 'mul', value: 2 }
-      : { stat: 'attack', op: 'add', value: Math.round(baseAttackForStage(stage) * 1.2 * tier) };
-  const fair: GateEffect =
-    rng() < 0.5
-      ? { stat: 'attack', op: 'add', value: Math.round(baseAttackForStage(stage) * 0.5 * tier) }
-      : { stat: 'hp', op: 'add', value: Math.round(baseHpForStage(stage) * 0.25) };
-  const trap: GateEffect =
-    rng() < 0.5
-      ? { stat: 'attack', op: 'mul', value: 0.5 }
-      : { stat: 'hp', op: 'add', value: -Math.round(baseHpForStage(stage) * 0.3) };
+    goodRoll < 0.4
+      ? { stat: 'heroes', op: 'mul', value: 2 }
+      : goodRoll < 0.75
+        ? { stat: 'gear', op: 'add', value: 1 }
+        : { stat: 'hp', op: 'add', value: Math.round(baseHpForStage(stage) * 0.3 * tier) };
+  const badRoll = rng();
+  const bad: GateEffect =
+    badRoll < 0.45
+      ? { stat: 'heroes', op: 'mul', value: 0.5 }
+      : badRoll < 0.75
+        ? { stat: 'gear', op: 'add', value: -1 }
+        : { stat: 'hp', op: 'add', value: -Math.round(baseHpForStage(stage) * 0.3) };
 
-  const effects = [good, fair, trap];
-  // 洗牌,讓好格子不會固定出現在同一條跑道
-  for (let i = effects.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    [effects[i], effects[j]] = [effects[j], effects[i]];
-  }
+  const effects = rng() < 0.5 ? [good, bad] : [bad, good];
   return effects.map((gate, lane) => ({ lane: lane as Lane, kind: 'gate' as const, gate }));
 }
 
@@ -316,10 +377,17 @@ export interface RowResolution {
 
 export function applyGate(state: RunState, gate: GateEffect): RunState {
   const next = { ...state };
-  if (gate.stat === 'attack') {
-    next.attack = gate.op === 'mul' ? next.attack * gate.value : next.attack + gate.value;
-    // 攻擊力有下限 1:乘 0.5 連吃幾次會趨近 0,之後怎麼打都打不死敵人,那不是懲罰是卡死。
-    next.attack = Math.max(1, Math.round(next.attack));
+  if (gate.stat === 'heroes') {
+    next.heroes = gate.op === 'mul' ? next.heroes * gate.value : next.heroes + gate.value;
+    // 人數下限 1:連吃幾次減半會趨近 0,全隊死光之後怎麼跑都沒有意義,那不是懲罰是卡死。
+    next.heroes = Math.max(1, Math.round(next.heroes));
+  } else if (gate.stat === 'gear') {
+    // 裝備等級有上下限:上限是因為只有 5 階武器美術,下限 1 是不能沒有武器。
+    // 已經頂級還吃到強化就只剩「賺到一次沒作用的好格」,比讓數值無限膨脹好。
+    const nextGear = Math.min(MAX_GEAR, Math.max(1, next.gear + gate.value));
+    const delta = nextGear - next.gear;
+    next.gear = nextGear;
+    next.perHero = Math.max(1, Math.round(next.perHero * Math.pow(GEAR_STEP, delta)));
   } else {
     next.maxHp = gate.op === 'mul' ? Math.round(next.maxHp * gate.value) : next.maxHp + gate.value;
     next.maxHp = Math.max(1, next.maxHp);
@@ -330,14 +398,15 @@ export function applyGate(state: RunState, gate: GateEffect): RunState {
 }
 
 export function gateLabel(gate: GateEffect): string {
-  const stat = gate.stat === 'attack' ? '攻擊' : '血量';
+  if (gate.stat === 'gear') return gate.value >= 0 ? '裝備強化' : '裝備損壞';
+  const stat = gate.stat === 'heroes' ? '勇者' : '血量';
   if (gate.op === 'mul') return `${stat} x${gate.value}`;
   return `${stat} ${gate.value >= 0 ? '+' : ''}${gate.value}`;
 }
 
 /** 撞上敵人:攻擊力不足的部分直接換算成傷害。打得贏就零傷害並拿獎勵。 */
 export function resolveEnemy(state: RunState, enemy: EnemyEffect): RowResolution {
-  const shortfall = Math.max(0, enemy.power - state.attack);
+  const shortfall = Math.max(0, enemy.power - totalAttack(state));
   const next = { ...state };
   if (shortfall === 0) {
     next.coins += enemy.reward;
@@ -378,7 +447,7 @@ export function resolveRow(state: RunState, row: RunRow): RowResolution {
       state: after,
       message: gateLabel(node.gate),
       hpDelta: after.hp - advanced.hp,
-      attackDelta: after.attack - advanced.attack,
+      attackDelta: totalAttack(after) - totalAttack(advanced),
     };
   }
 
@@ -396,8 +465,8 @@ export function bestLane(state: RunState, row: RunRow): Lane {
   let bestScore = -Infinity;
   for (const node of row.nodes) {
     const r = resolveRow({ ...state, lane: node.lane }, row);
-    // 攻擊力權重高於血量:血量只讓你活著,攻擊力決定你打不打得贏後面的敵人。
-    const score = r.state.attack * 3 + r.state.hp;
+    // 戰力權重高於血量:血量只讓你活著,戰力決定你打不打得贏後面的敵人。
+    const score = totalAttack(r.state) * 3 + r.state.hp;
     if (score > bestScore) {
       bestScore = score;
       best = node.lane;
@@ -411,7 +480,7 @@ export function worstLane(state: RunState, row: RunRow): Lane {
   let worstScore = Infinity;
   for (const node of row.nodes) {
     const r = resolveRow({ ...state, lane: node.lane }, row);
-    const score = r.state.attack * 3 + r.state.hp;
+    const score = totalAttack(r.state) * 3 + r.state.hp;
     if (score < worstScore) {
       worstScore = score;
       worst = node.lane;
