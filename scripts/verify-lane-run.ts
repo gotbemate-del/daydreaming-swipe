@@ -8,6 +8,8 @@ import {
   laneCenterOffset, laneFromOffset, MAX_FIRE_INTERVAL_MS, MAX_WAVE_SIZE, MIN_FIRE_INTERVAL_MS,
   HITS_PER_MONSTER, moveLane, resolveEnemy, resolveRow, ROWS_PER_RUN, runSpeed, secondsPerRow, WAVE_LENGTH,
   GATE_WIDTH, gateSpan, hitsGate, MONSTER_JITTER, SPECIES_PER_WAVE, START_OFFSET, terrainForStage,
+  ENEMY_POWER_RATIO, GOOD_GATE_GROWTH, gatesBeforeRow, heroGrowAmount, isTrapGate, runSeconds,
+  applyGate, enemyPowerForRow, gateLabel, HERO_ADD_RATIO, idealAttackForRow,
   TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane,
   type Lane, type RunState,
 } from '../game/laneRun';
@@ -60,6 +62,58 @@ check('閘門排兩格效果一定不一樣(不然就不用選了)', gateRows.ev
   new Set(r.nodes.map((n) => JSON.stringify(n.gate))).size === 2));
 check('同一 seed 可重現', JSON.stringify(createRun(1234, 5)) === JSON.stringify(run));
 check('不同 seed 不一樣', JSON.stringify(createRun(999, 5)) !== JSON.stringify(run));
+
+// --- 關卡長度 ---
+check('一關比以前長(第1關 >= 45 秒)', runSeconds(1) >= 45, `${runSeconds(1).toFixed(0)} 秒`);
+check('最快的關卡也還有十幾秒', runSeconds(40) >= 15, `${runSeconds(40).toFixed(0)} 秒`);
+check('敵人排至少 5 排(中後段還有東西要打)',
+  Math.floor(ROWS_PER_RUN / ENEMY_EVERY) >= 5, `${Math.floor(ROWS_PER_RUN / ENEMY_EVERY)} 排`);
+
+// --- 勇者 +N:比例制,所以職業中立 ---
+// 固定的「+5」對起跑 1 人的職業價值是起跑 6 人職業的 6 倍,那會讓閘門好壞取決於怎麼轉職。
+// 現在 N 取自當下隊伍,收益恆等於「總戰力 x ratio」,跟人數/每人攻擊力怎麼拆無關。
+check('勇者 +N 至少會多 1 個人(不會吃了沒事發生)',
+  [1, 2, 3, 7, 40].every((h) => heroGrowAmount(h, HERO_ADD_RATIO) >= 1),
+  [1, 2, 3, 7, 40].map((h) => `${h}人→+${heroGrowAmount(h, HERO_ADD_RATIO)}`).join(' '));
+check('隊伍越大補的人越多(比例制)',
+  heroGrowAmount(40, HERO_ADD_RATIO) > heroGrowAmount(7, HERO_ADD_RATIO));
+const growGate = { stat: 'heroes', op: 'grow', value: HERO_ADD_RATIO } as const;
+// 同樣的總戰力、不同的人數/每人攻擊力拆法,吃同一格的收益必須一樣(這就是職業中立)。
+// 拿跑到一半的隊伍規模來比:轉職一律 1 人起跑之後,拆法的差異只會來自「路上吃了哪些閘門」,
+// 那時候人數已經是兩位數以上,四捨五入不影響。
+const gainFor = (heroes: number, perHero: number) => {
+  const st: RunState = { ...initialRunState(20), heroes, perHero };
+  return totalAttack(applyGate(st, growGate)) / totalAttack(st);
+};
+const splitGains = [gainFor(10, 600), gainFor(24, 250), gainFor(60, 100)];
+check('勇者 +N 的收益不受「人數/每人攻擊力怎麼拆」影響(職業中立)',
+  Math.max(...splitGains) - Math.min(...splitGains) < 0.05,
+  splitGains.map((g) => 'x' + g.toFixed(2)).join(' / '));
+// 人很少的時候「至少 +1」會超額(1 人 +60% 實際是翻倍)。這是刻意的——不然人少的時候
+// 這一格會變成完全沒效果——但它是前段領先幅度偏高的原因,所以明寫在這裡。
+check('人很少的時候會超額(已知,前段偏鬆的來源)',
+  gainFor(1, 600) === 2 && gainFor(2, 300) === 1.5,
+  `1人 x${gainFor(1, 600).toFixed(2)}、2人 x${gainFor(2, 300).toFixed(2)}`);
+check('勇者 +N 印出來是具體人數,不是百分比',
+  gateLabel(growGate, { heroes: 20 }) === '勇者 +12', gateLabel(growGate, { heroes: 20 }));
+check('沒有 state 時退回百分比(不會印出壞掉的字串)',
+  gateLabel(growGate) === '勇者 +60%', gateLabel(growGate));
+check('勇者 +N 不是陷阱格(畫面不會標紅)', !isTrapGate(growGate));
+check('減半與扣血才是陷阱格',
+  isTrapGate({ stat: 'heroes', op: 'mul', value: 0.5 })
+  && isTrapGate({ stat: 'gear', op: 'add', value: -1 })
+  && !isTrapGate({ stat: 'heroes', op: 'mul', value: 2 }));
+
+// --- 敵人曲線綁在閘門成長上 ---
+check('好閘門的平均成長算得出來', GOOD_GATE_GROWTH > 1.3 && GOOD_GATE_GROWTH < 2,
+  `x${GOOD_GATE_GROWTH.toFixed(3)} / 格`);
+check('這一排之前經過幾格閘門算得對',
+  gatesBeforeRow(3) === 3 && gatesBeforeRow(7) === 6 && gatesBeforeRow(11) === 9 && gatesBeforeRow(19) === 15);
+// 敵人與理想路線是同一條曲線,所以「敵人戰力 / 理想戰力」在每一排都必須是同一個數。
+const ratios = [3, 7, 11, 15, 19].map((i) => enemyPowerForRow(10, i) / idealAttackForRow(10, i));
+check('敵人戰力永遠是理想路線的固定比例(這就是領先幅度不會膨脹的原因)',
+  ratios.every((r) => Math.abs(r - ENEMY_POWER_RATIO) < 0.01),
+  ratios.map((r) => r.toFixed(3)).join(' '));
 
 // --- 敵人的量化呈現(每隻敵人都要指得到既有素材)---
 const ART_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'sprites', 'monsters', 'ai');
@@ -217,6 +271,46 @@ for (const stage of [1, 5, 20, 40, 100]) {
   console.log(`  第${String(stage).padStart(3)}關  ${[b, r, w].map((v) => (v * 100).toFixed(0).padStart(4) + '%').join('  ')}`);
 }
 
+// --- 準確率 -> 過關率 ---
+// 真人不是擲骰子,是「看得懂閘門但偶爾看錯」。跑道 20 排之後亂選在任何難度下都是 0~1%
+// (15 個二選一、每格好壞差 2.6 倍),拿亂選當難度指標會逼著把難度調到沒意義的低點,
+// 所以「選擇有意義」改由這條曲線保證:準確率掉一點,過關率就要明顯掉。
+function accuracyRate(stage: number, p: number, trials = 400) {
+  let cleared = 0;
+  for (let t = 0; t < trials; t++) {
+    const seed = t * 31 + 1;
+    const rowsA = createRun(seed, stage);
+    let st = initialRunState(stage);
+    let x = seed + 7;
+    const rng = () => { x = (x * 1103515245 + 12345) & 0x7fffffff; return x / 0x7fffffff; };
+    let alive = true;
+    for (const row of rowsA) {
+      const lane = rng() < p ? bestLane(st, row) : worstLane(st, row);
+      st = resolveRow({ ...st, lane }, row).state;
+      if (st.phase === 'dead') { alive = false; break; }
+    }
+    if (alive) cleared++;
+  }
+  return cleared / trials;
+}
+const ACCURACIES = [1, 0.95, 0.9, 0.85, 0.8];
+console.log('\n準確率 -> 過關率(每一排有 p 的機率挑對邊):');
+console.log('           ' + ACCURACIES.map((a) => (a * 100).toFixed(0).padStart(5) + '%').join(''));
+const accByStage = [1, 20, 100].map((stage) => {
+  const r = ACCURACIES.map((a) => accuracyRate(stage, a));
+  console.log(`  第${String(stage).padStart(3)}關  ` + r.map((v) => (v * 100).toFixed(0).padStart(5) + '%').join(''));
+  return { stage, r };
+});
+check('準確率越高過關率越高(而且是單調的)',
+  accByStage.every((s) => s.r.every((v, i) => i === 0 || v <= s.r[i - 1])));
+check('完全選對 -> 一定過關', accByStage.every((s) => s.r[0] >= 0.99));
+check('準確率 95% -> 大致過得去(讀得懂閘門就不該一直死)',
+  accByStage.every((s) => s.r[1] >= 0.7), accByStage.map((s) => (s.r[1] * 100).toFixed(0) + '%').join(' / '));
+check('準確率 80% -> 明顯會死(失誤要有代價)',
+  accByStage.every((s) => s.r[4] <= 0.45), accByStage.map((s) => (s.r[4] * 100).toFixed(0) + '%').join(' / '));
+check('95% 與 80% 之間拉得開(選擇真的有意義)',
+  accByStage.every((s) => s.r[1] - s.r[4] >= 0.35));
+
 // 手不準的玩家:每排都挑對邊,但站的位置在該格中心 ±sloppy 之間亂飄,所以有機率整格漏掉。
 // 這一組是「留空隙」這個設計的實測值——漏接要有代價,但不能懲罰到「選對了還是會死」。
 function sloppyRate(stage: number, sloppy: number, trials = 300) {
@@ -248,10 +342,75 @@ check('隨便亂拉就會開始漏接', sloppyRate(20, 0.25) < sloppyRate(20, 0.
 
 check('每排都挑最好的 -> 一定過關', rows2.every((x) => x.b >= 0.99));
 check('每排都挑最爛的 -> 幾乎必死', rows2.every((x) => x.w <= 0.05));
-check('隨機亂選 -> 落在 20%~70%(選擇真的有意義)', rows2.every((x) => x.r >= 0.2 && x.r <= 0.7));
-check('亂選的過關率隨關卡下降', rows2[rows2.length - 1].r < rows2[0].r);
 check('選得好一定比亂選好', rows2.every((x) => x.b > x.r));
-check('亂選一定比選最爛好', rows2.every((x) => x.r > x.w));
+check('亂選不會比選最爛差', rows2.every((x) => x.r >= x.w));
+
+// --- 中段還有沒有挑戰性(這一組是為了擋掉一個真的發生過的退化)---
+// 曾經敵人是自己走一條 1.9^tier 的指數,跟閘門的成長完全沒有關係。兩邊都「看起來合理」,
+// 湊在一起卻是最佳玩家的領先幅度每過一排敵人就再乘 3 倍:實測第 10 關是
+// 3.5x → 9.5x → 17.6x,等於前三個閘門決定勝負,後面整場都在跑完流程。
+// 現在敵人直接照 GOOD_GATE_GROWTH 走同一條曲線,所以領先幅度必須是平的。
+function bestMargins(stage: number, seed: number): number[] {
+  const rowsA = createRun(seed, stage);
+  let st = initialRunState(stage);
+  const out: number[] = [];
+  for (const row of rowsA) {
+    st = { ...st, lane: bestLane(st, row) };
+    const node = row.nodes.find((n) => n.lane === st.lane)!;
+    if (node.kind === 'enemy' && node.enemy) out.push(totalAttack(st) / node.enemy.power);
+    st = resolveRow(st, row).state;
+  }
+  return out;
+}
+const marginRuns = [11, 42, 77, 108, 251].map((seed) => bestMargins(10, seed));
+console.log('\n最佳玩家在每一排敵人的領先幅度(第10關,5 顆 seed):');
+for (const m of marginRuns) console.log('  ' + m.map((v) => v.toFixed(2) + 'x').join('  '));
+const marginSpread = marginRuns.map((m) => Math.max(...m) / Math.min(...m));
+check('領先幅度不會一路膨脹(中段不會變成沒事做)',
+  marginSpread.every((s) => s <= 2.2), '最大/最小 ' + marginSpread.map((s) => s.toFixed(2) + 'x').join(' / '));
+// 最佳玩家的領先幅度必然約等於 1/ENEMY_POWER_RATIO(那就是緩衝倍數的定義),
+// 所以這裡不能要求它很小——要求它小就等於要求「一格都不能選錯」。真正要盯的是它不膨脹。
+//
+// 上限抓 2.2 倍緩衝而不是剛好 1 倍,是因為**前段一定會超額**:「勇者 +60%」至少 +1 個人,
+// 所以 1 人的時候實際是翻倍(不是 x1.6)、2 人的時候是 x1.5。敵人曲線用的是名目的
+// GOOD_GATE_GROWTH,追不上這幾格的超額,前兩排敵人因此偏鬆(實測 10~12x,後段收斂到 4.5~6x)。
+// 這個形狀是對的——張力應該往後遞增,而不是像舊版那樣往後遞減。下面的死亡分佈才是真正的驗收。
+check('最佳玩家的領先幅度就是設定的緩衝倍數(沒有額外的無敵)',
+  marginRuns.every((m) => m.every((v) => v <= 2.2 / ENEMY_POWER_RATIO)),
+  `緩衝 ${(1 / ENEMY_POWER_RATIO).toFixed(1)}x,實測最高 ${Math.max(...marginRuns.flat()).toFixed(1)}x`);
+check('張力往後遞增(後段的領先幅度不會比前段大)',
+  marginRuns.every((m) => m[m.length - 1] <= m[0] * 1.2),
+  marginRuns.map((m) => `${m[0].toFixed(1)}→${m[m.length - 1].toFixed(1)}`).join(' / '));
+
+// 「中段有沒有挑戰性」最直接的證據:玩家實際死在第幾排。
+// 舊版是前三個閘門決定勝負,所以死亡全部擠在第一排敵人(第 3 排);如果勝負是一路拉扯到最後,
+// 死亡就會分散到後面幾排敵人身上。這一項才是使用者回報的那個問題的真正驗收條件。
+function deathRows(stage: number, p: number, trials = 600): number[] {
+  const out: number[] = [];
+  for (let t = 0; t < trials; t++) {
+    const seed = t * 31 + 1;
+    const rowsA = createRun(seed, stage);
+    let st = initialRunState(stage);
+    let x = seed + 7;
+    const rng = () => { x = (x * 1103515245 + 12345) & 0x7fffffff; return x / 0x7fffffff; };
+    for (const row of rowsA) {
+      const lane = rng() < p ? bestLane(st, row) : worstLane(st, row);
+      st = resolveRow({ ...st, lane }, row).state;
+      if (st.phase === 'dead') { out.push(row.index); break; }
+    }
+  }
+  return out;
+}
+const deaths = deathRows(20, 0.85);
+const enemyRowIdx = Array.from({ length: ROWS_PER_RUN }, (_, i) => i).filter((i) => (i + 1) % ENEMY_EVERY === 0);
+const deathShare = enemyRowIdx.map((i) => deaths.filter((d) => d === i).length / deaths.length);
+console.log('\n85% 準確率的玩家死在第幾排敵人(共 ' + deaths.length + ' 次陣亡):');
+console.log('  ' + enemyRowIdx.map((i, k) => `第${i}排 ${(deathShare[k] * 100).toFixed(0)}%`).join('   '));
+check('勝負不是開頭就決定(死亡不會集中在第一排敵人)',
+  deathShare[0] <= 0.5, `第一排敵人佔 ${(deathShare[0] * 100).toFixed(0)}%`);
+check('後半段仍然會死人(中段之後還有挑戰)',
+  deathShare.slice(Math.ceil(deathShare.length / 2)).reduce((a, b) => a + b, 0) >= 0.2,
+  `後半佔 ${(deathShare.slice(Math.ceil(deathShare.length / 2)).reduce((a, b) => a + b, 0) * 100).toFixed(0)}%`);
 
 // --- 攻擊力不會被陷阱歸零卡死 ---
 let minAttack = Infinity;

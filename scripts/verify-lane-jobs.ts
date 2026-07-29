@@ -40,16 +40,27 @@ const starts = ARCHETYPES.map((archetype) => runStartFor({ archetype, branch: 'A
 check('六條路線的起跑數值不是同一組',
   new Set(starts.map((s) => JSON.stringify(s))).size >= 3,
   `${new Set(starts.map((s) => JSON.stringify(s))).size} 種`);
-check('輔助路線起跑人比較多',
-  runStartFor({ archetype: 'physicalSupport', branch: 'A', tier: 1 }).heroes
-  > runStartFor({ archetype: 'physicalRanged', branch: 'A', tier: 1 }).heroes);
+// 轉職一律 1 人起跑:人數只能靠跑道上的閘門滾出來,一場跑圖就是「從一個人變成一支隊伍」。
+// 這條同時也是「勇者 +N」閘門職業中立的前提——只有一個人的時候每人攻擊力就等於總戰力,
+// 同一格對每個職業的價值一樣。所以這裡連滿階、連 B 分支都要盯著。
+const everyJob = ARCHETYPES.flatMap((archetype) =>
+  ([1, 2, 3, 4, 5] as JobTier[]).flatMap((tier) =>
+    (['A', 'B'] as const).map((branch) => runStartFor({ archetype, branch, tier }))));
+check('每個職業都是 1 人起跑(含滿階與 B 分支)',
+  everyJob.every((s) => s.heroes === 1) && DEFAULT_RUN_START.heroes === 1,
+  `${everyJob.length} 種組合`);
+check('輔助路線起跑血比較厚',
+  runStartFor({ archetype: 'physicalSupport', branch: 'A', tier: 1 }).hpMultiplier
+  > runStartFor({ archetype: 'physicalRanged', branch: 'A', tier: 1 }).hpMultiplier);
 check('近戰路線起跑裝備比較好',
   runStartFor({ archetype: 'physicalMelee', branch: 'A', tier: 3 }).gear
   > runStartFor({ archetype: 'physicalSupport', branch: 'A', tier: 3 }).gear);
-check('B 分支一律多一個人',
-  ARCHETYPES.every((archetype) =>
-    runStartFor({ archetype, branch: 'B', tier: 2 }).heroes
-    > runStartFor({ archetype, branch: 'A', tier: 2 }).heroes));
+check('A/B 分支還是分得出來(A 偏戰力、B 偏耐打)',
+  ARCHETYPES.every((archetype) => {
+    const a = runStartFor({ archetype, branch: 'A', tier: 2 });
+    const b = runStartFor({ archetype, branch: 'B', tier: 2 });
+    return a.attackMultiplier > b.attackMultiplier && b.hpMultiplier > a.hpMultiplier;
+  }));
 const tiers: JobTier[] = [1, 2, 3, 4, 5];
 const meleeAttack = tiers.map((tier) => initialRunState(20, runStartFor({ archetype: 'physicalMelee', branch: 'A', tier })));
 check('階級越高起跑戰力越高', meleeAttack.every((s, i) => i === 0 || totalAttack(s) >= totalAttack(meleeAttack[i - 1])),

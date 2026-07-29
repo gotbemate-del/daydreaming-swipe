@@ -4,6 +4,7 @@ import { Image, PanResponder, Platform, Pressable, StyleSheet, Text, View } from
 import { jobTitle, type LaneJob } from '../game/laneJobs';
 import {
   gateLabel,
+  isTrapGate,
   gateSpan,
   GATE_WIDTH,
   LANE_COUNT,
@@ -195,7 +196,7 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
     if (!ready) return null;
     const top = bottomYFor(ahead, headY) - GATE_HEIGHT;
     return row.nodes.map((node) => {
-      const trap = node.gate ? isTrap(node.gate.op, node.gate.value) : false;
+      const trap = node.gate ? isTrapGate(node.gate) : false;
       const span = gateSpan(node.lane);
       return (
         <View
@@ -208,7 +209,7 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
           ]}
         >
           <Text style={styles.gateText} numberOfLines={2}>
-            {node.gate ? gateLabel(node.gate) : ''}
+            {node.gate ? gateLabel(node.gate, state) : ''}
           </Text>
         </View>
       );
@@ -278,14 +279,14 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
   return (
     <View style={styles.wrapper}>
       <View style={styles.hud}>
-        <Text style={styles.hudStat}>勇者 {state.heroes}</Text>
+        <Text style={styles.hudStat}>勇者 {compact(state.heroes)}</Text>
         <Text style={styles.hudStat}>裝備 {state.gear} 階</Text>
-        <Text style={styles.hudStat}>戰力 {attack}</Text>
+        <Text style={styles.hudStat}>戰力 {compact(attack)}</Text>
       </View>
       <View style={styles.hud}>
         <Text style={styles.hudSub}>{jobTitle(job)}</Text>
         <Text style={styles.hudSub}>血量 {state.hp}/{state.maxHp}</Text>
-        <Text style={styles.hudSub}>金幣 {state.coins}</Text>
+        <Text style={styles.hudSub}>金幣 {compact(state.coins)}</Text>
       </View>
       <View style={styles.hpTrack}>
         <View style={[styles.hpFill, { width: `${hpRatio * 100}%` }, hpRatio <= 0.25 && styles.hpFillDanger]} />
@@ -298,8 +299,8 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
         {incoming && (
           <Text style={styles.alertText} numberOfLines={1}>
             {incoming.boss
-              ? `大魔王 ${incoming.name} · 戰力 ${incoming.power}`
-              : `來襲 ${incoming.name} x${incoming.units} · 戰力 ${incoming.power}`}
+              ? `大魔王 ${incoming.name} · 戰力 ${compact(incoming.power)}`
+              : `來襲 ${incoming.name} x${incoming.units} · 戰力 ${compact(incoming.power)}`}
           </Text>
         )}
       </View>
@@ -403,7 +404,7 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
                 {state.phase === 'cleared' ? '抵達終點' : '倒下了'}
               </Text>
               <Text style={styles.resultSummary}>
-                第 {stage} 關 · 勇者 {state.heroes} · 戰力 {attack} · 金幣 {state.coins}
+                第 {stage} 關 · 勇者 {compact(state.heroes)} · 戰力 {compact(attack)} · 金幣 {compact(state.coins)}
               </Text>
               <Pressable
                 style={styles.againButton}
@@ -444,7 +445,7 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
         })}
         {state.heroes > SQUAD_SLOTS.length && (
           <Text style={[styles.squadCount, { left: heroLeft - 12, bottom: HERO_BOTTOM + HERO_HEIGHT - 6 }]}>
-            x{state.heroes}
+            x{compact(state.heroes)}
           </Text>
         )}
       </View>
@@ -457,10 +458,20 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
 const DASH_LENGTH = 26;
 const DASH_PHASES = [0, 70, 140, 210, 280, 350, 420, 490];
 
-// 陷阱格用紅色標出來,但只標「乘法變小」與「扣血」這兩種真正的負面效果;
-// 加值比較少的那格不算陷阱,那是玩家自己要判斷的取捨。
-function isTrap(op: 'add' | 'mul', value: number): boolean {
-  return (op === 'mul' && value < 1) || (op === 'add' && value < 0);
+/**
+ * 大數字壓成中文計數單位。跑道加長到 20 排之後,全選最佳的戰力會到六位數
+ * (第 10 關實測 115808),原樣印會把 HUD 那一列擠爆——390 寬的手機上
+ *「勇者 154 · 裝備 5 階 · 戰力 115808」會換行,把下面整個跑道往下推。
+ * 一萬以下照原樣印,玩家在前段看到的還是精確數字。
+ */
+function compact(n: number): string {
+  if (n < 10000) return String(n);
+  if (n < 1e8) {
+    const wan = n / 1e4;
+    return (wan < 100 ? wan.toFixed(1) : String(Math.round(wan))) + '萬';
+  }
+  const yi = n / 1e8;
+  return (yi < 100 ? yi.toFixed(1) : String(Math.round(yi))) + '億';
 }
 
 const styles = StyleSheet.create({
