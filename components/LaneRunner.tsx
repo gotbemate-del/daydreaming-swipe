@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Image, PanResponder, Platform, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Image, PanResponder, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { jobTitle, type LaneJob } from '../game/laneJobs';
 import {
@@ -24,22 +24,15 @@ import { HERO_ASPECT, HERO_FRAMES, jobHeroArt, monsterArt, weaponArt } from './a
 // 視覺上完全等價,而且每個物件只是一個絕對定位的圖。
 //
 // 橫向則相反:角色是真的跟著手指走的(見 panResponder),位置連續、不是三格跳。
-// 跑道高度跟著視窗算,不能寫死。
-// 寫死 500 的時候在 780px 高的視窗剛好放得下,但 iPhone SE(667)、小 Android(640)、
-// 以及任何被瀏覽器網址列吃掉高度的手機,整頁會超出 40~54px——被切掉的正好是最底下那一列,
-// 也就是「下一關 / 再來一次」。畫面是 flex:1 不能捲動,所以那顆按鈕變成按不到,玩家會卡在
-// 通關畫面出不去。
-// 跑道以外的東西(廣告位、HUD 兩列、兩條進度條、來襲提示、提示列)加起來 224px——這是在
-// 360x640 實際量出來的,不是估的。結果面板改成浮在跑道上的 toast、回饋文字改成浮在判定線上
-// 之後,底部就不再有那兩列,這個數字才降得下來。
-const TRACK_CHROME_HEIGHT = 224;
-const TRACK_HEIGHT_MAX = 500;
-/** 再矮就看不到足夠的前方路況了,寧可讓畫面出現捲動也不要低於這個值。 */
+// 跑道高度**不算、用量的**:跑道是 flex:1,實際多高由 onLayout 回報。
+//
+// 先前是「視窗高 - 固定的周邊高度」算出來的,結果第一關被壓縮:手機瀏覽器剛載入時網址列還在,
+// 視窗矮,算出來的跑道就矮;之後玩家一滑、網址列收起來,視窗變高了,但第一關那個實例不會
+// 重新掛載,跑道就一直維持矮的,上方留一大塊沒用到的空白。第二關因為換 key 重新掛載才正常。
+// 改成量容器實際高度之後,網址列一收起來 onLayout 就會再觸發,跑道自己撐開——而且以後
+// 周邊多一列少一列都不必再手動維護那個常數。
+/** 再矮就看不到足夠的前方路況了。低於這個值寧可讓畫面捲動。 */
 const TRACK_HEIGHT_MIN = 320;
-
-function trackHeightFor(windowHeight: number): number {
-  return Math.max(TRACK_HEIGHT_MIN, Math.min(TRACK_HEIGHT_MAX, Math.round(windowHeight - TRACK_CHROME_HEIGHT)));
-}
 
 const HERO_HEIGHT = 84;
 const HERO_WIDTH = Math.round(HERO_HEIGHT * HERO_ASPECT);
@@ -126,10 +119,13 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
   const heroArt = jobHeroArt(job?.archetype ?? null, job?.branch ?? 'A', job?.tier ?? 1);
   const attack = totalAttack(state);
 
-  const { height: windowHeight } = useWindowDimensions();
-  const trackHeight = trackHeightFor(windowHeight);
+  // 跑道的實際尺寸由 onLayout 回報(寬跟高都是)。高度沒量到之前不畫任何物件,
+  // 免得用 0 去算位置、東西全部擠在最上面閃一下。
+  const [trackSize, setTrackSize] = useState({ width: 0, height: 0 });
+  const trackWidth = trackSize.width;
+  const trackHeight = trackSize.height;
   const headY = trackHeight - HERO_BOTTOM - HERO_HEIGHT;
-  const [trackWidth, setTrackWidth] = useState(0);
+  const ready = trackWidth > 0 && trackHeight > 0;
   const trackWidthRef = useRef(0);
   const offsetRef = useRef(heroOffset);
   offsetRef.current = heroOffset;
@@ -196,7 +192,7 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
     if (row.nodes[0]?.kind === 'enemy') return null; // 敵人排改由 renderWave 演出
     const ahead = row.distance - distance;
     if (ahead > VISIBLE_AHEAD || ahead < -GATE_CULL_PAST) return null;
-    if (trackWidth <= 0) return null;
+    if (!ready) return null;
     const top = bottomYFor(ahead, headY) - GATE_HEIGHT;
     return row.nodes.map((node) => {
       const trap = node.gate ? isTrap(node.gate.op, node.gate.value) : false;
@@ -225,7 +221,7 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
    * 這裡只負責畫——同一波不同長相、不站成一直線,看起來才像一群怪而不是閱兵。
    */
   function renderWave(w: WaveView) {
-    if (trackWidth <= 0) return null;
+    if (!ready) return null;
     const size = w.boss ? BOSS_SIZE : MONSTER_SIZE;
     return w.monsters.map((m) => {
       if (w.down[m.index]) return null;
@@ -251,7 +247,7 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
 
   /** 擲出去的武器。從擲出的位置往目標那一格斜著飛過去,所以 x 要跟著飛行進度內插。 */
   function renderProjectile(p: Projectile) {
-    if (trackWidth <= 0 || !wave) return null;
+    if (!ready || !wave) return null;
     const target = wave.monsters[p.targetIndex];
     if (!target) return null;
     const span = Math.max(1, target.distance - p.fromDistance);
@@ -309,11 +305,14 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
       </View>
 
       <View
-        style={[styles.track, { height: trackHeight, backgroundColor: terrain.base }]}
+        // 測試要抓跑道就用這個,不要靠「高度剛好是 500」之類的特徵去猜——那種選取器
+        // 一改版面就失效,而且會靜靜地選到外層容器,量出一堆看起來合理但錯誤的數字。
+        testID="lane-track"
+        style={[styles.track, { backgroundColor: terrain.base }]}
         onLayout={(e) => {
-          const w = e.nativeEvent.layout.width;
-          trackWidthRef.current = w;
-          setTrackWidth(w);
+          const { width, height } = e.nativeEvent.layout;
+          trackWidthRef.current = width;
+          setTrackSize((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
         }}
         {...panResponder.panHandlers}
       >
@@ -373,7 +372,7 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
 
         {/* 結算回饋:直接浮在判定線上、勇者正上方。放在跑道外面的話,玩家要在「框消失」與
             「畫面下方跳出一行字」之間自己連連看;放在事發地點就不用連。 */}
-        {feedback && feedback.message !== '' && trackWidth > 0 && (
+        {feedback && feedback.message !== '' && ready && (
           <Text
             key={feedback.key}
             pointerEvents="none"
@@ -467,7 +466,8 @@ function isTrap(op: 'add' | 'mul', value: number): boolean {
 const styles = StyleSheet.create({
   // 寬度盡量吃滿。上限 520 是給桌機用的——再寬跑道會變成一片空地,兩條跑道之間離太遠,
   // 手指要移動的距離也跟著變長。
-  wrapper: { width: '100%', maxWidth: 520, alignSelf: 'center', gap: 6 },
+  // flex:1 讓跑道吃掉所有剩下的高度——周邊要多一列少一列都不必再改任何數字。
+  wrapper: { flex: 1, width: '100%', maxWidth: 520, alignSelf: 'center', gap: 6 },
   hud: { flexDirection: 'row', justifyContent: 'space-between' },
   hudStat: { color: '#f2f2f2', fontSize: 13, fontWeight: '700' },
   hudSub: { color: '#8a8a95', fontSize: 11 },
@@ -486,6 +486,8 @@ const styles = StyleSheet.create({
   alertRow: { height: 16, alignItems: 'center', justifyContent: 'center' },
   alertText: { color: '#e05050', fontSize: 12, fontWeight: '700' },
   track: {
+    flex: 1,
+    minHeight: TRACK_HEIGHT_MIN,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#3a3a45',
