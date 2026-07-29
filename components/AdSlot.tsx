@@ -52,7 +52,7 @@ export function AdSlot({ height = AD_SLOT_HEIGHT }: Props) {
 const styles = StyleSheet.create({
   slot: {
     width: '100%',
-    maxWidth: 380,
+    maxWidth: 520,
     alignSelf: 'center',
     marginBottom: AD_SLOT_GAP,
     borderRadius: 8,

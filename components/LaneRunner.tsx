@@ -29,7 +29,7 @@ import { HERO_ASPECT, HERO_FRAMES, jobHeroArt, monsterArt, weaponArt } from './a
 // 也就是「下一關 / 再來一次」。畫面是 flex:1 不能捲動,所以那顆按鈕變成按不到,玩家會卡在
 // 通關畫面出不去。跑道以外的東西(廣告位、HUD、兩條進度條、來襲提示、回饋、提示列)
 // 加起來大約 264px,剩下的才是跑道。
-const TRACK_CHROME_HEIGHT = 264;
+const TRACK_CHROME_HEIGHT = 252;
 const TRACK_HEIGHT_MAX = 500;
 /** 再矮就看不到足夠的前方路況了,寧可讓畫面出現捲動也不要低於這個值。 */
 const TRACK_HEIGHT_MIN = 320;
@@ -361,6 +361,29 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
         {wave && renderWave(wave)}
         {projectiles.map(renderProjectile)}
 
+        {/* 結果 toast:浮在跑道上,不佔版面高度。
+            先前是畫面最下面獨立的一列,在矮螢幕會被切到畫面外,玩家按不到「下一關」就卡死。
+            浮起來之後不管螢幕多矮都一定看得到,跑道也多拿回那一列的高度。 */}
+        {state.phase !== 'running' && (
+          <View style={styles.resultOverlay}>
+            <View style={styles.resultCard}>
+              <Text style={state.phase === 'cleared' ? styles.resultWin : styles.resultLose}>
+                {state.phase === 'cleared' ? '抵達終點' : '倒下了'}
+              </Text>
+              <Text style={styles.resultSummary}>
+                第 {stage} 關 · 勇者 {state.heroes} · 戰力 {attack} · 金幣 {state.coins}
+              </Text>
+              <Pressable
+                style={styles.againButton}
+                accessibilityLabel={state.phase === 'cleared' ? '下一關' : '再來一次'}
+                onPress={() => (state.phase === 'cleared' ? onCleared() : onRetry())}
+              >
+                <Text style={styles.againLabel}>{state.phase === 'cleared' ? '下一關' : '再來一次'}</Text>
+              </Pressable>
+            </View>
+          </View>
+        )}
+
         {/* 勇者群:橫向位置完全跟著手指(heroOffset),不吸附到跑道中央。
             由後往前畫,主角才會蓋在隊友上面。 */}
         {drawnSlots.map((slot, i) => {
@@ -408,21 +431,7 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
         )}
       </View>
 
-      {state.phase === 'running' ? (
-        <Text style={styles.hint}>第 {stage} 關 · 拖著勇者左右移動</Text>
-      ) : (
-        <View style={styles.controls}>
-          <Text style={state.phase === 'cleared' ? styles.resultWin : styles.resultLose}>
-            {state.phase === 'cleared' ? '抵達終點' : '倒下了'}
-          </Text>
-          <Pressable
-            style={styles.againButton}
-            onPress={() => (state.phase === 'cleared' ? onCleared() : onRetry())}
-          >
-            <Text style={styles.againLabel}>{state.phase === 'cleared' ? '下一關' : '再來一次'}</Text>
-          </Pressable>
-        </View>
-      )}
+      <Text style={styles.hint}>第 {stage} 關 · 拖著勇者左右移動</Text>
     </View>
   );
 }
@@ -437,7 +446,9 @@ function isTrap(op: 'add' | 'mul', value: number): boolean {
 }
 
 const styles = StyleSheet.create({
-  wrapper: { width: '100%', maxWidth: 380, alignSelf: 'center', gap: 6 },
+  // 寬度盡量吃滿。上限 520 是給桌機用的——再寬跑道會變成一片空地,兩條跑道之間離太遠,
+  // 手指要移動的距離也跟著變長。
+  wrapper: { width: '100%', maxWidth: 520, alignSelf: 'center', gap: 6 },
   hud: { flexDirection: 'row', justifyContent: 'space-between' },
   hudStat: { color: '#f2f2f2', fontSize: 13, fontWeight: '700' },
   hudSub: { color: '#8a8a95', fontSize: 11 },
@@ -493,13 +504,38 @@ const styles = StyleSheet.create({
   feedbackText: { fontSize: 14, fontWeight: '700' },
   feedbackGood: { color: '#5ec26a' },
   feedbackBad: { color: '#e05050' },
-  controls: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  resultOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    // 壓在跑道上面,但不要整片黑:底下還在跑的畫面是「你剛剛打到哪裡」的資訊。
+    backgroundColor: '#16161cb0',
+    zIndex: 50,
+  },
+  resultCard: {
+    minWidth: 240,
+    maxWidth: '86%',
+    paddingHorizontal: 20,
+    paddingVertical: 18,
+    borderRadius: 14,
+    backgroundColor: '#2a2a35',
+    borderWidth: 1,
+    borderColor: '#3a3448',
+    alignItems: 'center',
+    gap: 10,
+  },
+  resultSummary: { color: '#8a8a95', fontSize: 12 },
   hint: { color: '#8a8a95', fontSize: 11, textAlign: 'center' },
   resultWin: { color: '#5ec26a', fontSize: 18, fontWeight: '700' },
   resultLose: { color: '#e05050', fontSize: 18, fontWeight: '700' },
   againButton: {
-    flex: 1,
+    alignSelf: 'stretch',
     paddingVertical: 14,
+    paddingHorizontal: 28,
     borderRadius: 10,
     backgroundColor: '#e0a95c',
     alignItems: 'center',

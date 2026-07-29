@@ -51,7 +51,7 @@ export function JobChoice({ current, tier, clearedStage, onChoose }: Props) {
 }
 
 const styles = StyleSheet.create({
-  wrapper: { width: '100%', maxWidth: 380, alignSelf: 'center', gap: 8, flex: 1 },
+  wrapper: { width: '100%', maxWidth: 520, alignSelf: 'center', gap: 8, flex: 1 },
   title: { color: '#e0a95c', fontSize: 20, fontWeight: '700', textAlign: 'center' },
   subtitle: { color: '#8a8a95', fontSize: 12, textAlign: 'center' },
   grid: { gap: 8, paddingBottom: 8 },

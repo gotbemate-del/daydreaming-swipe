@@ -61,7 +61,7 @@ export function SkillChoice({ clearedStage, skills, offers, onChoose }: Props) {
 }
 
 const styles = StyleSheet.create({
-  wrapper: { width: '100%', maxWidth: 380, alignSelf: 'center', gap: 10 },
+  wrapper: { width: '100%', maxWidth: 520, alignSelf: 'center', gap: 10 },
   title: { color: '#e0a95c', fontSize: 20, fontWeight: '700', textAlign: 'center' },
   subtitle: { color: '#8a8a95', fontSize: 12, textAlign: 'center' },
   cta: { color: '#e0a95c', fontSize: 13, fontWeight: '700', textAlign: 'center' },
