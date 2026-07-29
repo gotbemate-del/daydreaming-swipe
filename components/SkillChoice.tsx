@@ -24,6 +24,8 @@ export function SkillChoice({ clearedStage, skills, offers, onChoose }: Props) {
       <Text style={styles.subtitle}>
         最多帶 {MAX_SKILL_SLOTS} 組,每組最高 {MAX_SKILL_LEVEL} 級 · 目前帶了 {skills.length} 組
       </Text>
+      {/* 這一行是必要的:沒有它玩家會以為通關後就該直接進下一關,坐在這裡等,以為卡住了。 */}
+      <Text style={styles.cta}>選一個繼續下一關</Text>
       <View style={styles.list}>
         {offers.map((offer) => {
           const spec = skillSpec(offer.id);
@@ -62,6 +64,7 @@ const styles = StyleSheet.create({
   wrapper: { width: '100%', maxWidth: 380, alignSelf: 'center', gap: 10 },
   title: { color: '#e0a95c', fontSize: 20, fontWeight: '700', textAlign: 'center' },
   subtitle: { color: '#8a8a95', fontSize: 12, textAlign: 'center' },
+  cta: { color: '#e0a95c', fontSize: 13, fontWeight: '700', textAlign: 'center' },
   list: { gap: 10 },
   card: {
     borderRadius: 12,

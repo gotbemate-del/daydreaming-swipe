@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Image, PanResponder, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, PanResponder, Platform, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import { jobTitle, type LaneJob } from '../game/laneJobs';
 import {
@@ -23,12 +23,24 @@ import { HERO_ASPECT, HERO_FRAMES, jobHeroArt, monsterArt, weaponArt } from './a
 // 視覺上完全等價,而且每個物件只是一個絕對定位的圖。
 //
 // 橫向則相反:角色是真的跟著手指走的(見 panResponder),位置連續、不是三格跳。
-const TRACK_HEIGHT = 500;
+// 跑道高度跟著視窗算,不能寫死。
+// 寫死 500 的時候在 780px 高的視窗剛好放得下,但 iPhone SE(667)、小 Android(640)、
+// 以及任何被瀏覽器網址列吃掉高度的手機,整頁會超出 40~54px——被切掉的正好是最底下那一列,
+// 也就是「下一關 / 再來一次」。畫面是 flex:1 不能捲動,所以那顆按鈕變成按不到,玩家會卡在
+// 通關畫面出不去。跑道以外的東西(廣告位、HUD、兩條進度條、來襲提示、回饋、提示列)
+// 加起來大約 264px,剩下的才是跑道。
+const TRACK_CHROME_HEIGHT = 264;
+const TRACK_HEIGHT_MAX = 500;
+/** 再矮就看不到足夠的前方路況了,寧可讓畫面出現捲動也不要低於這個值。 */
+const TRACK_HEIGHT_MIN = 320;
+
+function trackHeightFor(windowHeight: number): number {
+  return Math.max(TRACK_HEIGHT_MIN, Math.min(TRACK_HEIGHT_MAX, Math.round(windowHeight - TRACK_CHROME_HEIGHT)));
+}
+
 const HERO_HEIGHT = 84;
 const HERO_WIDTH = Math.round(HERO_HEIGHT * HERO_ASPECT);
 const HERO_BOTTOM = 10;
-/** 勇者的頭頂。所有物件都是「底邊碰到這條線」的瞬間結算,跟 laneRun 的結算點對齊。 */
-const HEAD_Y = TRACK_HEIGHT - HERO_BOTTOM - HERO_HEIGHT;
 /** 最高的物件高度。用來確保最遠的物件是從畫面外「冒出來」而不是憑空出現在上緣。 */
 const SPAWN_MARGIN = 72;
 /**
@@ -51,9 +63,12 @@ const BLINK_MS = 160;
  * 距離 → 物件底邊的 y。
  * ahead = 0 時底邊剛好落在勇者頭頂:玩家看到「頭碰到東西」的那一格,就是結算發生的那一格。
  * ahead = VISIBLE_AHEAD 時整個物件在畫面上緣之外。
+ *
+ * headY 要傳進來(不能用模組常數),因為跑道高度隨視窗變——但 VISIBLE_AHEAD 是距離單位、
+ * 不隨畫面變,所以難度不受影響:矮螢幕只是把同樣的一段路畫得比較密。
  */
-function bottomYFor(ahead: number): number {
-  return HEAD_Y - (ahead / VISIBLE_AHEAD) * (HEAD_Y + SPAWN_MARGIN);
+function bottomYFor(ahead: number, headY: number): number {
+  return headY - (ahead / VISIBLE_AHEAD) * (headY + SPAWN_MARGIN);
 }
 
 // 隊形:主角在最前面(畫面最下),其他人往後往兩側散開成一團。人數再多只加數字——
@@ -105,6 +120,9 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
   const heroArt = jobHeroArt(job?.archetype ?? null, job?.branch ?? 'A', job?.tier ?? 1);
   const attack = totalAttack(state);
 
+  const { height: windowHeight } = useWindowDimensions();
+  const trackHeight = trackHeightFor(windowHeight);
+  const headY = trackHeight - HERO_BOTTOM - HERO_HEIGHT;
   const [trackWidth, setTrackWidth] = useState(0);
   const trackWidthRef = useRef(0);
   const offsetRef = useRef(heroOffset);
@@ -173,7 +191,7 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
     const ahead = row.distance - distance;
     if (ahead > VISIBLE_AHEAD || ahead < -GATE_CULL_PAST) return null;
     if (trackWidth <= 0) return null;
-    const top = bottomYFor(ahead) - GATE_HEIGHT;
+    const top = bottomYFor(ahead, headY) - GATE_HEIGHT;
     return row.nodes.map((node) => {
       const trap = node.gate ? isTrap(node.gate.op, node.gate.value) : false;
       const span = gateSpan(node.lane);
@@ -210,7 +228,7 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
       const species = w.species[m.speciesIndex] ?? w.species[0];
       // 魔王固定站在跑道正中央:牠佔滿兩條跑道,躲不掉,也不該讓玩家以為躲得掉。
       const left = (w.boss ? 0.5 : m.offset) * trackWidth - size / 2;
-      const top = bottomYFor(ahead) - size;
+      const top = bottomYFor(ahead, headY) - size;
       const hpLeft = Math.max(0, 1 - w.hitsOn[m.index] / w.hitsPerUnit);
       return (
         <View key={m.index} style={[styles.floating, { left, top, width: size }]} pointerEvents="none">
@@ -245,7 +263,7 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
           styles.floating,
           {
             left: offset * trackWidth - PROJECTILE_SIZE / 2,
-            top: bottomYFor(ahead) - PROJECTILE_SIZE,
+            top: bottomYFor(ahead, headY) - PROJECTILE_SIZE,
             width: PROJECTILE_SIZE,
             height: PROJECTILE_SIZE,
             transform: [{ rotate: '-45deg' }],
@@ -285,7 +303,7 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
       </View>
 
       <View
-        style={[styles.track, { backgroundColor: terrain.base }]}
+        style={[styles.track, { height: trackHeight, backgroundColor: terrain.base }]}
         onLayout={(e) => {
           const w = e.nativeEvent.layout.width;
           trackWidthRef.current = w;
@@ -310,7 +328,7 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
               style={{
                 position: 'absolute',
                 left: sp.x * trackWidth,
-                top: ((distance * 1.6 + sp.phase) % (TRACK_HEIGHT + 40)) - 40,
+                top: ((distance * 1.6 + sp.phase) % (trackHeight + 40)) - 40,
                 width: sp.size,
                 height: Math.max(2, Math.round(sp.size * 0.6)),
                 borderRadius: 1,
@@ -331,7 +349,7 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
                   {
                     backgroundColor: terrain.edge,
                     left: laneWidth * (i + 1) - 1,
-                    top: ((distance * 1.6 + phase) % (TRACK_HEIGHT + DASH_LENGTH)) - DASH_LENGTH,
+                    top: ((distance * 1.6 + phase) % (trackHeight + DASH_LENGTH)) - DASH_LENGTH,
                   },
                 ]}
               />
@@ -438,7 +456,6 @@ const styles = StyleSheet.create({
   alertRow: { height: 16, alignItems: 'center', justifyContent: 'center' },
   alertText: { color: '#e05050', fontSize: 12, fontWeight: '700' },
   track: {
-    height: TRACK_HEIGHT,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#3a3a45',
