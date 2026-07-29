@@ -547,6 +547,12 @@ export function gateLabel(gate: GateEffect): string {
   return `${stat} ${gate.value >= 0 ? '+' : ''}${gate.value}`;
 }
 
+/**
+ * 漏接的回饋文字。畫面要拿它判斷「這次不是好事也不是壞事」——漏接的 hpDelta/attackDelta
+ * 都是 0,光看數字會被當成中性的好結果而畫成綠色,實際上是「你什麼都沒吃到」。
+ */
+export const MISS_MESSAGE = '沒碰到';
+
 /** 撞上敵人:攻擊力不足的部分直接換算成傷害。打得贏就零傷害並拿獎勵。 */
 export function resolveEnemy(state: RunState, enemy: EnemyEffect): RowResolution {
   const shortfall = Math.max(0, enemy.power - totalAttack(state));
@@ -590,7 +596,7 @@ export function resolveRow(state: RunState, row: RunRow, offset?: number): RowRe
   if (node.kind === 'gate' && node.gate) {
     // 站在這一格,但沒踩在閘門上——整格漏掉。好處沒吃到,陷阱也沒踩到。
     if (!hitsGate(at, node.lane)) {
-      return { state: advanced, message: '沒碰到', hpDelta: 0, attackDelta: 0 };
+      return { state: advanced, message: MISS_MESSAGE, hpDelta: 0, attackDelta: 0 };
     }
     const after = applyGate(advanced, node.gate);
     if (after.hp <= 0) after.phase = 'dead';

@@ -7,6 +7,7 @@ import {
   gateSpan,
   GATE_WIDTH,
   LANE_COUNT,
+  MISS_MESSAGE,
   runLength,
   terrainForStage,
   totalAttack,
@@ -27,9 +28,11 @@ import { HERO_ASPECT, HERO_FRAMES, jobHeroArt, monsterArt, weaponArt } from './a
 // 寫死 500 的時候在 780px 高的視窗剛好放得下,但 iPhone SE(667)、小 Android(640)、
 // 以及任何被瀏覽器網址列吃掉高度的手機,整頁會超出 40~54px——被切掉的正好是最底下那一列,
 // 也就是「下一關 / 再來一次」。畫面是 flex:1 不能捲動,所以那顆按鈕變成按不到,玩家會卡在
-// 通關畫面出不去。跑道以外的東西(廣告位、HUD、兩條進度條、來襲提示、回饋、提示列)
-// 加起來大約 264px,剩下的才是跑道。
-const TRACK_CHROME_HEIGHT = 252;
+// 通關畫面出不去。
+// 跑道以外的東西(廣告位、HUD 兩列、兩條進度條、來襲提示、提示列)加起來 224px——這是在
+// 360x640 實際量出來的,不是估的。結果面板改成浮在跑道上的 toast、回饋文字改成浮在判定線上
+// 之後,底部就不再有那兩列,這個數字才降得下來。
+const TRACK_CHROME_HEIGHT = 224;
 const TRACK_HEIGHT_MAX = 500;
 /** 再矮就看不到足夠的前方路況了,寧可讓畫面出現捲動也不要低於這個值。 */
 const TRACK_HEIGHT_MIN = 320;
@@ -44,11 +47,14 @@ const HERO_BOTTOM = 10;
 /** 最高的物件高度。用來確保最遠的物件是從畫面外「冒出來」而不是憑空出現在上緣。 */
 const SPAWN_MARGIN = 72;
 /**
- * 通過之後還畫多遠才收掉。單位是「距離」不是像素——這兩個值長得像但差 10 倍,
- * 拿像素當門檻的話閘門會在勇者身上多賴一秒才消失,看起來像卡住。
- * 閘門是跑過去的門,越過頭頂之後再滑一小段才收;小怪是撞上來的,碰到頭就該不見。
+ * 物件通過判定線之後還畫多遠才收掉(單位是「距離」不是像素,這兩個值長得像但差 10 倍)。
+ *
+ * 0 = 碰到判定線就消失。閘門原本會再往下滑一小段才收,想做出「跑過一道門」的感覺,
+ * 但實際玩起來是框整個套在勇者身上再慢慢滑走,玩家分不清「到底哪一刻算數」——
+ * 已經結算完的框還黏在身上,看起來像還沒吃到、或是會再吃一次。
+ * 現在框消失的那一刻 = 結算的那一刻,沒有第二種解讀。
  */
-const GATE_CULL_PAST = 25;
+const GATE_CULL_PAST = 0;
 const GATE_HEIGHT = 50;
 const MONSTER_SIZE = 42;
 /** 大魔王畫多大。要一眼看出「這不是小怪」,但不能寬到蓋掉兩條跑道。 */
@@ -320,6 +326,10 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
           ))}
         </View>
 
+        {/* 判定線:所有物件的底邊碰到這條線就結算。畫出來玩家才知道要把勇者拉到哪裡去接,
+            而且它是畫面上唯一靜止的東西——動的是物件,不是線。 */}
+        <View style={[styles.contactLine, { top: headY }]} pointerEvents="none" />
+
         {/* 地面碎點:草皮的草叢、土地的石礫、柏油路的補丁。跟著跑動往下捲,是「地面在動」的主要線索。 */}
         <View style={styles.laneLines} pointerEvents="none">
           {SPECKS.map((sp, i) => (
@@ -360,6 +370,29 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
         {upcoming.map(renderGateRow)}
         {wave && renderWave(wave)}
         {projectiles.map(renderProjectile)}
+
+        {/* 結算回饋:直接浮在判定線上、勇者正上方。放在跑道外面的話,玩家要在「框消失」與
+            「畫面下方跳出一行字」之間自己連連看;放在事發地點就不用連。 */}
+        {feedback && feedback.message !== '' && trackWidth > 0 && (
+          <Text
+            key={feedback.key}
+            pointerEvents="none"
+            style={[
+              styles.feedbackFloat,
+              {
+                top: headY - 24,
+                left: Math.min(Math.max(heroLeft + HERO_WIDTH / 2 - 70, 2), Math.max(2, trackWidth - 142)),
+              },
+              feedback.message === MISS_MESSAGE
+                ? styles.feedbackMiss
+                : feedback.hpDelta < 0 || feedback.attackDelta < 0
+                  ? styles.feedbackBad
+                  : styles.feedbackGood,
+            ]}
+          >
+            {feedback.message}
+          </Text>
+        )}
 
         {/* 結果 toast:浮在跑道上,不佔版面高度。
             先前是畫面最下面獨立的一列,在矮螢幕會被切到畫面外,玩家按不到「下一關」就卡死。
@@ -413,20 +446,6 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
         {state.heroes > SQUAD_SLOTS.length && (
           <Text style={[styles.squadCount, { left: heroLeft - 12, bottom: HERO_BOTTOM + HERO_HEIGHT - 6 }]}>
             x{state.heroes}
-          </Text>
-        )}
-      </View>
-
-      <View style={styles.feedbackRow}>
-        {feedback && feedback.message !== '' && (
-          <Text
-            key={feedback.key}
-            style={[
-              styles.feedbackText,
-              feedback.hpDelta < 0 || feedback.attackDelta < 0 ? styles.feedbackBad : styles.feedbackGood,
-            ]}
-          >
-            {feedback.message}
           </Text>
         )}
       </View>
@@ -500,9 +519,23 @@ const styles = StyleSheet.create({
   bossHpFill: { height: '100%', backgroundColor: '#e05050' },
   pixelArt: Platform.OS === 'web' ? ({ imageRendering: 'pixelated' } as object) : {},
   hero: { position: 'absolute' },
-  feedbackRow: { height: 22, alignItems: 'center', justifyContent: 'center' },
-  feedbackText: { fontSize: 14, fontWeight: '700' },
+  contactLine: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 1,
+    backgroundColor: '#f2f2f230',
+  },
+  feedbackFloat: {
+    position: 'absolute',
+    width: 140,
+    textAlign: 'center',
+    fontSize: 14,
+    fontWeight: '700',
+    zIndex: 30,
+  },
   feedbackGood: { color: '#5ec26a' },
+  feedbackMiss: { color: '#8a8a95' },
   feedbackBad: { color: '#e05050' },
   resultOverlay: {
     position: 'absolute',
