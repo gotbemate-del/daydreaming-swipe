@@ -59,7 +59,25 @@
 - [x] 廣告版位:畫面最上方的固定高度佔位(還沒接聯播網,見 `components/AdSlot.tsx`)
 - [x] 難度曲線重做:敵人綁定閘門成長,一關 20 排,張力往後遞增而不是往後遞減
 - [x] 部署到 GitHub Pages(https://gotbemate-del.github.io/daydreaming-swipe/)
-- [ ] 接上 `game/equipment.ts` 的 3000 件裝備(目前「裝備」只是 1~5 階的抽象等級)
+- [x] 主介面:勇者站中間 + 開始闖關,每場結束都回到這裡(過關才前進、失敗重打同一關)
+- [x] 打擊演出:命中跳傷害數字、22% 機率暴擊(金色、2 倍數字)——純演出,不影響擊殺數
+- [ ] 下方分頁列的十個功能目前**全部未開放**(只畫出來並鎖住,見下方「裝備為什麼還沒接」)
+- [ ] 接上 `game/equipment.ts` 的裝備(目前「裝備」只是 1~5 階的抽象等級)
+
+### 裝備為什麼還沒接(先讀這段再動手)
+
+`game/equipment.ts` 實際上是 **5668 件**(不是 3000),但它整份是為姊妹作的掛機迴圈設計的,
+不能直接接上來,三個硬衝突:
+
+1. **加成只有 `speed` / `exp` / `coins` 三種。** `speed` 在姊妹作是「縮短戰鬥時間」,
+   在這款對應的是跑速——而跑速是難度旋鈕,鐵則明文禁止養成碰它。接上去等於「花錢買慢速」。
+2. **`exp` 沒有對應物。** 這款不打算做經驗值系統。
+3. **5650/5668 件有 `requiredLevel`(最高 500)。** 沒有等級,這個門檻整個失效,
+   要換成別的(金幣價格是現成的,`price` 0~16730,而跑圖本來就產金幣)。
+
+而且滿裝加總是 speed +144%,是技能上限(+45%)的三倍多——直接接上去就是養成買到勝利。
+**要接之前必須先決定「加成對應到什麼、幅度壓到多少」,那是一次獨立的設計決策,不是接線工作。**
+在那之前,主介面的分頁列全部鎖著(`MainMenu.tsx` 的 `TAB_ICONS`),點了只回一句「尚未開放」。
 - [ ] 關卡結構重新設計(取代姊妹作的 3000 關)
 - [ ] 經驗曲線重新校準(原本是為掛機設計的)
 - [ ] 存檔 schema(全新,不沿用姊妹作的 v36)
@@ -69,7 +87,8 @@
 ```
 app/          Expo Router 頁面層(只做組裝)
 components/   UI 元件
-  LaneRunner.tsx  跑道畫面(拖曳、閘門、波次、投擲演出)
+  MainMenu.tsx    主介面(勇者站中間 + 開始闖關 + 下方分頁列)
+  LaneRunner.tsx  跑道畫面(拖曳、閘門、波次、投擲演出、傷害數字)
   JobChoice.tsx   轉職畫面
   SkillChoice.tsx 技能選擇畫面
   AdSlot.tsx      廣告版位(先佔高度,之後接 AdSense/AdMob 只改這個檔)
@@ -178,5 +197,17 @@ scripts/      驗證腳本
 
 ## 部署
 
+線上位址:**https://gotbemate-del.github.io/daydreaming-swipe/**
+
 push 到 `main` 會自動觸發 `.github/workflows/deploy-web.yml` 部署到 GitHub Pages。
-**第一次要先到 repo Settings → Pages,把 Source 改成「GitHub Actions」。**
+Settings → Pages 的 Source 已經設成「GitHub Actions」(這一步只需要做一次,已完成)。
+
+**開發分支上的 commit 不會部署**——工作流程只在 push 到 `main` 時觸發。改完東西之後
+線上還是舊版是正常的,要合併到 `main` 才會上線。
+
+**每次改完並驗證通過之後,主動問使用者要不要部署**,不要默默等他問「部署了嗎」。
+
+一個排查用的事實:如果 Actions 分頁裡一次執行紀錄都沒有,不是工作流程壞了,
+先確認 Pages 的 Source 是不是「GitHub Actions」——沒設定的話 deploy 那一步會回 404
+(`Creating Pages deployment failed / HttpError: Not Found`),而 build 那一步是成功的,
+很容易誤判成「建置有問題」。

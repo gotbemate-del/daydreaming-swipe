@@ -21,6 +21,36 @@ export const HERO_ASPECT = 458 / 746;
 /** 勇者擲出去的武器。沿用既有的傳承之劍,不另外畫特效圖。 */
 export const PROJECTILE_ART: ImageSourcePropType = require('../assets/sprites/items/legacy_sword.png');
 
+/**
+ * 主介面下方分頁列的圖示。沿用姊妹作既有的 icon_tab_*.png,不另外畫。
+ *
+ * CLAUDE.md 的圖示鐵則:一律不用 emoji,連「先佔位之後再換」都不行。這些是既有的像素素材,
+ * 風格與調色盤本來就對得上,所以分頁列直接用它們,不需要臨時的替代符號。
+ */
+export interface TabIcon {
+  id: string;
+  label: string;
+  art: ImageSourcePropType;
+}
+
+export const TAB_ICONS: TabIcon[] = [
+  { id: 'equipment', label: '裝備', art: require('../assets/sprites/ui/icon_tab_equipment.png') },
+  { id: 'backpack', label: '背包', art: require('../assets/sprites/ui/icon_tab_backpack.png') },
+  { id: 'skill', label: '技能', art: require('../assets/sprites/ui/icon_tab_skill.png') },
+  { id: 'job', label: '轉職', art: require('../assets/sprites/ui/icon_tab_job.png') },
+  { id: 'pet', label: '寵物', art: require('../assets/sprites/ui/icon_tab_pet.png') },
+  { id: 'dungeon', label: '副本', art: require('../assets/sprites/ui/icon_tab_dungeon.png') },
+  { id: 'shop', label: '商店', art: require('../assets/sprites/ui/icon_tab_shop.png') },
+  { id: 'workshop', label: '工坊', art: require('../assets/sprites/ui/icon_tab_workshop.png') },
+  { id: 'achievement', label: '成就', art: require('../assets/sprites/ui/icon_tab_achievement.png') },
+  { id: 'ascension', label: '轉生', art: require('../assets/sprites/ui/icon_tab_ascension.png') },
+];
+
+/** 鎖頭。分頁全部未開放,疊在圖示上表示「還不能點」。 */
+export const LOCK_ICON: ImageSourcePropType = require('../assets/sprites/ui/icon_lock.png');
+/** 金幣。主介面顯示身上有多少錢。 */
+export const COIN_ICON: ImageSourcePropType = require('../assets/sprites/ui/icon_coin.png');
+
 // 12 種身體原型,對應 game/monsters.ts 的 ARCHETYPE_CATALOG.key。怪物 id 是 `${archetype}-${slot}`,
 // slot(強度稱號)共用同一張原型圖——這跟 game/sprites/monsters.ts 的做法一致:一副骨架、多種強度。
 const MONSTER_ART: Record<string, ImageSourcePropType> = {

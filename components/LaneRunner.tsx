@@ -17,7 +17,7 @@ import {
   type RunStart,
   type TerrainId,
 } from '../game/laneRun';
-import { useLaneRun, type Projectile, type WaveView } from '../hooks/useLaneRun';
+import { HIT_NUMBER_MS, useLaneRun, type HitNumber, type Projectile, type WaveView } from '../hooks/useLaneRun';
 import { HERO_ASPECT, HERO_FRAMES, jobHeroArt, monsterArt, weaponArt } from './artAssets';
 
 // 跑道畫面。角色固定在跑道底部、物件由上往下逼近——這是「角色在跑」最省效能的表現方式:
@@ -110,13 +110,13 @@ interface Props {
   job: LaneJob;
   /** 起跑數值(轉職 + 技能算完的結果)。畫面不自己算養成,由 app 層算好傳進來。 */
   start: RunStart;
-  onCleared: () => void;
-  onRetry: () => void;
+  /** 這一場結束(通關或陣亡)。coins 是這一場賺到的,由 app 層累加起來帶回主介面。 */
+  onFinish: (result: 'cleared' | 'dead', coins: number) => void;
 }
 
-export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
+export function LaneRunner({ stage, job, start, onFinish }: Props) {
   const run = useLaneRun(stage, start);
-  const { state, distance, heroOffset, upcoming, wave, projectiles, feedback, steer, dragTo } = run;
+  const { state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers, feedback, steer, dragTo } = run;
   const heroArt = jobHeroArt(job?.archetype ?? null, job?.branch ?? 'A', job?.tier ?? 1);
   const attack = totalAttack(state);
 
@@ -246,6 +246,31 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
     });
   }
 
+  /**
+   * 命中時跳出來的傷害數字。往上飄一小段並淡出,暴擊是金色而且大一號。
+   * 位置跟著被打的那隻走(絕對距離),不是釘在螢幕上——釘在螢幕上的話跑道一捲數字就飄掉了。
+   */
+  function renderHitNumber(h: HitNumber) {
+    if (!ready) return null;
+    const age = Math.min(1, (Date.now() - h.bornAt) / HIT_NUMBER_MS);
+    const ahead = h.distance - distance;
+    if (ahead > VISIBLE_AHEAD) return null;
+    const top = bottomYFor(ahead, headY) - MONSTER_SIZE - age * 26;
+    return (
+      <Text
+        key={h.id}
+        pointerEvents="none"
+        style={[
+          styles.hitNumber,
+          h.crit && styles.hitNumberCrit,
+          { left: h.offset * trackWidth - 40, top, opacity: 1 - age * age },
+        ]}
+      >
+        {h.crit ? `${compact(h.value)}!` : compact(h.value)}
+      </Text>
+    );
+  }
+
   /** 擲出去的武器。從擲出的位置往目標那一格斜著飛過去,所以 x 要跟著飛行進度內插。 */
   function renderProjectile(p: Projectile) {
     if (!ready || !wave) return null;
@@ -370,6 +395,8 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
         {upcoming.map(renderGateRow)}
         {wave && renderWave(wave)}
         {projectiles.map(renderProjectile)}
+        {/* 傷害數字畫在武器與怪物之上,不然會被怪物的圖蓋掉 */}
+        {hitNumbers.map(renderHitNumber)}
 
         {/* 結算回饋:直接浮在判定線上、勇者正上方。放在跑道外面的話,玩家要在「框消失」與
             「畫面下方跳出一行字」之間自己連連看;放在事發地點就不用連。 */}
@@ -406,12 +433,14 @@ export function LaneRunner({ stage, job, start, onCleared, onRetry }: Props) {
               <Text style={styles.resultSummary}>
                 第 {stage} 關 · 勇者 {compact(state.heroes)} · 戰力 {compact(attack)} · 金幣 {compact(state.coins)}
               </Text>
+              {/* 通關還要先選技能/轉職才回主介面,所以寫「繼續」而不是「回主介面」——
+                  按下去馬上跳到別的畫面,標示成回主介面會對不上。陣亡沒有後續,直接回。 */}
               <Pressable
                 style={styles.againButton}
-                accessibilityLabel={state.phase === 'cleared' ? '下一關' : '再來一次'}
-                onPress={() => (state.phase === 'cleared' ? onCleared() : onRetry())}
+                accessibilityLabel={state.phase === 'cleared' ? '繼續' : '回主介面'}
+                onPress={() => onFinish(state.phase === 'cleared' ? 'cleared' : 'dead', state.coins)}
               >
-                <Text style={styles.againLabel}>{state.phase === 'cleared' ? '下一關' : '再來一次'}</Text>
+                <Text style={styles.againLabel}>{state.phase === 'cleared' ? '繼續' : '回主介面'}</Text>
               </Pressable>
             </View>
           </View>
@@ -520,6 +549,20 @@ const styles = StyleSheet.create({
   gateTrap: { backgroundColor: '#3a2323', borderColor: '#e05050' },
   gateText: { color: '#f2f2f2', fontSize: 13, fontWeight: '700', textAlign: 'center' },
   floating: { position: 'absolute' },
+  // 傷害數字。固定寬度 + 置中,數字位數變多才不會整串往左偏(left 是用「怪的位置 - 40」算的)。
+  // 深色描邊:數字會飄到怪物與淺色地面上,沒有描邊在草皮上會直接看不見。
+  hitNumber: {
+    position: 'absolute',
+    width: 80,
+    textAlign: 'center',
+    color: '#f2f2f2',
+    fontSize: 13,
+    fontWeight: '700',
+    textShadowColor: '#16161c',
+    textShadowRadius: 3,
+    textShadowOffset: { width: 0, height: 1 },
+  },
+  hitNumberCrit: { color: '#e0a95c', fontSize: 19 },
   bossHpTrack: {
     height: 6,
     borderRadius: 3,

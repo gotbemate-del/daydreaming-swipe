@@ -20,6 +20,8 @@ import {
   waveKillCount,
   waveMonsters,
   DEFAULT_RUN_START,
+  hitDamage,
+  isCritHit,
   type Lane,
   type RunRow,
   type RunStart,
@@ -47,6 +49,23 @@ export interface RunFeedback {
   hpDelta: number;
   attackDelta: number;
 }
+
+/**
+ * 命中時跳出來的傷害數字。位置用「絕對距離 + 橫向 offset」跟小怪同一個座標系,
+ * 畫面才不用另外換算——數字要跟著被打的那隻一起往勇者移動,釘在螢幕座標會飄掉。
+ */
+export interface HitNumber {
+  id: number;
+  value: number;
+  crit: boolean;
+  offset: number;
+  distance: number;
+  /** 出生時間,畫面拿它算飄多高、淡多少 */
+  bornAt: number;
+}
+
+/** 數字浮多久。太長會整片數字疊在一起看不清楚,太短看不到。 */
+export const HIT_NUMBER_MS = 620;
 
 /** 飛行中的武器。位置跟排、跟小怪同一個座標系(絕對距離),畫面才不用換算兩套。 */
 export interface Projectile {
@@ -86,6 +105,8 @@ export interface LaneRunView {
   /** 正在衝過來的那一波小怪(沒有就是 null) */
   wave: WaveView | null;
   projectiles: Projectile[];
+  /** 命中瞬間跳出來的傷害數字(含暴擊)。純演出,不影響擊殺數。 */
+  hitNumbers: HitNumber[];
   feedback: RunFeedback | null;
   speed: number;
   /** 手指拖曳:直接把角色放到這個位置 */
@@ -118,6 +139,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
   const [feedback, setFeedback] = useState<RunFeedback | null>(null);
   const [wave, setWave] = useState<WaveView | null>(null);
   const [projectiles, setProjectiles] = useState<Projectile[]>([]);
+  const [hitNumbers, setHitNumbers] = useState<HitNumber[]>([]);
 
   const startedAtRef = useRef(Date.now());
   // 已結算過的排。跟判定同步讀寫,走 state 會慢一拍導致同一排被結算兩次。
@@ -131,6 +153,8 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
   const waveRef = useRef<WaveRuntime | null>(null);
   const projectilesRef = useRef<Projectile[]>([]);
   const projectileIdRef = useRef(0);
+  const hitNumbersRef = useRef<HitNumber[]>([]);
+  const hitNumberIdRef = useRef(0);
 
   // 角色位置同時放在 ref 與 state:ref 給結算用(要拿到「這一瞬間」的位置,不能慢一拍,
   // 慢一拍就會發生「明明已經拉到隔壁格了卻吃到原本那格」),state 只是拿來觸發重畫。
@@ -173,8 +197,10 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
       if (waveRef.current !== null) {
         waveRef.current = null;
         projectilesRef.current = [];
+        hitNumbersRef.current = [];
         setWave(null);
         setProjectiles([]);
+        setHitNumbers([]);
       }
       return;
     }
@@ -245,6 +271,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
     }
 
     // --- 武器往前飛,飛到目標身上就算命中,挨滿 HITS_PER_MONSTER 下的(打得倒的那些)就倒 ---
+    const newHits: HitNumber[] = [];
     if (projectilesRef.current.length > 0) {
       const step = ((speed + PROJECTILE_SPEED) * TICK_MS) / 1000;
       const flying: Projectile[] = [];
@@ -253,12 +280,33 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         const target = current.monsters[p.targetIndex];
         if (target && moved.distance >= target.distance) {
           current.hitsOn[p.targetIndex] += 1;
+          // 命中就跳一個傷害數字。是不是暴擊由「第幾排/第幾隻/第幾下」的雜湊決定,不是亂數——
+          // 這個 tick 迴圈每 33ms 跑一次,用亂數的話同一下會一直重抽,數字會閃爍。
+          const ordinal = current.hitsOn[p.targetIndex];
+          const crit = isCritHit(current.rowIndex, p.targetIndex, ordinal);
+          hitNumberIdRef.current += 1;
+          newHits.push({
+            id: hitNumberIdRef.current,
+            value: hitDamage(totalAttack(stateRef.current), current.hitsPerUnit, crit),
+            crit,
+            offset: target.offset,
+            distance: target.distance,
+            bornAt: now,
+          });
           continue; // 命中就收掉,不再畫
         }
         flying.push(moved);
       }
       projectilesRef.current = flying;
       setProjectiles(flying);
+    }
+
+    // 過期的數字丟掉。沒有新命中而且也沒有要過期的就不要 setState——這個迴圈每 33ms 跑一次,
+    // 每次都換一個新陣列的話畫面每格都重畫一次,手機上會開始掉幀。
+    const live = hitNumbersRef.current.filter((h) => now - h.bornAt < HIT_NUMBER_MS);
+    if (newHits.length > 0 || live.length !== hitNumbersRef.current.length) {
+      hitNumbersRef.current = [...live, ...newHits];
+      setHitNumbers(hitNumbersRef.current);
     }
 
     const down = current.monsters.map((m) => isDown(m.index));
@@ -334,6 +382,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
     upcoming,
     wave,
     projectiles,
+    hitNumbers,
     feedback,
     speed,
     dragTo,

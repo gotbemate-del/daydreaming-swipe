@@ -10,6 +10,7 @@ import {
   GATE_WIDTH, gateSpan, hitsGate, MONSTER_JITTER, SPECIES_PER_WAVE, START_OFFSET, terrainForStage,
   ENEMY_POWER_RATIO, GOOD_GATE_GROWTH, gatesBeforeRow, heroGrowAmount, isTrapGate, runSeconds,
   applyGate, enemyPowerForRow, gateLabel, HERO_ADD_RATIO, idealAttackForRow,
+  CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
   TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane,
   type Lane, type RunState,
 } from '../game/laneRun';
@@ -236,6 +237,30 @@ check('丟得完:剩越多下要丟就丟越快',
 check('連射有下限(不會變成雷射)', fireIntervalMs(10, 9) === MIN_FIRE_INTERVAL_MS);
 check('間隔有上限(不會久到看起來沒在打)', fireIntervalMs(99999, 1) === MAX_FIRE_INTERVAL_MS);
 check('沒有要打的目標就不丟', fireIntervalMs(3000, 0) === Number.POSITIVE_INFINITY);
+
+// --- 打擊數值與暴擊(純演出,不能影響勝負)---
+// 這一組最重要的一項是最後那個:暴擊只是把同樣的結果演得好看,不會多打死一隻。
+// 讓它真的加成的話,期望值得併進 totalAttack,那就是動平衡——而這一版的難度曲線
+// (ENEMY_POWER_RATIO)整條是照 waveKillCount 校準的。
+const critSamples = Array.from({ length: 4000 }, (_, i) => isCritHit(i % 20, i % 9, Math.floor(i / 9) % 12));
+const critRate = critSamples.filter(Boolean).length / critSamples.length;
+check('暴擊率接近設定值', Math.abs(critRate - CRIT_CHANCE) < 0.05,
+  `設定 ${(CRIT_CHANCE * 100).toFixed(0)}%,實測 ${(critRate * 100).toFixed(1)}%`);
+check('同一下算幾次都一樣(不會閃爍)',
+  isCritHit(3, 2, 1) === isCritHit(3, 2, 1) && isCritHit(7, 5, 2) === isCritHit(7, 5, 2));
+check('不同的下數會算出不同結果(不是整場都暴擊或都不暴擊)',
+  new Set(Array.from({ length: 40 }, (_, i) => isCritHit(3, i % 9, i))).size === 2);
+check('暴擊的數字比較大', hitDamage(900, 3, true) > hitDamage(900, 3, false));
+check('暴擊剛好放大設定的倍數',
+  hitDamage(900, 3, true) === Math.round(hitDamage(900, 3, false) * CRIT_MULTIPLIER),
+  `${hitDamage(900, 3, false)} → ${hitDamage(900, 3, true)}`);
+check('一下的傷害是總戰力攤到每一下', hitDamage(900, 3, false) === 300);
+check('傷害至少 1(戰力再低也不會跳 0)', hitDamage(1, 12, false) >= 1);
+// 暴擊參數完全不出現在 waveKillCount 的算式裡,所以打得掉幾隻跟暴擊無關。
+check('暴擊不影響打得掉幾隻(演出與結算是分開的)',
+  [100, 250, 400].every((atk) => waveKillCount(atk, 300, 9) === waveKillCount(atk, 300, 9))
+  && waveKillCount(300, 300, 9) === 9 && waveKillCount(150, 300, 9) === 5,
+  '擊殺數只看 攻擊力/戰力 的比例');
 
 // --- 三種玩家跑同一場 ---
 type Picker = (s: RunState, row: ReturnType<typeof createRun>[number], rng: () => number) => Lane;

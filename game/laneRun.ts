@@ -511,6 +511,40 @@ export function fireIntervalMs(msUntilLastKill: number, remainingShots: number):
   return Math.min(MAX_FIRE_INTERVAL_MS, Math.max(MIN_FIRE_INTERVAL_MS, spread));
 }
 
+// ---- 打擊數值與暴擊 ----
+// 命中的瞬間在怪物身上跳一個傷害數字,偶爾是金色的暴擊。
+//
+// **這一整組是演出,不影響勝負。** 打得掉幾隻仍然只看 waveKillCount,暴擊不會多打死一隻。
+// 這條界線跟波次演出是同一條(見上方「一波敵人不是三隻站著等你撞」那段):結算只在
+// 這一排的結算點算一次,畫面負責把那個結果演出來。讓暴擊真的去改擊殺數的話,就變成
+// 兩套各自漂移的判定,最後畫面演的跟實際扣的血對不起來——而且這一版的難度曲線
+// (ENEMY_POWER_RATIO)是照 waveKillCount 校準的,暴擊插進去等於整條重來。
+//
+// 暴擊要不要「其實有加成」?不要。要加成的話期望值得併進 totalAttack,那就是動平衡;
+// 現在的做法是「同樣的結果,演得比較好看」——爽感來自數字跳動與金色,不是來自偷偷變強。
+
+/** 幾成的命中是暴擊。太高就沒有「中了!」的感覺,太低玩家整場看不到一次。 */
+export const CRIT_CHANCE = 0.22;
+/** 暴擊的數字放大幾倍。只影響顯示的數字。 */
+export const CRIT_MULTIPLIER = 2;
+
+/**
+ * 這一下是不是暴擊。用雜湊而不是 Math.random:同一場重播要長一樣,
+ * 而且畫面每個 tick 都會重算,用亂數的話同一下會一下暴擊一下不暴擊,數字會閃爍。
+ */
+export function isCritHit(rowIndex: number, targetIndex: number, hitOrdinal: number): boolean {
+  return hashFor(rowIndex * 97 + targetIndex, hitOrdinal, 7) < CRIT_CHANCE;
+}
+
+/**
+ * 命中時跳出來的數字。一隻要挨 hitsPerUnit 下才倒,所以一下的傷害就是總戰力攤到每一下上。
+ * 這個數字是給玩家看「我這一下有多痛」的,不是結算用的數字。
+ */
+export function hitDamage(attack: number, hitsPerUnit: number, crit: boolean): number {
+  const per = Math.max(1, Math.round(attack / Math.max(1, hitsPerUnit)));
+  return crit ? Math.round(per * CRIT_MULTIPLIER) : per;
+}
+
 /** 越後面的敵人挑越稀有的造型,讓「看起來更兇」跟「戰力更高」對得上。 */
 export function enemyRarityForRow(rowIndex: number): Rarity {
   const tier = Math.floor(rowIndex / ENEMY_EVERY) + 1;
