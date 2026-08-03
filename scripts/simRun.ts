@@ -1,0 +1,102 @@
+// 跑一場的模擬器。三份 verify 腳本共用同一份,不要各自複製一份迴圈。
+//
+// 為什麼要共用:敵人戰力是照「這一場的最佳路線」算的,而最佳路線包含**場內技能**
+// (打完一波給一次,見 game/laneRunSkills.ts)。模擬的時候漏掉技能,玩家就會比敵人
+// 假設的弱一大截,量出來的過關率整片失真——而且三份腳本各寫一份的話,
+// 只會有一份被記得更新,另外兩份會靜靜地量錯東西。
+
+import {
+  bestLane, createRun, initialRunState, isEnemyRowIndex, LANE_COUNT, laneCenterOffset, resolveRow,
+  wavesForStage, worstLane, type Lane, type RunRow, type RunStart, type RunState,
+} from '../game/laneRun';
+import {
+  applyRunSkillPick, bestRunSkillChoice, learnRunSkill, runSkillOffersAt, runSkillPicksForWave,
+  type RunSkillState,
+} from '../game/laneRunSkills';
+
+export type LanePicker = (state: RunState, row: RunRow, rng: () => number) => Lane;
+
+export const pickBest: LanePicker = (s, row) => bestLane(s, row);
+export const pickWorst: LanePicker = (s, row) => worstLane(s, row);
+export const pickRandom: LanePicker = (_s, _row, rng) => Math.floor(rng() * LANE_COUNT) as Lane;
+/** 準確率 p:每排有 p 的機率挑對邊。真人比較像這個,不像擲骰子。 */
+export const pickAccurate = (p: number): LanePicker => (s, row, rng) =>
+  (rng() < p ? bestLane(s, row) : worstLane(s, row));
+
+export interface SimResult {
+  outcome: 'cleared' | 'dead';
+  state: RunState;
+  /** 死在第幾排(活著回傳 -1) */
+  deathRow: number;
+  /** 每一排敵人的「總戰力 / 敵人戰力」 */
+  margins: { rowIndex: number; margin: number; boss: boolean }[];
+  runSkills: RunSkillState[];
+}
+
+export interface SimOptions {
+  start?: RunStart;
+  /**
+   * 手抖幅度:站的位置在該格中心 ±sloppy 之間亂飄,所以有機率整格漏掉。
+   * 這一項一定要走這支模擬器,不要在腳本裡另外寫一圈——手寫的那圈漏掉場內技能,
+   * 玩家就會比敵人假設的弱一整條技能曲線,量出來是「拉得再準也 0% 過關」。
+   */
+  sloppy?: number;
+}
+
+export function simulateRun(
+  seed: number,
+  stage: number,
+  pick: LanePicker,
+  opts: SimOptions = {},
+): SimResult {
+  const { start, sloppy = 0 } = opts;
+  const rows = createRun(seed, stage);
+  let st = start ? initialRunState(stage, start) : initialRunState(stage);
+  let x = seed + 7;
+  const rng = () => { x = (x * 1103515245 + 12345) & 0x7fffffff; return x / 0x7fffffff; };
+
+  const totalWaves = wavesForStage(stage);
+  let skills: RunSkillState[] = [];
+  let waveIndex = 0;
+  let skillOrdinal = 0;
+  const margins: SimResult['margins'] = [];
+
+  for (const row of rows) {
+    st = { ...st, lane: pick(st, row, rng) };
+    const node = row.nodes.find((n) => n.lane === st.lane);
+    if (node?.kind === 'enemy' && node.enemy) {
+      margins.push({ rowIndex: row.index, margin: (st.heroes * st.perHero) / node.enemy.power, boss: node.enemy.boss === true });
+    }
+    // 手抖:挑對邊了,但站的位置離該格中心有偏差,偏太多就整格漏掉(閘門左右都留空隙)。
+    const offset = sloppy > 0 ? laneCenterOffset(st.lane) + (rng() * 2 - 1) * sloppy : undefined;
+    st = resolveRow(st, row, offset).state;
+    if (st.phase === 'dead') {
+      return { outcome: 'dead', state: st, deathRow: row.index, margins, runSkills: skills };
+    }
+    // 打完一波就給技能,規則跟遊戲裡一模一樣。
+    if (isEnemyRowIndex(row.index, stage)) {
+      const picks = runSkillPicksForWave(waveIndex, totalWaves);
+      waveIndex += 1;
+      for (let k = 0; k < picks; k++) {
+        // 選項綁 seed:createRun 的理想路線重播的是同一串,兩邊才對得起來。
+        const offers = runSkillOffersAt(skills, seed, skillOrdinal);
+        skillOrdinal += 1;
+        if (offers.length === 0) break;
+        const choice = bestRunSkillChoice(skills, offers);
+        const grown = applyRunSkillPick(skills, choice, st);
+        skills = learnRunSkill(skills, choice);
+        st = { ...st, ...grown, hp: Math.min(grown.maxHp, st.hp + Math.max(0, grown.maxHp - st.maxHp)) };
+      }
+    }
+  }
+  return { outcome: 'cleared', state: st, deathRow: -1, margins, runSkills: skills };
+}
+
+/** 過關率。 */
+export function clearRate(stage: number, pick: LanePicker, trials = 400, opts: SimOptions = {}): number {
+  let cleared = 0;
+  for (let t = 0; t < trials; t++) {
+    if (simulateRun(t * 31 + 1, stage, pick, opts).outcome === 'cleared') cleared++;
+  }
+  return cleared / trials;
+}

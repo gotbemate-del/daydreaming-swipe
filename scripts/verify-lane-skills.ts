@@ -7,9 +7,10 @@ import {
 } from '../game/laneSkills';
 import { runStartFor } from '../game/laneJobs';
 import {
-  bestLane, createRun, DEFAULT_RUN_START, initialRunState, LANE_COUNT, resolveRow,
-  totalAttack, worstLane, ENEMY_POWER_RATIO, type Lane, type RunStart, type RunState,
+  DEFAULT_RUN_START, initialRunState,
+  totalAttack, ENEMY_POWER_RATIO, type RunStart,
 } from '../game/laneRun';
+import { clearRate, pickAccurate, pickBest, pickRandom, pickWorst, type LanePicker } from './simRun';
 
 let fail = 0;
 const check = (name: string, cond: boolean, extra = '') => {
@@ -79,49 +80,18 @@ check('技能能疊出的戰力倍率不超過 1.5 倍', maxAttackMultiplierFrom
   `x${maxAttackMultiplierFromSkills().toFixed(2)}`);
 
 // --- 實測:滿技能 + 滿階職業,亂選一樣會輸 ---
-type Picker = (s: RunState, row: ReturnType<typeof createRun>[number], r: () => number) => Lane;
-function play(seed: number, stage: number, start: RunStart, pick: Picker) {
-  const rows = createRun(seed, stage);
-  let st = initialRunState(stage, start);
-  const r = (() => { let x = seed + 7; return () => { x = (x * 1103515245 + 12345) & 0x7fffffff; return x / 0x7fffffff; }; })();
-  for (const row of rows) {
-    st = { ...st, lane: pick(st, row, r) };
-    st = resolveRow(st, row).state;
-    if (st.phase === 'dead') return 'dead' as const;
-  }
-  return 'cleared' as const;
-}
-const pickBest: Picker = (s, row) => bestLane(s, row);
-const pickWorst: Picker = (s, row) => worstLane(s, row);
-const pickRandom: Picker = (_s, _row, r) => Math.floor(r() * LANE_COUNT) as Lane;
+// 跑圖模擬一律走 scripts/simRun.ts。這裡自己寫一圈的話會漏掉**場內技能**
+// (game/laneRunSkills.ts,每打完一波給一次),而敵人戰力是照「含場內技能的最佳路線」算的——
+// 少算的那一整條曲線會讓所有過關率一起塌掉,看起來像養成壞了。
+const rate = (stage: number, start: RunStart, pick: LanePicker, trials = 300) =>
+  clearRate(stage, pick, trials, { start });
 /**
  * 準確率 p 的玩家:每排有 p 的機率挑對邊。
  * 「養成有沒有意義」要用這個量,不能用亂選——跑道 20 排之後亂選在任何設定下都是 0~1%,
  * 兩邊都貼著地板,比出來的是雜訊不是效果(同一個理由見 CLAUDE.md 的難度指標那段)。
  */
-function accRate(stage: number, start: RunStart, p: number, trials = 400) {
-  let cleared = 0;
-  for (let t = 0; t < trials; t++) {
-    const seed = t * 31 + 1;
-    const rows = createRun(seed, stage);
-    let st = initialRunState(stage, start);
-    let x = seed + 7;
-    const rnd = () => { x = (x * 1103515245 + 12345) & 0x7fffffff; return x / 0x7fffffff; };
-    let alive = true;
-    for (const row of rows) {
-      const lane = rnd() < p ? bestLane(st, row) : worstLane(st, row);
-      st = resolveRow({ ...st, lane }, row).state;
-      if (st.phase === 'dead') { alive = false; break; }
-    }
-    if (alive) cleared++;
-  }
-  return cleared / trials;
-}
-function rate(stage: number, start: RunStart, pick: Picker, trials = 300) {
-  let cleared = 0;
-  for (let t = 0; t < trials; t++) if (play(t * 31 + 1, stage, start, pick) === 'cleared') cleared++;
-  return cleared / trials;
-}
+const accRate = (stage: number, start: RunStart, p: number, trials = 400) =>
+  clearRate(stage, pickAccurate(p), trials, { start });
 
 const fullyLoaded = applySkills(runStartFor({ archetype: 'physicalMelee', branch: 'B', tier: 5 }), maxed);
 console.log('\n第 25 關(滿階職業 + 滿技能 vs 什麼都沒有):');

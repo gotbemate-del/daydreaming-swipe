@@ -1,7 +1,5 @@
 // 場內技能(純邏輯,禁止 import React)。
 //
-// ⚠ **這個模組還沒接上遊戲。** 只有設計與數值,沒有任何地方 import 它。
-//    要接的時候必須「玩家側」與「敵人側」**同時**上,見下方「接線時的順序」。
 //
 // **這一套是「這一場限定」的,跑完就沒了。** 跟 game/laneSkills.ts 的永久技能是兩件事:
 //
@@ -16,17 +14,20 @@
 // 姊妹作的 game/skillTree.ts 已經有這套(SKILL_LEVEL_CAP 10 / MAX_EFFECTIVE_SKILL_LEVEL 50),
 // 接的時候沿用那份,不要另外發明。
 //
-// ## 接線時的順序(踩過了,記在這裡)
+// ## 兩側必須同時算(踩過了,記在這裡)
 //
 // 敵人戰力是照「這一場的最佳路線」算的(見 laneRun 的 createRun),而場內技能會讓玩家
 // 比「只吃閘門」更強。所以這兩件事**必須同時上**:
 //
-//   玩家側:useLaneRun 持有 RunSkillState[],把 runSkillEffects 套到 RunState
-//   敵人側:createRun 的理想路線在每一波之後乘上 RUN_SKILL_GROWTH_PER_PICK ^ 該波給的次數
+//   玩家側:useLaneRun 持有 RunSkillState[],選中的當下就把 runSkillEffects 結算進 RunState
+//   敵人側:createRun 的理想路線用 runSkillOffersAt + bestRunSkillChoice 重播同一串選擇
 //
 // 只上敵人側的話,實測領先幅度會從 2.44x 掉到 0.50x,連「每排都挑最好」都過不了關
 // (11 項驗證同時失敗)。只上玩家側則相反,領先幅度膨脹到 10x,中段又變成沒事做。
 // 這就是 CLAUDE.md 記載的「兩條各走各的指數」在新系統上的翻版。
+//
+// 而且敵人側**不能用「平均的理想曲線」估**,要重播這一場真正開出來的選項:
+// 四選三會漏掉一個,理由跟閘門那邊一模一樣(見 CLAUDE.md「用平均理想路線估敵人也不夠」)。
 
 // 刻意不從 laneRun import 任何東西:laneRun 會 import 這個檔(理想路線要把場內技能算進去),
 // 反向再 import 就是循環相依——實測會炸在「Cannot access 'GEAR_STEP' before initialization」,
@@ -116,6 +117,45 @@ export function runSkillOffers(skills: RunSkillState[], rng: () => number = Math
   return pool.slice(0, RUN_SKILL_OFFERS);
 }
 
+/**
+ * 這一場的第 n 次選擇會開出哪三個。**由跑圖的 seed 決定,不是即時亂數。**
+ *
+ * 為什麼一定要可重現:敵人戰力是照「這一場的最佳路線」算的(laneRun 的 createRun),
+ * 而最佳路線包含技能。四選三會漏掉一個,漏掉的剛好是「這次最該點的」時,
+ * 玩家就走不到理想曲線上——用即時亂數的話 createRun 根本不知道漏了哪個,
+ * 只能拿「假設永遠開得出最佳選項」的表去估,實測領先幅度會在 1.41x~2.70x 之間漂,
+ * 結構保證(每一排都精確等於 1/ENEMY_POWER_RATIO)就沒了。
+ * 綁 seed 之後 createRun 可以把同一組選項重播一次,理想路線才是真的「這一場」的上限。
+ */
+export function runSkillOffersAt(skills: RunSkillState[], seed: number, ordinal: number): RunSkillState[] {
+  // 跟跑圖的閘門用不同的雜湊常數:共用一條的話,多開一次選單就會把後面所有閘門位移。
+  let x = (Math.imul(seed ^ 0x5bf03635, 0x27d4eb2f) ^ Math.imul(ordinal + 1, 0x85ebca6b)) >>> 0;
+  const rng = () => {
+    x = (Math.imul(x ^ (x >>> 15), 0x2c1b3c6d) + 0x9e3779b9) >>> 0;
+    return (x >>> 8) / 0x1000000;
+  };
+  return runSkillOffers(skills, rng);
+}
+
+/**
+ * 「最會加戰力」的那個選項。理想路線與驗證腳本都用這一個函式,不要各自寫一份——
+ * 兩邊的貪心規則只要差一點,敵人就是照另一個玩家算的。
+ *
+ * 比的是「選下去之後整組的總戰力倍率」,不是單一技能自己的幅度:技能之間相加不相乘,
+ * 所以鋒刃 +18% 在攻擊已經堆高時的邊際效益會低於增殖 +25%,反之亦然——
+ * 貪心的實際行為是把兩邊拉平,只看單項幅度會挑錯。
+ */
+export function bestRunSkillChoice(skills: RunSkillState[], offers: RunSkillState[]): RunSkillState {
+  let best = offers[0];
+  let bestGain = -1;
+  for (const o of offers) {
+    const e = runSkillEffects(learnRunSkill(skills, o));
+    const gain = e.attackMultiplier * e.heroMultiplier;
+    if (gain > bestGain) { bestGain = gain; best = o; }
+  }
+  return best;
+}
+
 export function learnRunSkill(skills: RunSkillState[], choice: RunSkillState): RunSkillState[] {
   const existing = skills.find((s) => s.id === choice.id);
   if (existing) return skills.map((s) => (s.id === choice.id ? { ...s, level: choice.level } : s));
@@ -157,19 +197,43 @@ export function runSkillEffects(skills: RunSkillState[]): RunSkillEffects {
   };
 }
 
+/** 選一個技能會動到的三個數字。 */
+export interface RunSkillStats {
+  perHero: number;
+  heroes: number;
+  maxHp: number;
+}
+
 /**
- * 一次選擇平均讓總戰力乘多少——**敵人戰力要靠這個數字跟上**。
+ * 選中一個技能之後,數值變成多少。**玩家側、模擬器、createRun 的理想路線一律走這一支。**
  *
- * 這是整套的關鍵:場內技能會讓玩家比「只吃閘門」更強,如果敵人不跟著算,
- * 最佳玩家的領先幅度會一路膨脹,`ENEMY_POWER_RATIO` 的結構保證就破了
- * (跟 CLAUDE.md 記載的「兩條各走各的指數」是同一個坑)。
+ * 為什麼要共用而不是各自乘一次:人數是整數,乘完要取整,而**取整的方向會改變結果**——
+ * 理想路線用浮點、玩家用 Math.round 的話,2 人吃到 +25% 是 round(2.5)=3(等於 +50%),
+ * 實測領先幅度會從 2.43x 漂到 2.80x,結構保證就只剩「大概」。
  *
- * 四個選項裡只有兩個加戰力(鋒刃 +18%、增殖 +25%),壁壘與專注不加。
- * 取「會加戰力的那些」的平均:玩家真的想變強就會挑那兩個,而挑防禦的人是自己選擇了
- * 用戰力換生存——那跟閘門的取捨是同一種,不需要另外補償。
+ * 增殖保證**至少 +1 人**:1 隻的時候 round(1 x 1.25) = 1,選了完全沒反應——
+ * 玩家看到「勇者數量 +25%」卻什麼都沒發生,會直接認定這個技能是壞的。
+ * 前段超額是這款一直以來的形狀(閘門的「勇者 +N」在 1 人的時候也是直接翻倍),
+ * 而且敵人照同一條路線算,超額不會變成免費的難度折扣。
  */
-export const RUN_SKILL_GROWTH_PER_PICK =
-  1 + (PER_LEVEL.edgeAttack + PER_LEVEL.swarmHeroes) / 2;
+export function applyRunSkillPick(
+  skills: RunSkillState[],
+  choice: RunSkillState,
+  stats: RunSkillStats,
+): RunSkillStats {
+  const before = runSkillEffects(skills);
+  const after = runSkillEffects(learnRunSkill(skills, choice));
+  const atk = after.attackMultiplier / before.attackMultiplier;
+  const her = after.heroMultiplier / before.heroMultiplier;
+  const hp = after.hpMultiplier / before.hpMultiplier;
+  return {
+    perHero: Math.max(1, Math.round(stats.perHero * atk)),
+    heroes: her > 1
+      ? Math.max(stats.heroes + 1, Math.round(stats.heroes * her))
+      : Math.max(1, Math.round(stats.heroes * her)),
+    maxHp: Math.max(1, Math.round(stats.maxHp * hp)),
+  };
+}
 
 /** 場內技能全部點滿時的總戰力倍率。給驗證腳本盯上限用。 */
 export function maxRunSkillAttackMultiplier(): number {
