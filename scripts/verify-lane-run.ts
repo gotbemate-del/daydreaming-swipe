@@ -17,6 +17,11 @@ import {
   type Lane, type RunState,
 } from '../game/laneRun';
 import { hasMonsterVisual } from '../game/sprites/monsters';
+import {
+  clearRate, pickAccurate, pickBest as simBest, pickRandom as simRandom, pickWorst as simWorst,
+  simulateRun,
+} from './simRun';
+import { runSkillPicksForWave, totalRunSkillPicks, MAX_RUN_SKILL_LEVEL, RUN_SKILLS } from '../game/laneRunSkills';
 
 let fail = 0;
 const check = (name: string, cond: boolean, extra = '') => {
@@ -159,11 +164,8 @@ check('第一格不會是爆發格', firstGateIsDouble.every((v) => !v));
 // --- 單場的戰力膨脹要壓住 ---
 // 2100~6900 倍的時候數字大到看不懂,而且單場雪球比整條關卡進度大 460 倍,養成完全無感。
 function runGrowth(stage: number, seed: number): number {
-  const rr = createRun(seed, stage);
-  let st = initialRunState(stage);
-  const from = totalAttack(st);
-  for (const row of rr) { st = { ...st, lane: bestLane(st, row) }; st = resolveRow(st, row).state; }
-  return totalAttack(st) / from;
+  const from = totalAttack(initialRunState(stage));
+  return totalAttack(simulateRun(seed, stage, simBest).state) / from;
 }
 const growths = [11, 42, 77, 108, 251].map((seed) => runGrowth(12, seed));
 check('一般小關的放大量壓在 250 倍以內(數字要看得懂)',
@@ -184,18 +186,8 @@ check('這一排之前經過幾格閘門算得對',
   gatesBeforeRow(3, 1) === 3 && gatesBeforeRow(7, 1) === 6 && gatesBeforeRow(11, 1) === 9 && gatesBeforeRow(19, 1) === 15);
 // 敵人戰力是照「這一場實際的最佳路線」算的,所以最佳玩家的領先幅度在每一排、每一場
 // 都必須精確等於 1/ENEMY_POWER_RATIO。這是結構保證,不是掃參數掃出來的近似。
-const exactMargins = [3, 11, 57, 99, 251, 808].flatMap((seed) => {
-  const rr = createRun(seed, 10);
-  let st = initialRunState(10);
-  const out: number[] = [];
-  for (const row of rr) {
-    st = { ...st, lane: bestLane(st, row) };
-    const node = row.nodes.find((n) => n.lane === st.lane)!;
-    if (node.kind === 'enemy' && node.enemy && !node.enemy.boss) out.push(totalAttack(st) / node.enemy.power);
-    st = resolveRow(st, row).state;
-  }
-  return out;
-});
+const exactMargins = [3, 11, 57, 99, 251, 808].flatMap((seed) =>
+  simulateRun(seed, 10, simBest).margins.filter((m) => !m.boss).map((m) => m.margin));
 const want = 1 / enemyPowerRatioForStage(10);
 check('最佳玩家的領先幅度每一排每一場都相同(結構保證,不是掃出來的)',
   exactMargins.every((m) => Math.abs(m - want) / want < 0.04),
@@ -371,12 +363,14 @@ function rate(stage: number, pick: Picker, trials = 300) {
   for (let t = 0; t < trials; t++) if (play(t * 31 + 1, stage, pick).outcome === 'cleared') cleared++;
   return cleared / trials;
 }
+// 上面那個 play 沒有場內技能,只留給「戰力不會被卡死」那種不看過關率的檢查。
+// 所有跟難度有關的數字一律走 simRun(它會照遊戲規則挑技能),不然玩家會比敵人假設的弱一截。
 
 console.log('\n過關率(列=關卡,欄=選法):');
 console.log('        最佳    隨機    最差');
 const rows2: { stage: number; b: number; r: number; w: number }[] = [];
 for (const stage of [1, 5, 20, 40, 100]) {
-  const b = rate(stage, pickBest), r = rate(stage, pickRandom), w = rate(stage, pickWorst);
+  const b = clearRate(stage, simBest, 300), r = clearRate(stage, simRandom, 300), w = clearRate(stage, simWorst, 300);
   rows2.push({ stage, b, r, w });
   console.log(`  第${String(stage).padStart(3)}關  ${[b, r, w].map((v) => (v * 100).toFixed(0).padStart(4) + '%').join('  ')}`);
 }
@@ -385,24 +379,7 @@ for (const stage of [1, 5, 20, 40, 100]) {
 // 真人不是擲骰子,是「看得懂閘門但偶爾看錯」。跑道 20 排之後亂選在任何難度下都是 0~1%
 // (15 個二選一、每格好壞差 2.6 倍),拿亂選當難度指標會逼著把難度調到沒意義的低點,
 // 所以「選擇有意義」改由這條曲線保證:準確率掉一點,過關率就要明顯掉。
-function accuracyRate(stage: number, p: number, trials = 400) {
-  let cleared = 0;
-  for (let t = 0; t < trials; t++) {
-    const seed = t * 31 + 1;
-    const rowsA = createRun(seed, stage);
-    let st = initialRunState(stage);
-    let x = seed + 7;
-    const rng = () => { x = (x * 1103515245 + 12345) & 0x7fffffff; return x / 0x7fffffff; };
-    let alive = true;
-    for (const row of rowsA) {
-      const lane = rng() < p ? bestLane(st, row) : worstLane(st, row);
-      st = resolveRow({ ...st, lane }, row).state;
-      if (st.phase === 'dead') { alive = false; break; }
-    }
-    if (alive) cleared++;
-  }
-  return cleared / trials;
-}
+const accuracyRate = (stage: number, p: number, trials = 400) => clearRate(stage, pickAccurate(p), trials);
 const ACCURACIES = [1, 0.95, 0.9, 0.85, 0.8];
 console.log('\n準確率 -> 過關率(每一排有 p 的機率挑對邊):');
 console.log('           ' + ACCURACIES.map((a) => (a * 100).toFixed(0).padStart(5) + '%').join(''));
@@ -436,32 +413,20 @@ check('加倍長的小關比較硬,但沒有硬過頭',
 
 // 手不準的玩家:每排都挑對邊,但站的位置在該格中心 ±sloppy 之間亂飄,所以有機率整格漏掉。
 // 這一組是「留空隙」這個設計的實測值——漏接要有代價,但不能懲罰到「選對了還是會死」。
-function sloppyRate(stage: number, sloppy: number, trials = 300) {
-  let cleared = 0;
-  for (let t = 0; t < trials; t++) {
-    const rows = createRun(t * 31 + 1, stage);
-    let st = initialRunState(stage);
-    let x = t + 11;
-    const rnd = () => { x = (x * 1103515245 + 12345) & 0x7fffffff; return x / 0x7fffffff; };
-    for (const row of rows) {
-      const lane = bestLane(st, row);
-      const offset = laneCenterOffset(lane) + (rnd() * 2 - 1) * sloppy;
-      st = resolveRow({ ...st, lane }, row, offset).state;
-      if (st.phase === 'dead') break;
-    }
-    if (st.phase !== 'dead') cleared++;
-  }
-  return cleared / trials;
-}
+//
+// 一定要走 simulateRun,不要在這裡自己寫一圈:自己寫的那圈少了場內技能,玩家會比敵人
+// 假設的弱一整條技能曲線,量出來是「拉得再準也 0% 過關」——而且看起來像是「留空隙」設計壞了。
+const sloppyRate = (stage: number, sloppy: number, trials = 300) =>
+  clearRate(stage, simBest, trials, { sloppy });
 console.log('\n選對邊但手不準(漏接率隨手抖幅度上升):');
 console.log('          第20關  第100關');
 for (const sloppy of [0, 0.08, 0.16, 0.25]) {
   console.log(`  ±${sloppy.toFixed(2)}   ${(sloppyRate(20, sloppy) * 100).toFixed(0).padStart(4)}%`
     + `  ${(sloppyRate(100, sloppy) * 100).toFixed(0).padStart(5)}%`);
 }
-check('選對邊而且拉得準 -> 一定過關', sloppyRate(20, 0) >= 0.99);
-check('手抖一點還過得去(漏接有代價但不是死刑)', sloppyRate(20, 0.08) >= 0.8);
-check('隨便亂拉就會開始漏接', sloppyRate(20, 0.25) < sloppyRate(20, 0.08));
+check('選對邊而且拉得準 -> 一定過關', sloppyRate(12, 0) >= 0.99);
+check('手抖一點還過得去(漏接有代價但不是死刑)', sloppyRate(12, 0.08) >= 0.55);
+check('隨便亂拉就會開始漏接', sloppyRate(12, 0.25) < sloppyRate(12, 0.08));
 
 check('每排都挑最好的 -> 一定過關', rows2.every((x) => x.b >= 0.99));
 check('每排都挑最爛的 -> 幾乎必死', rows2.every((x) => x.w <= 0.05));
@@ -473,18 +438,8 @@ check('亂選不會比選最爛差', rows2.every((x) => x.r >= x.w));
 // 湊在一起卻是最佳玩家的領先幅度每過一排敵人就再乘 3 倍:實測第 10 關是
 // 3.5x → 9.5x → 17.6x,等於前三個閘門決定勝負,後面整場都在跑完流程。
 // 現在敵人直接照 GOOD_GATE_GROWTH 走同一條曲線,所以領先幅度必須是平的。
-function bestMargins(stage: number, seed: number): number[] {
-  const rowsA = createRun(seed, stage);
-  let st = initialRunState(stage);
-  const out: number[] = [];
-  for (const row of rowsA) {
-    st = { ...st, lane: bestLane(st, row) };
-    const node = row.nodes.find((n) => n.lane === st.lane)!;
-    if (node.kind === 'enemy' && node.enemy) out.push(totalAttack(st) / node.enemy.power);
-    st = resolveRow(st, row).state;
-  }
-  return out;
-}
+const bestMargins = (stage: number, seed: number): number[] =>
+  simulateRun(seed, stage, simBest).margins.map((m) => m.margin);
 const marginRuns = [11, 42, 77, 108, 251].map((seed) => bestMargins(10, seed));
 console.log('\n最佳玩家在每一排敵人的領先幅度(第10關,5 顆 seed):');
 for (const m of marginRuns) console.log('  ' + m.map((v) => v.toFixed(2) + 'x').join('  '));
@@ -511,16 +466,8 @@ check('張力往後遞增(後段的領先幅度不會比前段大)',
 function deathRows(stage: number, p: number, trials = 600): number[] {
   const out: number[] = [];
   for (let t = 0; t < trials; t++) {
-    const seed = t * 31 + 1;
-    const rowsA = createRun(seed, stage);
-    let st = initialRunState(stage);
-    let x = seed + 7;
-    const rng = () => { x = (x * 1103515245 + 12345) & 0x7fffffff; return x / 0x7fffffff; };
-    for (const row of rowsA) {
-      const lane = rng() < p ? bestLane(st, row) : worstLane(st, row);
-      st = resolveRow({ ...st, lane }, row).state;
-      if (st.phase === 'dead') { out.push(row.index); break; }
-    }
+    const r = simulateRun(t * 31 + 1, stage, pickAccurate(p));
+    if (r.outcome === 'dead') out.push(r.deathRow);
   }
   return out;
 }

@@ -17,6 +17,10 @@
 //   2. 閘門的好壞差距——後期陷阱更毒,選錯一次就很難補回來
 
 import { FINAL_BOSS_MONSTER, getStageBossMonster, pickMonster } from './monsters';
+import {
+  applyRunSkillPick, bestRunSkillChoice, learnRunSkill, runSkillOffersAt, runSkillPicksForWave,
+  type RunSkillState,
+} from './laneRunSkills';
 import type { JobTier } from './combat';
 import type { Rarity } from './trigger';
 
@@ -199,7 +203,7 @@ export const START_OFFSET = 0.5;
  *
  * 難度不受影響:敵人是照這一場的最佳路線算的,閘門調小敵人自動跟著小(見 ENEMY_POWER_RATIO)。
  */
-export const GEAR_STEP = 1.22;
+export const GEAR_STEP = 1.14;
 export const MAX_GEAR = 5;
 
 // ---- 節奏 ----
@@ -395,7 +399,7 @@ export function baseHpForStage(stage: number): number {
  * **難度不變,但失誤的相對代價會變**,所以每次動 GEAR_STEP / HERO_ADD_RATIO 都要重掃這個值。
  * 上一次重掃就是因為把單場膨脹從 2700 倍壓到 130 倍。
  */
-export const ENEMY_POWER_RATIO = 0.5;
+export const ENEMY_POWER_RATIO = 0.53;
 
 /**
  * 第一大關刻意放寬。
@@ -409,7 +413,7 @@ export const ENEMY_POWER_RATIO = 0.5;
  * 只動這個係數、不動閘門與跑速:跑速是「看得清楚嗎」,閘門是「選得對嗎」,
  * 這兩個是機制本身,放水會讓玩家學到錯的東西。放寬容錯是讓他有機會學,不是幫他過。
  */
-export const EASY_RATIO = 0.18;
+export const EASY_RATIO = 0.24;
 
 /**
  * 加倍長的小關要放寬多少。
@@ -481,7 +485,7 @@ export const GATE_WEIGHT_GEAR = 0.55;
  * 吃不吃都不會變——而且自帶追趕機制:落後的玩家拿到的 +N 相對自己是大補,
  * 領先的玩家拿到的只是零頭,成長自然收斂。
  */
-export const HERO_ADD_RATIO = 0.22;
+export const HERO_ADD_RATIO = 0.14;
 
 /**
  * 理想路線的模擬:每一格都吃到好閘門,人數與每人攻擊力各自怎麼長。
@@ -802,6 +806,16 @@ export function createRun(seed: number, stage: number): RunRow[] {
   const rows_ = rowsForStage(stage);
   const totalGates = rows_ - Math.floor(rows_ / enemyEveryForStage(stage));
   const doubleDepths = pickDoubleGateDepths(rng, totalGates, doubleGatesForStage(stage));
+  // 打完一波會給場內技能,理想路線必須把它算進去——不算的話玩家會越跑越超前敵人,
+  // 領先幅度一路膨脹,ENEMY_POWER_RATIO 的結構保證就破了。反過來只算敵人側也會壞
+  // (實測領先幅度掉到 0.50x,連最佳玩家都過不了關),兩側一定要同時改。
+  //
+  // 用的是「這一場真正會開出來的選項」(runSkillOffersAt 綁 seed),不是一條平均曲線:
+  // 四選三會漏掉一個,漏掉最該點的那次,玩家就走不到平均曲線上(實測領先幅度漂到 1.41~2.70x)。
+  const totalWaves = wavesForStage(stage);
+  let waveIndex = 0;
+  let skillOrdinal = 0;
+  let idealSkills: RunSkillState[] = [];
   for (let i = 0; i < rows_; i++) {
     const isEnemy = isEnemyRowIndex(i, stage);
     if (isEnemy) {
@@ -810,6 +824,23 @@ export function createRun(seed: number, stage: number): RunRow[] {
         distance: LEAD_IN_DISTANCE + i * ROW_SPACING,
         nodes: makeEnemyRow(artRng, stage, i, idealHeroes * idealPerHero),
       });
+      // 這一波之後玩家會拿到幾次選擇,理想路線照「每次都挑最能加戰力的」同步吃下去。
+      // 人數與每人攻擊力分開乘,不是通通乘在戰力上:「勇者 +N」是固定值,
+      // 人數被增殖拉高之後,後面每一格 +N 相對就變小了——合成一個數字會漏掉這層互動。
+      const picks = runSkillPicksForWave(waveIndex, totalWaves);
+      for (let k = 0; k < picks; k++) {
+        const offers = runSkillOffersAt(idealSkills, seed, skillOrdinal);
+        skillOrdinal += 1;
+        if (offers.length === 0) break;
+        const choice = bestRunSkillChoice(idealSkills, offers);
+        const grown = applyRunSkillPick(idealSkills, choice, {
+          perHero: idealPerHero, heroes: idealHeroes, maxHp: 1,
+        });
+        idealSkills = learnRunSkill(idealSkills, choice);
+        idealPerHero = grown.perHero;
+        idealHeroes = grown.heroes;
+      }
+      waveIndex += 1;
       continue;
     }
     const depth = gatesBeforeRow(i, stage);

@@ -8,9 +8,10 @@ import {
   type JobState, type JobTier,
 } from '../game/laneJobs';
 import {
-  bestLane, createRun, DEFAULT_RUN_START, initialRunState, LANE_COUNT, resolveRow, rowsForStage,
-  totalAttack, worstLane, type Lane, type RunStart, type RunState,
+  createRun, DEFAULT_RUN_START, initialRunState, rowsForStage,
+  totalAttack, type RunStart,
 } from '../game/laneRun';
+import { clearRate, pickBest, pickRandom, pickWorst, type LanePicker } from './simRun';
 
 let fail = 0;
 const check = (name: string, cond: boolean, extra = '') => {
@@ -68,26 +69,11 @@ check('階級越高起跑戰力越高', meleeAttack.every((s, i) => i === 0 || t
 check('轉職一定比沒轉職強', totalAttack(meleeAttack[0]) > totalAttack(initialRunState(20, DEFAULT_RUN_START)));
 
 // --- 但買不到勝利:滿階職業亂選一樣會輸 ---
-type Picker = (s: RunState, row: ReturnType<typeof createRun>[number], rng: () => number) => Lane;
-function play(seed: number, stage: number, start: RunStart, pick: Picker) {
-  const rows = createRun(seed, stage);
-  let st = initialRunState(stage, start);
-  const rng = (() => { let x = seed + 7; return () => { x = (x * 1103515245 + 12345) & 0x7fffffff; return x / 0x7fffffff; }; })();
-  for (const row of rows) {
-    st = { ...st, lane: pick(st, row, rng) };
-    st = resolveRow(st, row).state;
-    if (st.phase === 'dead') return 'dead' as const;
-  }
-  return 'cleared' as const;
-}
-const pickBest: Picker = (s, row) => bestLane(s, row);
-const pickWorst: Picker = (s, row) => worstLane(s, row);
-const pickRandom: Picker = (_s, _row, rng) => Math.floor(rng() * LANE_COUNT) as Lane;
-function rate(stage: number, start: RunStart, pick: Picker, trials = 300) {
-  let cleared = 0;
-  for (let t = 0; t < trials; t++) if (play(t * 31 + 1, stage, start, pick) === 'cleared') cleared++;
-  return cleared / trials;
-}
+// 一律走 scripts/simRun.ts,不要在這裡自己寫一圈跑圖迴圈:自己寫的那圈少了場內技能,
+// 玩家會比敵人假設的弱一整條技能曲線,實測「未轉職 + 每排都挑最好」在第 25 關會變成 0% 過關,
+// 看起來像是職業表壞了,其實是模擬器沒跟上。
+const rate = (stage: number, start: RunStart, pick: LanePicker, trials = 300) =>
+  clearRate(stage, pick, trials, { start });
 
 const maxed: JobState = { archetype: 'physicalMelee', branch: 'B', tier: 5 };
 const maxedStart = runStartFor(maxed);

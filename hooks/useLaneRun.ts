@@ -20,6 +20,8 @@ import {
   waveKillCount,
   waveMonsters,
   DEFAULT_RUN_START,
+  isEnemyRowIndex,
+  wavesForStage,
   hitDamage,
   isCritHit,
   type Lane,
@@ -29,6 +31,10 @@ import {
   type WaveMonster,
   type WaveSpecies,
 } from '../game/laneRun';
+import {
+  applyRunSkillPick, learnRunSkill, runSkillOffersAt, runSkillPicksForWave,
+  type RunSkillState,
+} from '../game/laneRunSkills';
 
 const TICK_MS = 33; // ~30fps
 
@@ -116,6 +122,13 @@ export interface LaneRunView {
    */
   lastShotAt: number;
   lastShotId: number;
+  /** 這一場帶著的場內技能(跑完就沒了)。 */
+  runSkills: RunSkillState[];
+  /** 打完一波之後跳出來的選項。非空的時候跑圖是暫停的。 */
+  skillOffers: RunSkillState[];
+  /** 還欠玩家幾次選擇(決戰前那次會欠 2 次)。 */
+  pendingPicks: number;
+  chooseRunSkill: (choice: RunSkillState) => void;
   feedback: RunFeedback | null;
   speed: number;
   /** 手指拖曳:直接把角色放到這個位置 */
@@ -142,7 +155,10 @@ interface WaveRuntime {
 // 自己 reset 要記得清掉的東西有八個(波次、飛行中的武器、已結算的排、計時起點…),
 // 漏掉任何一個就會出現「上一場的怪出現在這一場」這種難查的殘留。
 export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): LaneRunView {
-  const [rows] = useState<RunRow[]>(() => createRun(Math.floor(Math.random() * 1e9), stage));
+  // 這一場的 seed。閘門與技能選項都由它決定,敵人戰力也是照同一顆 seed 的最佳路線算的,
+  // 所以 seed 必須留著——技能選項另外抽的話,玩家看到的選單就不是 createRun 假設的那一組。
+  const [seed] = useState(() => Math.floor(Math.random() * 1e9));
+  const [rows] = useState<RunRow[]>(() => createRun(seed, stage));
   const [state, setState] = useState<RunState>(() => initialRunState(stage, start));
   const [distance, setDistance] = useState(0);
   const [feedback, setFeedback] = useState<RunFeedback | null>(null);
@@ -151,6 +167,9 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
   const [hitNumbers, setHitNumbers] = useState<HitNumber[]>([]);
   const [lastShotAt, setLastShotAt] = useState(0);
   const [lastShotId, setLastShotId] = useState(0);
+  const [runSkills, setRunSkills] = useState<RunSkillState[]>([]);
+  const [skillOffers, setSkillOffers] = useState<RunSkillState[]>([]);
+  const [pendingPicks, setPendingPicks] = useState(0);
 
   const startedAtRef = useRef(Date.now());
   // 已結算過的排。跟判定同步讀寫,走 state 會慢一拍導致同一排被結算兩次。
@@ -174,9 +193,36 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
   const [heroOffset, setHeroOffset] = useState(START_OFFSET);
 
   const speed = runSpeed(stage);
+  const totalWaves = wavesForStage(stage);
+  // 已經打完幾波。決定下一次該給幾個技能(決戰前那次給兩個)。
+  const clearedWavesRef = useRef(0);
+  // 這是第幾次開選單。選項綁「seed + 第幾次」,重跑同一顆 seed 會開出同一串——
+  // createRun 算敵人的時候重播的就是這一串(見 laneRunSkills 的 runSkillOffersAt)。
+  const skillOrdinalRef = useRef(0);
+
+  /**
+   * 選技能的時候跑圖要**停住**。
+   *
+   * 距離是從 startedAtRef 用時鐘算出來的(travelled = (now - startedAt) / 1000 * speed),
+   * 所以「暫停」不能只是停掉 interval——玩家在面板上停留的那幾秒鐘,時鐘照走,
+   * 一恢復就會一口氣跳過好幾排(實測停 5 秒等於直接跳掉兩排閘門)。
+   * 正確做法是恢復的時候把 startedAt 往後推「暫停了多久」,時間軸才接得回去。
+   */
+  const paused = skillOffers.length > 0;
+  const pausedAtRef = useRef(0);
+  useEffect(() => {
+    if (paused) {
+      pausedAtRef.current = Date.now();
+      return;
+    }
+    if (pausedAtRef.current > 0) {
+      startedAtRef.current += Date.now() - pausedAtRef.current;
+      pausedAtRef.current = 0;
+    }
+  }, [paused]);
 
   useEffect(() => {
-    if (state.phase !== 'running') return;
+    if (state.phase !== 'running' || paused) return;
     const id = setInterval(() => {
       const now = Date.now();
       const travelled = ((now - startedAtRef.current) / 1000) * speed;
@@ -192,7 +238,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
       stepWave(now, travelled);
     }, TICK_MS);
     return () => clearInterval(id);
-  }, [state.phase, speed, rows]);
+  }, [state.phase, speed, rows, paused]);
 
   /** 一波小怪的演出:該冒出來的冒出來、該丟的武器丟出去、打中的就消失。 */
   function stepWave(now: number, travelled: number) {
@@ -341,9 +387,37 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
     );
   }
 
+  /** 選了一個。還有欠的就繼續開下一個選單,欠完了才放行。 */
+  const chooseRunSkill = useCallback((choice: RunSkillState) => {
+    setRunSkills((prev) => {
+      const next = learnRunSkill(prev, choice);
+      // 效果在選中的當下就結算進 RunState,不做「每次讀取再乘一次」。
+      // 乘在讀取端的話,閘門的加減會跟技能的倍率互相糾纏(先乘還是先加會得到不同答案),
+      // 而且 totalAttack 在畫面、戰鬥演出、結算三個地方都會被讀,任何一處漏乘就對不起來。
+      // 算式走 applyRunSkillPick(共用),敵人那邊的理想路線用的是同一支。
+      setState((st) => {
+        const grown = applyRunSkillPick(prev, choice, st);
+        // 血量上限提高時同步補等量的血,不然「+30% 血量」在滿血以外的情況等於沒效果。
+        const hp = Math.min(grown.maxHp, st.hp + Math.max(0, grown.maxHp - st.maxHp));
+        return { ...st, ...grown, hp };
+      });
+      setPendingPicks((left) => {
+        const remaining = left - 1;
+        if (remaining > 0) {
+          setSkillOffers(runSkillOffersAt(next, seed, skillOrdinalRef.current));
+          skillOrdinalRef.current += 1;
+        } else {
+          setSkillOffers([]);
+        }
+        return Math.max(0, remaining);
+      });
+      return next;
+    });
+  }, []);
+
   // 跑過某一排就結算那一排
   useEffect(() => {
-    if (state.phase !== 'running') return;
+    if (state.phase !== 'running' || paused) return;
     const due = rows.find((r) => !passedRef.current.has(r.index) && distance >= r.distance);
     if (due) {
       passedRef.current.add(due.index);
@@ -361,12 +435,27 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         });
         return r.state;
       });
+      // 打完一波就給技能。放在結算之後:玩家先看到這一波的結果,再決定要補什麼。
+      if (isEnemyRowIndex(due.index, stage)) {
+        const waveIndex = clearedWavesRef.current;
+        clearedWavesRef.current += 1;
+        const picks = runSkillPicksForWave(waveIndex, totalWaves);
+        if (picks > 0) {
+          const offers = runSkillOffersAt(runSkills, seed, skillOrdinalRef.current);
+          skillOrdinalRef.current += 1;
+          // 全部滿級就沒東西可選,直接跳過,不要卡一個空面板。
+          if (offers.length > 0) {
+            setPendingPicks(picks);
+            setSkillOffers(offers);
+          }
+        }
+      }
       return;
     }
     if (distance >= runLength(stage)) {
       setState((prev) => (prev.phase === 'running' ? { ...prev, phase: 'cleared' } : prev));
     }
-  }, [distance, rows, state.phase]);
+  }, [distance, rows, state.phase, paused, stage, totalWaves, runSkills]);
 
   // 高亮用的跑道跟著角色位置走(結算不看它,看 offsetRef)。
   useEffect(() => {
@@ -398,6 +487,10 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
     hitNumbers,
     lastShotAt,
     lastShotId,
+    runSkills,
+    skillOffers,
+    pendingPicks,
+    chooseRunSkill,
     feedback,
     speed,
     dragTo,

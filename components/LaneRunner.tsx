@@ -19,6 +19,7 @@ import {
   type RunStart,
   type TerrainId,
 } from '../game/laneRun';
+import { describeRunSkill, runSkillSpec } from '../game/laneRunSkills';
 import { HIT_NUMBER_MS, useLaneRun, type HitNumber, type Projectile, type WaveView } from '../hooks/useLaneRun';
 import {
   heroBoxHeight, heroForm, squadForms, monsterArt, weaponArt,
@@ -131,6 +132,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
   const {
     state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers,
     lastShotAt, lastShotId, feedback, steer, dragTo,
+    runSkills, skillOffers, pendingPicks, chooseRunSkill,
   } = run;
   const attack = totalAttack(state);
 
@@ -477,6 +479,41 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
           </Text>
         )}
 
+        {/* 場內技能:打完一波就跳出來,跑圖同時暫停(見 useLaneRun 的 paused)。
+            蓋在跑道上而不是換一個畫面:玩家還看得到自己剛打完的那一波與現在的戰力,
+            「這一場我缺什麼」才判斷得出來——切到獨立畫面就只剩三個抽象的名詞。 */}
+        {skillOffers.length > 0 && state.phase === 'running' && (
+          <View style={styles.resultOverlay}>
+            <View style={styles.resultCard}>
+              <Text style={styles.skillTitle}>清空一波!挑一個</Text>
+              <Text style={styles.resultSummary}>
+                勇者 {compact(state.heroes)} · 戰力 {compact(attack)}
+                {pendingPicks > 1 ? ` · 還可以挑 ${pendingPicks} 個` : ''}
+              </Text>
+              {skillOffers.map((offer) => (
+                <Pressable
+                  key={offer.id}
+                  style={styles.skillOption}
+                  // 文字選取器會選到別的地方的同名字(例如下面那行「已帶:鋒刃 2」),
+                  // 所以自動化測試要點的東西一律靠 aria-label。
+                  accessibilityLabel={`場內技能 ${runSkillSpec(offer.id).name}`}
+                  onPress={() => chooseRunSkill(offer)}
+                >
+                  <Text style={styles.skillName}>
+                    {runSkillSpec(offer.id).name} {offer.level > 1 ? `Lv.${offer.level}` : '新'}
+                  </Text>
+                  <Text style={styles.skillDesc}>{describeRunSkill(offer)}</Text>
+                </Pressable>
+              ))}
+              {runSkills.length > 0 && (
+                <Text style={styles.resultSummary}>
+                  已帶:{runSkills.map((s) => `${runSkillSpec(s.id).name} ${s.level}`).join('、')}
+                </Text>
+              )}
+            </View>
+          </View>
+        )}
+
         {/* 結果 toast:浮在跑道上,不佔版面高度。
             先前是畫面最下面獨立的一列,在矮螢幕會被切到畫面外,玩家按不到「下一關」就卡死。
             浮起來之後不管螢幕多矮都一定看得到,跑道也多拿回那一列的高度。 */}
@@ -686,4 +723,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   againLabel: { color: '#16161c', fontSize: 15, fontWeight: '700' },
+  skillTitle: { color: '#e0a95c', fontSize: 17, fontWeight: '700' },
+  skillOption: {
+    alignSelf: 'stretch',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: '#3a3448',
+    borderWidth: 1,
+    borderColor: '#9691a5',
+    gap: 2,
+  },
+  skillName: { color: '#f2f2f2', fontSize: 14, fontWeight: '700' },
+  skillDesc: { color: '#8a8a95', fontSize: 12 },
 });
