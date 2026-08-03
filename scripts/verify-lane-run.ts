@@ -246,7 +246,7 @@ check('人數越多,面對的那一群也越大', [1, 5, 12, 20].map(waveSize).e
 
 // --- 一波小怪的排列 ---
 const waveRow = run.find((r) => r.nodes.every((n) => n.kind === 'enemy'))!;
-const SPREAD = waveLength(5);
+const SPREAD = waveLength(5, 9);
 const wave = waveMonsters(waveRow.index, 9, waveRow.distance, SPECIES_PER_WAVE, SPREAD);
 check('小怪數量等於這一波的隻數', wave.length === 9);
 check('小怪一隻一隻排開,不會疊在同一點', wave.every((m, i) => i === 0 || m.distance > wave[i - 1].distance));

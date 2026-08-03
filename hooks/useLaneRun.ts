@@ -244,12 +244,17 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
 
   /** 一波小怪的演出:該冒出來的冒出來、該丟的武器丟出去、打中的就消失。 */
   function stepWave(now: number, travelled: number) {
-    // 找出「正在逼近」的那一排敵人。排距 100、每 4 排一次敵人,所以同時最多只會有一波在畫面上。
+    // 找出「正在逼近」的那一排敵人。
+    //
+    // 判斷的是**最前面那一隻怪**進沒進視野,不是那一排的結算點——小怪是從結算點往前
+    // 散布 waveLength(整個戰鬥段)的,結算點還在 VISIBLE_AHEAD 之外的時候,
+    // 前半的怪其實早就該出現在畫面上了。用結算點判斷的話,戰鬥段的前半會是一段空跑
+    // (實測第 1 關有 6 秒完全沒東西),而且波次啟動時前面那幾隻已經越過勇者、直接被跳過。
     const enemyRow = rows.find(
       (r) =>
         !passedRef.current.has(r.index) &&
         r.nodes[0]?.kind === 'enemy' &&
-        r.distance - travelled <= VISIBLE_AHEAD,
+        r.distance - waveLength(stage, r.nodes[0].enemy?.units) - travelled <= VISIBLE_AHEAD,
     );
 
     if (!enemyRow) {
@@ -274,7 +279,8 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         hitsPerUnit: enemy.hitsPerUnit ?? HITS_PER_MONSTER,
         boss: enemy.boss === true,
         monsters: waveMonsters(
-          enemyRow.index, enemy.units, enemyRow.distance, enemy.species.length, waveLength(stage),
+          enemyRow.index, enemy.units, enemyRow.distance, enemy.species.length,
+          waveLength(stage, enemy.units),
         ),
         hitsOn: new Array(enemy.units).fill(0),
         lastFireAt: 0,

@@ -658,8 +658,12 @@ function makeGateRow(rng: () => number, stage: number, gateDepth: number, isDoub
  * 從固定的 150 改成「整個戰鬥段」:一波要打 13 秒,怪卻擠在 150 距離內的話,
  * 玩家會看到一小撮怪衝過來、然後空等十秒——戰鬥段的長度必須真的由怪填滿。
  */
-export function waveLength(stage: number): number {
-  return battleDistance(stage) * 0.9;
+export const MONSTER_GAP = 78;
+export function waveLength(stage: number, units = MAX_WAVE_SIZE): number {
+  // 散布長度綁**隻數**,不是綁整個戰鬥段:3 隻怪攤在 527 距離上等於每 4.3 秒才過一隻,
+  // 那不是一波敵人,是零星路過。綁隻數之後前期是短促的一陣、後期(20 幾隻)才拉成長長一串,
+  // 而且密度固定——「這波比較難」看的是隻數,不是牠們排得多開。
+  return Math.min(battleDistance(stage) * 0.9, Math.max(1, units) * MONSTER_GAP);
 }
 /**
  * 一波幾隻。**跟著理想路線的人數走**,不是跟著排數走。
