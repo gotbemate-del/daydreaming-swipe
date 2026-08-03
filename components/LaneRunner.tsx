@@ -18,7 +18,9 @@ import {
   type TerrainId,
 } from '../game/laneRun';
 import { HIT_NUMBER_MS, useLaneRun, type HitNumber, type Projectile, type WaveView } from '../hooks/useLaneRun';
-import { HERO_ASPECT, HERO_FRAMES, jobHeroArt, monsterArt, weaponArt } from './artAssets';
+import {
+  HERO_ASPECT, HERO_FRAME_MS, HERO_FRAMES, HERO_SEQUENCE, heroBoxHeight, monsterArt, weaponArt,
+} from './artAssets';
 
 // 跑道畫面。角色固定在跑道底部、物件由上往下逼近——這是「角色在跑」最省效能的表現方式:
 // 真的移動角色的話背景要跟著捲、視差要對齊,在 RN 上等於自己寫一個 2D 引擎;讓物件往下移
@@ -35,7 +37,12 @@ import { HERO_ASPECT, HERO_FRAMES, jobHeroArt, monsterArt, weaponArt } from './a
 /** 再矮就看不到足夠的前方路況了。低於這個值寧可讓畫面捲動。 */
 const TRACK_HEIGHT_MIN = 320;
 
-const HERO_HEIGHT = 84;
+/**
+ * 主角在跑道上的「身體」要多高。框比這個高一倍多(見 artAssets 的 HERO_BODY_RATIO)——
+ * 多出來的上半部是留給噴刺那一格的,身體位置不受影響(框是靠下對齊的)。
+ */
+const HERO_BODY_HEIGHT = 44;
+const HERO_HEIGHT = heroBoxHeight(HERO_BODY_HEIGHT);
 const HERO_WIDTH = Math.round(HERO_HEIGHT * HERO_ASPECT);
 const HERO_BOTTOM = 10;
 /** 最高的物件高度。用來確保最遠的物件是從畫面外「冒出來」而不是憑空出現在上緣。 */
@@ -55,9 +62,6 @@ const MONSTER_SIZE = 42;
 const BOSS_SIZE = 132;
 const PROJECTILE_SIZE = 30;
 
-/** 眨眼:三張圖是睜眼→半闔→閉眼,不是三個動作,所以來回播而不是循環播。 */
-const BLINK_SEQUENCE = [0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1];
-const BLINK_MS = 160;
 
 /**
  * 距離 → 物件底邊的 y。
@@ -117,7 +121,6 @@ interface Props {
 export function LaneRunner({ stage, job, start, onFinish }: Props) {
   const run = useLaneRun(stage, start);
   const { state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers, feedback, steer, dragTo } = run;
-  const heroArt = jobHeroArt(job?.archetype ?? null, job?.branch ?? 'A', job?.tier ?? 1);
   const attack = totalAttack(state);
 
   // 跑道的實際尺寸由 onLayout 回報(寬跟高都是)。高度沒量到之前不畫任何物件,
@@ -165,9 +168,9 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
     return () => window.removeEventListener('keydown', onKey);
   }, [steer]);
 
-  const [blinkStep, setBlinkStep] = useState(0);
+  const [heroStep, setHeroStep] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => setBlinkStep((s) => (s + 1) % BLINK_SEQUENCE.length), BLINK_MS);
+    const id = setInterval(() => setHeroStep((s) => (s + 1) % HERO_SEQUENCE.length), HERO_FRAME_MS);
     return () => clearInterval(id);
   }, []);
 
@@ -456,7 +459,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
           return (
             <Image
               key={i}
-              source={job === null ? HERO_FRAMES[BLINK_SEQUENCE[blinkStep]] : heroArt}
+              source={HERO_FRAMES[HERO_SEQUENCE[heroStep]]}
               resizeMode="contain"
               style={[
                 styles.hero,

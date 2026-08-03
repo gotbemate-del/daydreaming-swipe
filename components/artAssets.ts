@@ -6,17 +6,52 @@
 // require 的路徑一定要是字面字串,Metro 才打包得到——不能用樣板字串組出來,所以下面全部展開寫。
 import type { ImageSourcePropType } from 'react-native';
 
-/** 勇者。三張是同一個姿勢的睜眼/半闔/閉眼,拿來做眨眼,不是三個不同角色。 */
+/**
+ * 主角:史萊姆。兩張是同一隻的「待機」與「往上噴出尖刺」,不是兩個角色。
+ *
+ * 來源是一張 686x930 的 GIF(3 格,第 0 格與第 2 格完全相同,所以這裡只留 2 張)。
+ * 轉檔時做了一件必要的事:GIF 的背景是**實心黑、不是透明**,直接用會在畫面上變成一個
+ * 黑色方塊(面板底是 #1d1d26,不是純黑,框會看得一清二楚)。但整片去黑會把眼睛也挖掉——
+ * 眼睛就是黑的(2638 個像素)。所以是「從邊界做連通填充」只去掉背景那一片,內部的黑保留。
+ */
 export const HERO_FRAMES: ImageSourcePropType[] = [
-  require('../assets/sprites/hero/student.png'),
-  require('../assets/sprites/hero/student_middle.png'),
-  require('../assets/sprites/hero/student_click.png'),
+  require('../assets/sprites/hero/slime_idle.png'),
+  require('../assets/sprites/hero/slime_spike.png'),
 ];
 
-// 由高度反推寬度用。刻意取「最寬的那一張」(職業立繪 458x746,學生只有 353x746):
-// 所有立繪共用同一個框 + resizeMode contain,框比圖窄的話寬的那幾張會被縮到變矮一截,
-// 轉職之後勇者突然變小隻。框取最寬的,窄的圖置中留白,高度就都一致了。
-export const HERO_ASPECT = 458 / 746;
+/** 主角圖的畫布長寬比(686x930)。 */
+export const HERO_ASPECT = 686 / 930;
+
+/**
+ * 待機時「身體」佔畫布高度的比例。
+ *
+ * 為什麼需要這個:噴刺那一格會用到整個畫布高度,待機那一格的身體只佔下面 47%。
+ * 兩格必須共用同一個畫布才對得齊(不然噴刺的瞬間整隻會跳一下),所以畫面上的框
+ * 一定比身體高一倍多。畫面層要的是「身體看起來多大」,拿這個比例去換算框的高度,
+ * 不要直接把想要的身高填進框高——那樣畫出來的史萊姆會只有預期的一半大。
+ * 框是靠下對齊的,所以多出來的上半部就是噴刺的空間,身體位置不受影響。
+ */
+export const HERO_BODY_RATIO = 0.47;
+
+/** 想要的身體高度 → 該給的框高。 */
+export function heroBoxHeight(bodyHeight: number): number {
+  return Math.round(bodyHeight / HERO_BODY_RATIO);
+}
+
+/**
+ * 主角的動畫:大部分時間待機,偶爾噴一次刺。
+ * 放在這裡而不是各畫面自己寫,是因為主介面與跑道畫面本來各有一份一模一樣的定義,
+ * 改動畫要記得改兩個地方——那種重複遲早會不同步。
+ */
+export const HERO_SEQUENCE = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+export const HERO_FRAME_MS = 170;
+
+/**
+ * 職業立繪的長寬比。只有轉職選擇畫面在用(那裡是在介紹職業,所以還是畫人)。
+ * 刻意取「最寬的那一張」(職業立繪 458x746):所有立繪共用同一個框 + resizeMode contain,
+ * 框比圖窄的話寬的那幾張會被縮到變矮一截。框取最寬的,窄的圖置中留白,高度就都一致了。
+ */
+export const JOB_ART_ASPECT = 458 / 746;
 
 /** 勇者擲出去的武器。沿用既有的傳承之劍,不另外畫特效圖。 */
 export const PROJECTILE_ART: ImageSourcePropType = require('../assets/sprites/items/legacy_sword.png');

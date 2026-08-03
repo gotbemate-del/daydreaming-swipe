@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { jobTitle, type LaneJob } from '../game/laneJobs';
-import { COIN_ICON, HERO_ASPECT, HERO_FRAMES, jobHeroArt, LOCK_ICON, TAB_ICONS } from './artAssets';
+import {
+  COIN_ICON, HERO_ASPECT, HERO_FRAME_MS, HERO_FRAMES, HERO_SEQUENCE, heroBoxHeight, LOCK_ICON, TAB_ICONS,
+} from './artAssets';
 
 // 主介面。每一場闖關的起點與終點——通關或陣亡都回到這裡,再自己按下一次「開始闖關」。
 //
@@ -16,12 +18,13 @@ import { COIN_ICON, HERO_ASPECT, HERO_FRAMES, jobHeroArt, LOCK_ICON, TAB_ICONS }
 // 為什麼分頁列現在就畫出來而不是等功能做好:玩家要看得到「之後還有東西」,
 // 而且版面高度先佔住,之後開放時不會整個畫面重排(那是最容易把按鈕擠出畫面的改動)。
 
-/** 立繪高度。要夠大才有「這是我的角色」的份量,但不能大到把開始按鈕擠出畫面。 */
-const HERO_HEIGHT = 190;
+/**
+ * 主角「身體」的高度。要夠大才有「這是我的角色」的份量,但不能大到把開始按鈕擠出畫面。
+ * 框比這個高一倍多(見 artAssets 的 HERO_BODY_RATIO),多出來的上半部是噴刺的空間。
+ */
+const HERO_BODY_HEIGHT = 110;
+const HERO_HEIGHT = heroBoxHeight(HERO_BODY_HEIGHT);
 const HERO_WIDTH = Math.round(HERO_HEIGHT * HERO_ASPECT);
-
-const BLINK_SEQUENCE = [0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1];
-const BLINK_MS = 160;
 
 /** 分頁圖示的邊長。一列五個,390 寬的手機上剛好不擠。 */
 const TAB_SIZE = 34;
@@ -36,12 +39,13 @@ interface Props {
 }
 
 export function MainMenu({ stage, job, coins, lastResult, onStart }: Props) {
-  const [blinkStep, setBlinkStep] = useState(0);
+  const [heroStep, setHeroStep] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
-  const heroArt = job === null ? HERO_FRAMES[BLINK_SEQUENCE[blinkStep]] : jobHeroArt(job.archetype, job.branch, job.tier);
+  // 主角永遠是史萊姆,轉職不換造型。職業立繪只留在轉職選擇畫面(那裡是在介紹職業)。
+  const heroArt = HERO_FRAMES[HERO_SEQUENCE[heroStep]];
 
   useEffect(() => {
-    const id = setInterval(() => setBlinkStep((s) => (s + 1) % BLINK_SEQUENCE.length), BLINK_MS);
+    const id = setInterval(() => setHeroStep((s) => (s + 1) % HERO_SEQUENCE.length), HERO_FRAME_MS);
     return () => clearInterval(id);
   }, []);
 
