@@ -135,6 +135,8 @@ export interface LaneRunView {
   chooseRunSkill: (choice: RunSkillState) => void;
   feedback: RunFeedback | null;
   speed: number;
+  /** 正在加速趕路(前方沒東西)。畫面拿它做視覺回饋。 */
+  dashing: boolean;
   /** 手指拖曳:直接把角色放到這個位置 */
   dragTo: (offset: number) => void;
   /** 方向鍵:滑順移到隔壁跑道中央 */
@@ -176,7 +178,12 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
   const [skillOffers, setSkillOffers] = useState<RunSkillState[]>([]);
   const [pendingPicks, setPendingPicks] = useState(0);
 
-  const startedAtRef = useRef(Date.now());
+  // 已跑距離用累加的(速度會變,不能用「起跑時間 x 速度」回推)。
+  const travelledRef = useRef(0);
+  const lastTickRef = useRef(Date.now());
+  /** 從什麼時候開始「視野內沒東西」。撐過 DASH_DELAY_MS 才開始加速。 */
+  const idleSinceRef = useRef(0);
+  const dashingRef = useRef(false);
   // 已結算過的排。跟判定同步讀寫,走 state 會慢一拍導致同一排被結算兩次。
   const passedRef = useRef<Set<number>>(new Set());
   const feedbackKeyRef = useRef(0);
@@ -205,32 +212,63 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
   // createRun 算敵人的時候重播的就是這一串(見 laneRunSkills 的 runSkillOffersAt)。
   const skillOrdinalRef = useRef(0);
 
-  /**
-   * 選技能的時候跑圖要**停住**。
-   *
-   * 距離是從 startedAtRef 用時鐘算出來的(travelled = (now - startedAt) / 1000 * speed),
-   * 所以「暫停」不能只是停掉 interval——玩家在面板上停留的那幾秒鐘,時鐘照走,
-   * 一恢復就會一口氣跳過好幾排(實測停 5 秒等於直接跳掉兩排閘門)。
-   * 正確做法是恢復的時候把 startedAt 往後推「暫停了多久」,時間軸才接得回去。
-   */
   const paused = skillOffers.length > 0;
-  const pausedAtRef = useRef(0);
-  useEffect(() => {
-    if (paused) {
-      pausedAtRef.current = Date.now();
-      return;
-    }
-    if (pausedAtRef.current > 0) {
-      startedAtRef.current += Date.now() - pausedAtRef.current;
-      pausedAtRef.current = 0;
-    }
-  }, [paused]);
+
+  /**
+   * 前方**完全沒東西**的時候會不會加速趕路。
+   *
+   * 一場有 26~39% 的時間畫面上什麼都沒有(前幾波只有 3 隻怪,卻要橫跨一整個戰鬥段),
+   * 玩家只是在等下一波冒出來。清完一波之後停一拍(DASH_DELAY_MS)就加速衝過那一段——
+   * 空檔存在才消,而且清得快的人自然跑得快。
+   *
+   * **不會偷走反應時間**:條件是「視野內(VISIBLE_AHEAD)沒有任何還沒結算的東西」,
+   * 所以下一個物件一進視野就立刻恢復原速,玩家看到它的距離跟平常完全一樣。
+   * 跑速是難度旋鈕,這裡動的是「沒有難度可言的那一段」。
+   */
+  const DASH_DELAY_MS = 600;
+  const DASH_MULTIPLIER = 4;
+  const [dashing, setDashing] = useState(false);
+
+  /**
+   * 現在該不該加速。**閘門與怪的標準不一樣**,這是關鍵:
+   *
+   *   閘門 → 只要進視野就絕不加速。它是這款的決策點,反應時間一秒都不能偷。
+   *   怪   → 只有進到「近的那半邊」才算數。你不對怪做反應(該做的決定在閘門就做完了),
+   *          牠遠遠地慢慢飄過來的那段純粹是等待。
+   *
+   * 一開始兩者用同一個標準(都看 VISIBLE_AHEAD),結果是一波的第一隻怪很早就算「視野內有東西」,
+   * 整段接近期都不算空——實測單場時間 201s → 200s,等於完全沒作用。
+   */
+  const DASH_MONSTER_ZONE = VISIBLE_AHEAD * 0.35;
+  function nothingAhead(travelled: number): boolean {
+    return !rows.some((r) => {
+      if (passedRef.current.has(r.index)) return false;
+      if (r.nodes[0]?.kind !== 'enemy') return r.distance - travelled <= VISIBLE_AHEAD;
+      const lead = r.distance - waveLength(stage, r.nodes[0].enemy?.units);
+      return lead - travelled <= DASH_MONSTER_ZONE;
+    });
+  }
 
   useEffect(() => {
     if (state.phase !== 'running' || paused) return;
+    // 距離改成**累加**而不是「起跑時間 x 固定速度」——速度會變,回推的算法就對不起來了。
+    // 順帶把暫停處理變簡單:停掉 interval 就是停住,不用再補償時鐘(舊版要把 startedAt
+    // 往後推「暫停了多久」,漏補一次就會一口氣跳掉兩排閘門)。
+    lastTickRef.current = Date.now();
     const id = setInterval(() => {
       const now = Date.now();
-      const travelled = ((now - startedAtRef.current) / 1000) * speed;
+      // 分頁切回來的時候 dt 會很大,夾住免得一格跳過好幾排。
+      const dt = Math.min(250, now - lastTickRef.current);
+      lastTickRef.current = now;
+
+      const idle = nothingAhead(travelledRef.current);
+      if (!idle) idleSinceRef.current = 0;
+      else if (idleSinceRef.current === 0) idleSinceRef.current = now;
+      const dash = idle && idleSinceRef.current > 0 && now - idleSinceRef.current >= DASH_DELAY_MS;
+      if (dash !== dashingRef.current) { dashingRef.current = dash; setDashing(dash); }
+
+      travelledRef.current += (speed * (dash ? DASH_MULTIPLIER : 1) * dt) / 1000;
+      const travelled = travelledRef.current;
       setDistance(travelled);
 
       const gap = targetRef.current - offsetRef.current;
@@ -243,7 +281,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
       stepWave(now, travelled);
     }, TICK_MS);
     return () => clearInterval(id);
-  }, [state.phase, speed, rows, paused]);
+  }, [state.phase, speed, rows, paused, stage]);
 
   /** 一波小怪的演出:該冒出來的冒出來、該丟的武器丟出去、打中的就消失。 */
   function stepWave(now: number, travelled: number) {
@@ -503,6 +541,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
     chooseRunSkill,
     feedback,
     speed,
+    dashing,
     dragTo,
     steer,
     stage,
