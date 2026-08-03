@@ -19,6 +19,7 @@ import {
   volleyRate,
   waveKillCount,
   waveMonsters,
+  waveLength,
   DEFAULT_RUN_START,
   isEnemyRowIndex,
   wavesForStage,
@@ -52,7 +53,8 @@ const FIRE_RANGE = 260;
 export interface RunFeedback {
   key: number;
   message: string;
-  hpDelta: number;
+  /** 人數變化。負的就是被撞掉了——這一版沒有血量。 */
+  heroDelta: number;
   attackDelta: number;
 }
 
@@ -242,12 +244,17 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
 
   /** 一波小怪的演出:該冒出來的冒出來、該丟的武器丟出去、打中的就消失。 */
   function stepWave(now: number, travelled: number) {
-    // 找出「正在逼近」的那一排敵人。排距 100、每 4 排一次敵人,所以同時最多只會有一波在畫面上。
+    // 找出「正在逼近」的那一排敵人。
+    //
+    // 判斷的是**最前面那一隻怪**進沒進視野,不是那一排的結算點——小怪是從結算點往前
+    // 散布 waveLength(整個戰鬥段)的,結算點還在 VISIBLE_AHEAD 之外的時候,
+    // 前半的怪其實早就該出現在畫面上了。用結算點判斷的話,戰鬥段的前半會是一段空跑
+    // (實測第 1 關有 6 秒完全沒東西),而且波次啟動時前面那幾隻已經越過勇者、直接被跳過。
     const enemyRow = rows.find(
       (r) =>
         !passedRef.current.has(r.index) &&
         r.nodes[0]?.kind === 'enemy' &&
-        r.distance - travelled <= VISIBLE_AHEAD,
+        r.distance - waveLength(stage, r.nodes[0].enemy?.units) - travelled <= VISIBLE_AHEAD,
     );
 
     if (!enemyRow) {
@@ -271,7 +278,10 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         power: enemy.power,
         hitsPerUnit: enemy.hitsPerUnit ?? HITS_PER_MONSTER,
         boss: enemy.boss === true,
-        monsters: waveMonsters(enemyRow.index, enemy.units, enemyRow.distance, enemy.species.length),
+        monsters: waveMonsters(
+          enemyRow.index, enemy.units, enemyRow.distance, enemy.species.length,
+          waveLength(stage, enemy.units),
+        ),
         hitsOn: new Array(enemy.units).fill(0),
         lastFireAt: 0,
       };
@@ -395,12 +405,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
       // 乘在讀取端的話,閘門的加減會跟技能的倍率互相糾纏(先乘還是先加會得到不同答案),
       // 而且 totalAttack 在畫面、戰鬥演出、結算三個地方都會被讀,任何一處漏乘就對不起來。
       // 算式走 applyRunSkillPick(共用),敵人那邊的理想路線用的是同一支。
-      setState((st) => {
-        const grown = applyRunSkillPick(prev, choice, st);
-        // 血量上限提高時同步補等量的血,不然「+30% 血量」在滿血以外的情況等於沒效果。
-        const hp = Math.min(grown.maxHp, st.hp + Math.max(0, grown.maxHp - st.maxHp));
-        return { ...st, ...grown, hp };
-      });
+      setState((st) => ({ ...st, ...applyRunSkillPick(prev, choice, st) }));
       setPendingPicks((left) => {
         const remaining = left - 1;
         if (remaining > 0) {
@@ -430,7 +435,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         setFeedback({
           key: feedbackKeyRef.current,
           message: r.message,
-          hpDelta: r.hpDelta,
+          heroDelta: r.heroDelta,
           attackDelta: r.attackDelta,
         });
         return r.state;

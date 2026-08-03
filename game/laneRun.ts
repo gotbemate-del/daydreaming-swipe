@@ -69,14 +69,16 @@ export function hitsGate(offset: number, lane: Lane): boolean {
 export type NodeKind = 'gate' | 'enemy' | 'coin';
 
 /**
- * 閘門效果。三種資源各有各的手感,混在一起玩家才需要真的比較:
+ * 閘門效果。兩種資源各有各的手感,混在一起玩家才需要真的比較:
  *   heroes 勇者人數——乘法成長最快,是畫面上最爽的那一種(一排變兩排)
  *   gear   裝備等級——每升一級全隊每個人都變強,乘上人數之後才是總戰力
- *   hp     血量——只讓你活著,不會讓你打得動
  * 加法給穩定成長、乘法給爆發,兩種混在同一排,玩家才需要真的算一下。
  *
+ * **血量閘門已經拿掉了**:這一版沒有獨立的血量,人數就是血量(見 RunState.heroes),
+ * 所以「扣血」這件事直接由「扣人」表達——同一個資源,少一層要玩家自己換算的抽象。
+ *
  * op 只有兩種:
- *   add  固定值加減(勇者 +N、裝備階級、扣血)
+ *   add  固定值加減(勇者 +N / -N、裝備階級)
  *   mul  乘上去(勇者 x2、勇者 x0.5)
  *
  * 「勇者 +N」的 N 是**產生跑圖時就決定好的固定數字**,不是看玩家當下有幾隻算出來的。
@@ -89,7 +91,7 @@ export type NodeKind = 'gate' | 'enemy' | 'coin';
  * 起跑的每人攻擊力對每個職業都一樣,固定 +N 對誰都一樣值。
  */
 export interface GateEffect {
-  stat: 'heroes' | 'gear' | 'hp';
+  stat: 'heroes' | 'gear';
   op: 'add' | 'mul';
   value: number;
 }
@@ -148,18 +150,34 @@ export interface RunState {
    * 這裡只保留「換算成格子」的結果——純邏輯層不需要知道手指拖到哪個像素。
    */
   lane: Lane;
-  /** 場上的勇者人數。閘門 x2 加的是這個——畫面上真的會多出一排人。 */
+  /**
+   * 場上的勇者人數。閘門 x2 加的是這個——畫面上真的會多出一排人。
+   *
+   * **人數就是血量。** 沒有獨立的血條:打不掉的怪撞上來會換掉勇者(見 resolveEnemy),
+   * 人數歸零就是死亡。這樣「我變強了」跟「我剛剛失誤了」在螢幕上都是看得見的一群人變多變少,
+   * 而不是 HUD 上一個數字在跳(舊版最大的問題:成長與懲罰都是隱形的)。
+   */
   heroes: number;
   /** 每名勇者的攻擊力。換裝備加的是這個,乘上人數才是總戰力。 */
   perHero: number;
   /** 裝備等級。只決定「拿哪一把武器」的外觀與升降級的落點,傷害本身看 perHero。 */
   gear: number;
-  hp: number;
-  maxHp: number;
+  /**
+   * 兌換率:一個勇者能換掉幾隻怪。這是**唯一的防禦軸**,取代舊版的血量。
+   *
+   * 為什麼防禦不是「多給人」:鐵則禁止養成給起跑人數(起跑總戰力固定,人數只決定怎麼拆,
+   * 給人數等於稀釋 perHero,實測會讓點滿技能比裸裝還慘)。兌換率是乘數不是固定值,
+   * 後期不會變零頭;而且**完全不失誤的玩家根本碰不到怪**,兌換率對他等於零效益——
+   * 抬地板不抬天花板,所以幅度可以放心給,也不會被敵人曲線追平。
+   */
+  tradeRate: number;
   coins: number;
   rowIndex: number;
   phase: 'running' | 'cleared' | 'dead';
 }
+
+/** 兌換率的預設值:一個勇者換一隻怪。 */
+export const BASE_TRADE_RATE = 1;
 
 /**
  * 總戰力 = 人數 x 每人攻擊力。這是唯一拿去跟敵人比的數字。
@@ -185,10 +203,17 @@ export interface RunStart {
   gear: number;
   /** 總戰力倍率。這是轉職唯一真正加強的地方,幅度要小。 */
   attackMultiplier: number;
-  hpMultiplier: number;
+  /**
+   * 起跑的兌換率(取代舊版的 hpMultiplier)。1 = 一個勇者換一隻怪。
+   * 耐打路線加的是這個——它只在「已經漏接了」的時候才生效,所以不會變成無腦的通關券,
+   * 而且**不能算進理想路線**(理想玩家不被撞,算進去等於讓敵人為了一個沒人用到的東西變強)。
+   */
+  tradeRate: number;
 }
 
-export const DEFAULT_RUN_START: RunStart = { heroes: 1, gear: 1, attackMultiplier: 1, hpMultiplier: 1 };
+export const DEFAULT_RUN_START: RunStart = {
+  heroes: 1, gear: 1, attackMultiplier: 1, tradeRate: BASE_TRADE_RATE,
+};
 
 /** 起跑位置:跑道正中央。兩條跑道沒有「中立格」,站中間只是還沒表態,第一排之前一定要選邊。 */
 export const START_OFFSET = 0.5;
@@ -203,7 +228,7 @@ export const START_OFFSET = 0.5;
  *
  * 難度不受影響:敵人是照這一場的最佳路線算的,閘門調小敵人自動跟著小(見 ENEMY_POWER_RATIO)。
  */
-export const GEAR_STEP = 1.14;
+export const GEAR_STEP = 1.07;
 export const MAX_GEAR = 5;
 
 // ---- 節奏 ----
@@ -271,10 +296,21 @@ export function bossIndexForStage(stage: number): number {
 
 /** 一個大關幾個小關。 */
 export const LEVELS_PER_CHAPTER = 10;
-/** 一般小關幾波敵人。 */
-export const WAVES_PER_LEVEL = 5;
+/** 總共幾個大關。 */
+export const TOTAL_CHAPTERS = 300;
+/** 一般小關幾波敵人。**每打完一波給一次技能選擇**,所以這個數字就是一場能挑幾次。 */
+export const WAVES_PER_LEVEL = 10;
 /** 加倍長的小關(編號是 5 的倍數)幾波敵人。 */
-export const LONG_LEVEL_WAVES = 10;
+export const LONG_LEVEL_WAVES = 20;
+
+/**
+ * 一個一般小關要跑幾秒。長關是兩倍。
+ *
+ * 3 分鐘是刻意的:舊版一般小關只有 37~48 秒、5 次技能選擇,等於**每 9 秒被打斷一次**,
+ * 玩家的原話是「好像是在選擇技能而不是在玩遊戲」。現在 10 波攤在 180 秒裡,
+ * 兩次選擇之間有 18 秒,而且那 18 秒大部分是**打架**不是趕路(見下方 battleDistance)。
+ */
+export const TARGET_LEVEL_SECONDS = 180;
 
 /** 第幾大關(從 1 開始)。 */
 export function chapterOfStage(stage: number): number {
@@ -301,21 +337,45 @@ export function rowsForStage(stage: number): number {
 }
 
 /** 最長的小關有幾排。給查表預留長度用(取兩種節奏裡比較長的那個)。 */
-export const MAX_ROWS_PER_RUN = LONG_LEVEL_WAVES * 4;
-/** 每隔幾排出現一排敵人(敵人排兩條跑道都是敵人,一定要正面對上)。 */
-export const ENEMY_EVERY = 4;
+export const MAX_ROWS_PER_RUN = LONG_LEVEL_WAVES * 2;
 /**
- * 加倍長的小關改成「每 3 排一波」,而不是照 4 排。
+ * 每隔幾排出現一排敵人:一般小關是「2 排閘門 + 1 排敵人」為一個波週期。
  *
- * 照 4 排的話,10 波 = 40 排 = 30 個閘門,而閘門數量是**指數的指數**:
- * 實測放大倍率從 54~134 倍衝到 1833~4230 倍(終點戰力 16 萬),把壓膨脹的工作整個抵銷;
- * 難度也一起爆掉——90% 準確率的過關率從 80% 掉到 44%,而那不是設計決定的,
- * 純粹是「路變長所以失誤機會變多」的副作用。
- *
- * 改成 3 排一波之後,長關是**打得更密**(10 波塞在 30 排裡)而不是**多逛 15 個閘門**,
- * 「這關比較硬」來自敵人一波接一波,不是來自數字又翻了幾十倍。
+ * **閘門總數是要被壓住的那個數字,不是排數。** 10 波 x 2 個閘門 = 20 個閘門,
+ * 而閘門數量是指數的指數(CLAUDE.md:30 個閘門把放大倍率炸到 1833~4230 倍)。
  */
-export const LONG_ENEMY_EVERY = 3;
+export const ENEMY_EVERY = 3;
+/**
+ * 加倍長的小關是「1 排閘門 + 1 排敵人」——**波數翻倍,閘門數不變**。
+ *
+ * 20 波照 3 排一波的話會是 40 個閘門,放大倍率直接爆掉,而那不是設計決定的,
+ * 純粹是「路變長所以閘門變多」的副作用。改成 2 排一波之後,長關跟一般小關**同樣 20 個閘門**,
+ * 它的「硬」來自敵人一波接一波(20 波)而不是數字又翻幾十倍。
+ */
+export const LONG_ENEMY_EVERY = 2;
+
+/**
+ * 一個波週期裡,**戰鬥段**佔多少距離。
+ *
+ * 這是這一版最重要的結構改動:舊版「一波 = 一排」,一瞬間結算完,所以想把關卡拉長
+ * 只能塞更多排 = 更多閘門 = 膨脹爆掉。現在戰鬥段是**時間**(怪一路衝過來的那段路),
+ * 排數不變、閘門不變,關卡卻可以拉到 3 分鐘——而且拉長的那段是打架,不是趕路。
+ *
+ * 用秒回推距離而不是寫死距離:跑速從 45 爬到 111,寫死的話後期小關會只剩一分半。
+ */
+export function battleSecondsPerWave(stage: number): number {
+  const waves = wavesForStage(stage);
+  const gateRows = enemyEveryForStage(stage) - 1;
+  const target = TARGET_LEVEL_SECONDS * (waves === LONG_LEVEL_WAVES ? 2 : 1);
+  // 一個波週期 = 閘門段(排數 x 排距,速度越快越短)+ 戰鬥段(固定秒數)。
+  const gateSeconds = (gateRows * ROW_SPACING) / runSpeed(stage);
+  return Math.max(2, target / waves - gateSeconds);
+}
+
+/** 戰鬥段的距離(怪從多遠開始衝過來)。 */
+export function battleDistance(stage: number): number {
+  return battleSecondsPerWave(stage) * runSpeed(stage);
+}
 
 /** 這一小關每幾排一波敵人。 */
 export function enemyEveryForStage(stage: number): number {
@@ -332,6 +392,24 @@ export function gatesBeforeRow(rowIndex: number, stage: number): number {
   return rowIndex - Math.floor(rowIndex / enemyEveryForStage(stage));
 }
 
+/**
+ * 每一排落在哪個距離。**排距不再是固定的 ROW_SPACING**:
+ * 閘門排之間是一排的距離(短、緊湊),敵人排前面是一整個戰鬥段(長)。
+ *
+ * 這就是「波與排拆開」的實作:排數(= 閘門數)不變,關卡長度靠戰鬥段拉,
+ * 所以拉長關卡不會把單場的戰力膨脹一起拉大。
+ */
+export function rowDistances(stage: number): number[] {
+  const battle = battleDistance(stage);
+  const out: number[] = [];
+  let at = LEAD_IN_DISTANCE;
+  for (let i = 0; i < rowsForStage(stage); i++) {
+    at += isEnemyRowIndex(i, stage) ? battle : ROW_SPACING;
+    out.push(at);
+  }
+  return out;
+}
+
 /** 一場跑完要幾秒(給驗證腳本量關卡長度用)。 */
 export function runSeconds(stage: number): number {
   return runLength(stage) / runSpeed(stage);
@@ -346,15 +424,13 @@ export function createRng(seed: number): () => number {
 }
 
 export function initialRunState(stage: number, start: RunStart = DEFAULT_RUN_START): RunState {
-  const hp = Math.round(baseHpForStage(stage) * start.hpMultiplier);
   return {
     lane: laneFromOffset(START_OFFSET),
     heroes: start.heroes,
     // 總戰力 = base x 倍率,再除以人數攤到每個人身上——所以起跑幾個人不會讓總戰力變多。
     perHero: Math.max(1, Math.round((baseAttackForStage(stage) * start.attackMultiplier) / start.heroes)),
     gear: start.gear,
-    hp,
-    maxHp: hp,
+    tradeRate: Math.max(BASE_TRADE_RATE, start.tradeRate),
     coins: 0,
     rowIndex: 0,
     phase: 'running',
@@ -365,9 +441,6 @@ export function initialRunState(stage: number, start: RunStart = DEFAULT_RUN_STA
 // 但閘門的加成幅度是相對值(百分比與倍率),所以養成不會讓選擇變得無所謂。
 export function baseAttackForStage(stage: number): number {
   return 10 + (stage - 1) * 2;
-}
-export function baseHpForStage(stage: number): number {
-  return 100 + (stage - 1) * 10;
 }
 
 /**
@@ -399,7 +472,7 @@ export function baseHpForStage(stage: number): number {
  * **難度不變,但失誤的相對代價會變**,所以每次動 GEAR_STEP / HERO_ADD_RATIO 都要重掃這個值。
  * 上一次重掃就是因為把單場膨脹從 2700 倍壓到 130 倍。
  */
-export const ENEMY_POWER_RATIO = 0.53;
+export const ENEMY_POWER_RATIO = 0.42;
 
 /**
  * 第一大關刻意放寬。
@@ -413,7 +486,7 @@ export const ENEMY_POWER_RATIO = 0.53;
  * 只動這個係數、不動閘門與跑速:跑速是「看得清楚嗎」,閘門是「選得對嗎」,
  * 這兩個是機制本身,放水會讓玩家學到錯的東西。放寬容錯是讓他有機會學,不是幫他過。
  */
-export const EASY_RATIO = 0.24;
+export const EASY_RATIO = 0.18;
 
 /**
  * 加倍長的小關要放寬多少。
@@ -423,7 +496,7 @@ export const EASY_RATIO = 0.24;
  * 乘上這個係數把它補回來一部分:長關仍然比一般關硬(它是段落的中點與魔王關,本來就該硬),
  * 但硬的程度是選出來的,不是長度附贈的。
  */
-export const LONG_LEVEL_RATIO_SCALE = 0.82;
+export const LONG_LEVEL_RATIO_SCALE = 1;
 
 export function enemyPowerRatioForStage(stage: number): number {
   const long = wavesForStage(stage) === LONG_LEVEL_WAVES ? LONG_LEVEL_RATIO_SCALE : 1;
@@ -485,7 +558,7 @@ export const GATE_WEIGHT_GEAR = 0.55;
  * 吃不吃都不會變——而且自帶追趕機制:落後的玩家拿到的 +N 相對自己是大補,
  * 領先的玩家拿到的只是零頭,成長自然收斂。
  */
-export const HERO_ADD_RATIO = 0.14;
+export const HERO_ADD_RATIO = 0.07;
 
 /**
  * 理想路線的模擬:每一格都吃到好閘門,人數與每人攻擊力各自怎麼長。
@@ -557,12 +630,15 @@ function pickDoubleGateDepths(rng: () => number, totalGates: number, wanted: num
 function makeGateRow(rng: () => number, stage: number, gateDepth: number, isDouble: boolean): RunNode[] {
   const good: GateEffect = pickGoodGate(rng, gateDepth, isDouble);
   const badRoll = rng();
+  // 三種陷阱的痛法不一樣:x0.5 是一次腰斬(最痛)、裝備損壞打的是每人攻擊力、
+  // 勇者 -N 是固定值(前期很痛、後期是零頭,自帶追趕)。舊版第三種是「血量 -30」,
+  // 血量拿掉之後直接換成扣人——同一件事,少一層抽象。
   const bad: GateEffect =
     badRoll < 0.45
       ? { stat: 'heroes', op: 'mul', value: 0.5 }
       : badRoll < 0.75
         ? { stat: 'gear', op: 'add', value: -1 }
-        : { stat: 'hp', op: 'add', value: -Math.round(baseHpForStage(stage) * 0.3) };
+        : { stat: 'heroes', op: 'add', value: -idealStep(gateDepth).addN };
 
   const effects = rng() < 0.5 ? [good, bad] : [bad, good];
   return effects.map((gate, lane) => ({ lane: lane as Lane, kind: 'gate' as const, gate }));
@@ -576,12 +652,35 @@ function makeGateRow(rng: () => number, stage: number, gateDepth: number, isDoub
 // 結算本身沒有變:傷害仍然只在這一排的結算點算一次。小怪的生死是「把那個數字畫出來」,
 // 不是另一套獨立的戰鬥判定——兩套判定會各自漂移,最後畫面演的跟實際扣的血對不起來。
 
-/** 一波小怪散布的距離。最後一隻抵達的位置就是這一排的結算點,前面的排在它前方。 */
-export const WAVE_LENGTH = 150;
-/** 一波幾隻。越後面的波次越多隻,「一直冒出來」的壓迫感就是靠這個。 */
-export const MAX_WAVE_SIZE = 9;
-export function waveSize(rowIndex: number): number {
-  return Math.min(MAX_WAVE_SIZE, 5 + Math.floor(rowIndex / ENEMY_EVERY) * 2);
+/**
+ * 一波小怪散布多長的距離。最後一隻抵達的位置就是這一排的結算點,前面的排在它前方。
+ *
+ * 從固定的 150 改成「整個戰鬥段」:一波要打 13 秒,怪卻擠在 150 距離內的話,
+ * 玩家會看到一小撮怪衝過來、然後空等十秒——戰鬥段的長度必須真的由怪填滿。
+ */
+export const MONSTER_GAP = 78;
+export function waveLength(stage: number, units = MAX_WAVE_SIZE): number {
+  // 散布長度綁**隻數**,不是綁整個戰鬥段:3 隻怪攤在 527 距離上等於每 4.3 秒才過一隻,
+  // 那不是一波敵人,是零星路過。綁隻數之後前期是短促的一陣、後期(20 幾隻)才拉成長長一串,
+  // 而且密度固定——「這波比較難」看的是隻數,不是牠們排得多開。
+  return Math.min(battleDistance(stage) * 0.9, Math.max(1, units) * MONSTER_GAP);
+}
+/**
+ * 一波幾隻。**跟著理想路線的人數走**,不是跟著排數走。
+ *
+ * 人數變成血量之後,「漏了幾隻」直接換算成「少幾個人」,所以兩群的規模必須是同一個數量級——
+ * 固定 5~9 隻的話,起跑 1 人的時候漏 5 隻是瞬間全滅,而後期滾出 50 人的時候漏 9 隻是搔癢。
+ * 綁在理想人數上,完美玩家面對的永遠是「跟自己差不多大的一群」,失誤的代價在每個階段都一樣重。
+ *
+ * 順帶一個好處:這就是人群對撞的畫面——兩邊都是一大群,撞上去少一片。
+ */
+export const MIN_WAVE_SIZE = 3;
+export const MAX_WAVE_SIZE = 24;
+/** 一波的隻數是理想人數的幾倍。 */
+export const ENEMY_UNITS_PER_HERO = 1;
+export function waveSize(idealHeroes: number): number {
+  const n = Math.round(idealHeroes * ENEMY_UNITS_PER_HERO);
+  return Math.min(MAX_WAVE_SIZE, Math.max(MIN_WAVE_SIZE, n));
 }
 
 export interface WaveMonster {
@@ -615,7 +714,9 @@ function hashFor(rowIndex: number, index: number, salt: number): number {
   return ((h ^ (h >>> 16)) >>> 0) / 0x100000000;
 }
 
-export function waveMonsters(rowIndex: number, size: number, rowDistance: number, speciesCount = 1): WaveMonster[] {
+export function waveMonsters(
+  rowIndex: number, size: number, rowDistance: number, speciesCount = 1, spread = 150,
+): WaveMonster[] {
   return Array.from({ length: size }, (_, index) => {
     const lane = laneForWaveMonster(rowIndex, index);
     const jitter = (hashFor(rowIndex, index, 1) * 2 - 1) * MONSTER_JITTER;
@@ -624,7 +725,7 @@ export function waveMonsters(rowIndex: number, size: number, rowDistance: number
       lane,
       offset: clampOffset(laneCenterOffset(lane) + jitter),
       speciesIndex: Math.min(speciesCount - 1, Math.floor(hashFor(rowIndex, index, 2) * speciesCount)),
-      distance: rowDistance - (WAVE_LENGTH * (size - 1 - index)) / size,
+      distance: rowDistance - (spread * (size - 1 - index)) / size,
     };
   });
 }
@@ -730,7 +831,9 @@ export function bossSpeciesForStage(stage: number): WaveSpecies {
   return { id: FINAL_BOSS_MONSTER.id, name: FINAL_BOSS_MONSTER.name };
 }
 
-function makeEnemyRow(rng: () => number, stage: number, rowIndex: number, idealAttack: number): RunNode[] {
+function makeEnemyRow(
+  rng: () => number, stage: number, rowIndex: number, idealAttack: number, idealHeroes: number,
+): RunNode[] {
   const boss = isBossRow(stage, rowIndex);
   const power = Math.max(1,
     Math.round(idealAttack * enemyPowerRatioForStage(stage) * (boss ? BOSS_POWER_MULTIPLIER : 1)));
@@ -769,7 +872,7 @@ function makeEnemyRow(rng: () => number, stage: number, rowIndex: number, idealA
     reward: Math.round(power * 0.4),
     species,
     name: species[0].name,
-    units: waveSize(rowIndex),
+    units: waveSize(idealHeroes),
   };
   return Array.from({ length: LANE_COUNT }, (_, lane) => ({
     lane: lane as Lane,
@@ -799,6 +902,7 @@ export function createRun(seed: number, stage: number): RunRow[] {
   // 已經驗證過的過關率(scripts/verify-lane-run.ts)全部要重跑——造型是外觀,不該動到數值。
   const artRng = createRng((seed ^ 0x9e3779b9) >>> 0);
   const rows: RunRow[] = [];
+  const distances = rowDistances(stage);
   // 最佳路線的模擬狀態。跟 RunState 一樣是「人數 x 每人攻擊力」,起手 1 人。
   let idealHeroes = 1;
   let idealPerHero = baseAttackForStage(stage);
@@ -821,8 +925,8 @@ export function createRun(seed: number, stage: number): RunRow[] {
     if (isEnemy) {
       rows.push({
         index: i,
-        distance: LEAD_IN_DISTANCE + i * ROW_SPACING,
-        nodes: makeEnemyRow(artRng, stage, i, idealHeroes * idealPerHero),
+        distance: distances[i],
+        nodes: makeEnemyRow(artRng, stage, i, idealHeroes * idealPerHero, idealHeroes),
       });
       // 這一波之後玩家會拿到幾次選擇,理想路線照「每次都挑最能加戰力的」同步吃下去。
       // 人數與每人攻擊力分開乘,不是通通乘在戰力上:「勇者 +N」是固定值,
@@ -833,8 +937,10 @@ export function createRun(seed: number, stage: number): RunRow[] {
         skillOrdinal += 1;
         if (offers.length === 0) break;
         const choice = bestRunSkillChoice(idealSkills, offers);
+        // 兌換率刻意不進理想路線:理想玩家不漏接、碰不到怪,兌換率對他是零效益。
+        // 算進去的話敵人會為了一個沒人用得到的東西變強,真人反而更難(見 RunState.tradeRate)。
         const grown = applyRunSkillPick(idealSkills, choice, {
-          perHero: idealPerHero, heroes: idealHeroes, maxHp: 1,
+          perHero: idealPerHero, heroes: idealHeroes, tradeRate: BASE_TRADE_RATE,
         });
         idealSkills = learnRunSkill(idealSkills, choice);
         idealPerHero = grown.perHero;
@@ -852,13 +958,15 @@ export function createRun(seed: number, stage: number): RunRow[] {
     } else if (good.stat === 'gear') {
       idealPerHero *= Math.pow(GEAR_STEP, good.value);
     }
-    rows.push({ index: i, distance: LEAD_IN_DISTANCE + i * ROW_SPACING, nodes });
+    rows.push({ index: i, distance: distances[i], nodes });
   }
   return rows;
 }
 
 export function runLength(stage: number): number {
-  return LEAD_IN_DISTANCE + rowsForStage(stage) * ROW_SPACING;
+  // 最後一排(一定是敵人)之後再留一小段,不然剛打完就瞬間結算,看起來像被切掉。
+  const d = rowDistances(stage);
+  return d[d.length - 1] + ROW_SPACING;
 }
 
 // ---- 結算 ----
@@ -866,7 +974,8 @@ export interface RowResolution {
   state: RunState;
   /** 給畫面用的一句話回饋 */
   message: string;
-  hpDelta: number;
+  /** 人數變化。負的就是被撞掉了——這一版沒有血量,扣人就是扣血。 */
+  heroDelta: number;
   attackDelta: number;
 }
 
@@ -874,7 +983,8 @@ export function applyGate(state: RunState, gate: GateEffect): RunState {
   const next = { ...state };
   if (gate.stat === 'heroes') {
     next.heroes = gate.op === 'mul' ? next.heroes * gate.value : next.heroes + gate.value;
-    // 人數下限 1:連吃幾次減半會趨近 0,全隊死光之後怎麼跑都沒有意義,那不是懲罰是卡死。
+    // **閘門的人數下限是 1,碰撞才可以歸零。** 連吃幾次減半會趨近 0,被閘門直接扣死
+    // 不是懲罰是卡死;死亡要發生在「怪撞上來換掉最後一個人」那一刻,那才看得懂發生了什麼事。
     next.heroes = Math.max(1, Math.round(next.heroes));
   } else if (gate.stat === 'gear') {
     // 等級只是「拿哪一把武器」的外觀,夾在 1~5(只有 5 階武器美術);**傷害的增減照算,不受夾擠影響**。
@@ -885,11 +995,6 @@ export function applyGate(state: RunState, gate: GateEffect): RunState {
     // 現在等級與傷害分開算:等級到頂/到底只是圖不再換,閘門的效果永遠生效。
     next.gear = Math.min(MAX_GEAR, Math.max(1, next.gear + gate.value));
     next.perHero = Math.max(1, Math.round(next.perHero * Math.pow(GEAR_STEP, gate.value)));
-  } else {
-    next.maxHp = gate.op === 'mul' ? Math.round(next.maxHp * gate.value) : next.maxHp + gate.value;
-    next.maxHp = Math.max(1, next.maxHp);
-    next.hp = Math.min(next.maxHp, next.hp + (gate.op === 'mul' ? 0 : gate.value));
-    next.hp = Math.max(0, next.hp);
   }
   return next;
 }
@@ -902,9 +1007,8 @@ export function applyGate(state: RunState, gate: GateEffect): RunState {
  */
 export function gateLabel(gate: GateEffect): string {
   if (gate.stat === 'gear') return gate.value >= 0 ? '裝備強化' : '裝備損壞';
-  const stat = gate.stat === 'heroes' ? '勇者' : '血量';
-  if (gate.op === 'mul') return `${stat} x${gate.value}`;
-  return `${stat} ${gate.value >= 0 ? '+' : ''}${gate.value}`;
+  if (gate.op === 'mul') return `勇者 x${gate.value}`;
+  return `勇者 ${gate.value >= 0 ? '+' : ''}${gate.value}`;
 }
 
 /**
@@ -913,17 +1017,46 @@ export function gateLabel(gate: GateEffect): string {
  */
 export const MISS_MESSAGE = '沒碰到';
 
-/** 撞上敵人:攻擊力不足的部分直接換算成傷害。打得贏就零傷害並拿獎勵。 */
+/**
+ * 撞上一波敵人:**人群對撞,按兌換率互換**。
+ *
+ *   kills  = 你的戰力打得掉幾隻(waveKillCount,跟畫面上倒下的隻數是同一個數字)
+ *   leaked = 打不掉的,牠們會衝到勇者身上
+ *   lost   = ceil(leaked / tradeRate)  換掉幾個勇者
+ *
+ * 舊版是「戰力差額直接換算成傷害扣血」。改成互換的三個理由:
+ *   1. 看得見——螢幕上真的少掉幾隻史萊姆,不是 HUD 上一個數字變小
+ *   2. 失誤會複利——被換掉的人下一波就不在了,戰力跟著掉,這是這款要的張力
+ *   3. 少一個資源——人數同時是戰力與生命,玩家腦子裡只要算一件事
+ *
+ * **人數在這裡可以歸零**(閘門不行,見 applyGate):死亡發生在「最後一個人被換掉」那一刻。
+ */
 export function resolveEnemy(state: RunState, enemy: EnemyEffect): RowResolution {
-  const shortfall = Math.max(0, enemy.power - totalAttack(state));
+  const kills = waveKillCount(totalAttack(state), enemy.power, enemy.units);
+  const leaked = Math.max(0, enemy.units - kills);
   const next = { ...state };
-  if (shortfall === 0) {
+  if (leaked === 0) {
     next.coins += enemy.reward;
-    return { state: next, message: `擊倒${enemy.name} +${enemy.reward} 金幣`, hpDelta: 0, attackDelta: 0 };
+    return {
+      state: next,
+      message: `擊倒${enemy.name} +${enemy.reward} 金幣`,
+      heroDelta: 0,
+      attackDelta: 0,
+    };
   }
-  next.hp = Math.max(0, next.hp - shortfall);
-  if (next.hp <= 0) next.phase = 'dead';
-  return { state: next, message: `戰力不足 -${shortfall} 血`, hpDelta: -shortfall, attackDelta: 0 };
+  const lost = Math.ceil(leaked / Math.max(BASE_TRADE_RATE, next.tradeRate));
+  const before = totalAttack(next);
+  next.heroes = next.heroes - lost;
+  if (next.heroes <= 0) {
+    next.heroes = 0;
+    next.phase = 'dead';
+  }
+  return {
+    state: next,
+    message: `漏了 ${leaked} 隻 -${lost} 人`,
+    heroDelta: -lost,
+    attackDelta: totalAttack(next) - before,
+  };
 }
 
 /**
@@ -936,7 +1069,7 @@ export function resolveRow(state: RunState, row: RunRow, offset?: number): RowRe
   const advanced = { ...state, rowIndex: row.index + 1 };
 
   if (!node) {
-    return { state: advanced, message: '', hpDelta: 0, attackDelta: 0 };
+    return { state: advanced, message: '', heroDelta: 0, attackDelta: 0 };
   }
 
   if (node.kind === 'enemy' && node.enemy) {
@@ -948,7 +1081,7 @@ export function resolveRow(state: RunState, row: RunRow, offset?: number): RowRe
     return {
       state: { ...advanced, coins: advanced.coins + node.coins },
       message: `+${node.coins} 金幣`,
-      hpDelta: 0,
+      heroDelta: 0,
       attackDelta: 0,
     };
   }
@@ -956,19 +1089,18 @@ export function resolveRow(state: RunState, row: RunRow, offset?: number): RowRe
   if (node.kind === 'gate' && node.gate) {
     // 站在這一格,但沒踩在閘門上——整格漏掉。好處沒吃到,陷阱也沒踩到。
     if (!hitsGate(at, node.lane)) {
-      return { state: advanced, message: MISS_MESSAGE, hpDelta: 0, attackDelta: 0 };
+      return { state: advanced, message: MISS_MESSAGE, heroDelta: 0, attackDelta: 0 };
     }
     const after = applyGate(advanced, node.gate);
-    if (after.hp <= 0) after.phase = 'dead';
     return {
       state: after,
       message: gateLabel(node.gate),
-      hpDelta: after.hp - advanced.hp,
+      heroDelta: after.heroes - advanced.heroes,
       attackDelta: totalAttack(after) - totalAttack(advanced),
     };
   }
 
-  return { state: advanced, message: '', hpDelta: 0, attackDelta: 0 };
+  return { state: advanced, message: '', heroDelta: 0, attackDelta: 0 };
 }
 
 export function moveLane(lane: Lane, direction: 'left' | 'right'): Lane {
@@ -982,8 +1114,9 @@ export function bestLane(state: RunState, row: RunRow): Lane {
   let bestScore = -Infinity;
   for (const node of row.nodes) {
     const r = resolveRow({ ...state, lane: node.lane }, row);
-    // 戰力權重高於血量:血量只讓你活著,戰力決定你打不打得贏後面的敵人。
-    const score = totalAttack(r.state) * 3 + r.state.hp;
+    // 只看總戰力就夠了:人數同時是戰力與生命,被撞掉的人本來就會反映在總戰力上,
+    // 不需要像舊版那樣再加權一個獨立的血量項(那時候兩個資源要換算才比得出好壞)。
+    const score = laneScore(r.state);
     if (score > bestScore) {
       bestScore = score;
       best = node.lane;
@@ -992,12 +1125,17 @@ export function bestLane(state: RunState, row: RunRow): Lane {
   return best;
 }
 
+/** 一格值不值得選。死掉一律是最差,不然就比總戰力。 */
+function laneScore(state: RunState): number {
+  return state.phase === 'dead' ? -Infinity : totalAttack(state);
+}
+
 export function worstLane(state: RunState, row: RunRow): Lane {
   let worst: Lane = 0;
   let worstScore = Infinity;
   for (const node of row.nodes) {
     const r = resolveRow({ ...state, lane: node.lane }, row);
-    const score = totalAttack(r.state) * 3 + r.state.hp;
+    const score = laneScore(r.state);
     if (score < worstScore) {
       worstScore = score;
       worst = node.lane;

@@ -6,19 +6,19 @@ import { fileURLToPath } from 'node:url';
 import {
   bestLane, clampOffset, createRun, ENEMY_EVERY, fireIntervalMs, initialRunState, LANE_COUNT,
   laneCenterOffset, laneFromOffset, MAX_FIRE_INTERVAL_MS, MAX_WAVE_SIZE, MIN_FIRE_INTERVAL_MS,
-  HITS_PER_MONSTER, moveLane, resolveEnemy, resolveRow, runSpeed, secondsPerRow, WAVE_LENGTH,
+  HITS_PER_MONSTER, moveLane, resolveEnemy, resolveRow, runSpeed, secondsPerRow, waveLength,
   rowsForStage, wavesForStage, stageLabel, chapterOfStage, levelOfStage, enemyPowerRatioForStage,
   LEVELS_PER_CHAPTER, WAVES_PER_LEVEL, LONG_LEVEL_WAVES, EASY_RATIO, lastEnemyRowIndex, isBossStage,
   GATE_WIDTH, gateSpan, hitsGate, MONSTER_JITTER, SPECIES_PER_WAVE, START_OFFSET, terrainForStage,
   ENEMY_POWER_RATIO, goodGateGrowthAt, gatesBeforeRow, isTrapGate, runSeconds,
   applyGate, gateLabel, DOUBLE_GATES_PER_RUN, GEAR_STEP, doubleGatesForStage, LONG_LEVEL_RATIO_SCALE,
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
-  TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane,
+  TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane, MIN_WAVE_SIZE,
   type Lane, type RunState,
 } from '../game/laneRun';
 import {
   clearRate, pickAccurate, pickBest as simBest, pickRandom as simRandom, pickWorst as simWorst,
-  simulateRun,
+  simulateRun, type LanePicker,
 } from './simRun';
 import { runSkillPicksForWave, totalRunSkillPicks, MAX_RUN_SKILL_LEVEL, RUN_SKILLS } from '../game/laneRunSkills';
 
@@ -109,9 +109,12 @@ check('第一大關由鬆到緊',
   ch1Normal.map((v) => v.toFixed(2)).join(' → '));
 check('進大關 2 之後維持正式難度',
   enemyPowerRatioForStage(11) === ENEMY_POWER_RATIO && enemyPowerRatioForStage(99) === ENEMY_POWER_RATIO);
-check('加倍長的小關會再放寬一點(補回它變長的代價)',
-  enemyPowerRatioForStage(15) < enemyPowerRatioForStage(14)
-  && Math.abs(enemyPowerRatioForStage(15) - ENEMY_POWER_RATIO * LONG_LEVEL_RATIO_SCALE) < 1e-9);
+// 長關不再額外放寬:它以前閘門比較多(路變長 = 失誤機會變多),所以要補回來;
+// 現在閘門數跟一般關一樣,補了反而會讓長關比一般關好過(實測 66% vs 74%,方向整個反了)。
+// 長關的「硬」現在純粹來自 20 波敵人,那是設計要的,不需要補償。
+check('長關不再額外放寬(閘門數已經跟一般關一樣)',
+  LONG_LEVEL_RATIO_SCALE === 1
+  && Math.abs(enemyPowerRatioForStage(15) - enemyPowerRatioForStage(14)) < 1e-9);
 
 // --- 勇者 +N:比例制,所以職業中立 ---
 // 固定的「+5」對起跑 1 人的職業價值是起跑 6 人職業的 6 倍,那會讓閘門好壞取決於怎麼轉職。
@@ -150,8 +153,11 @@ const seeds = [3, 7, 42, 99, 251, 808];
 check(`一般小關每場都剛好 ${DOUBLE_GATES_PER_RUN} 個爆發格(不靠運氣)`,
   seeds.every((sd) => countDoubles(sd, 12) === DOUBLE_GATES_PER_RUN),
   seeds.map((sd) => countDoubles(sd, 12)).join(','));
-check('長關按比例多給,每格的機率跟一般關一致',
-  seeds.every((sd) => countDoubles(sd, 15) === doubleGatesForStage(15)) && doubleGatesForStage(15) > DOUBLE_GATES_PER_RUN,
+// 長關現在是「波數翻倍、閘門數不變」(見 LONG_ENEMY_EVERY),所以爆發格的數量也該一樣——
+// 舊條件假設長關閘門比較多所以要按比例多給,那個前提已經不成立了。
+check('長關的爆發格跟一般關一樣多(閘門數本來就一樣)',
+  seeds.every((sd) => countDoubles(sd, 15) === doubleGatesForStage(15))
+  && doubleGatesForStage(15) === DOUBLE_GATES_PER_RUN,
   `長關 ${doubleGatesForStage(15)} 個 / ${rowsForStage(15) - wavesForStage(15)} 個閘門`);
 // 第一格不當爆發格:起手 1 隻,x2 只變成 2 隻,「翻倍」的畫面完全看不出來。
 const firstGateIsDouble = [3, 7, 42, 99, 251, 808].map((seed) => {
@@ -175,14 +181,22 @@ check('但雪球感還在(至少 30 倍)', Math.min(...growths) >= 30);
 const longGrowths = [11, 42, 77].map((seed) => runGrowth(15, seed));
 check('加倍長的小關也壓得住(1000 倍以內)',
   Math.max(...longGrowths) <= 1000, `${Math.min(...longGrowths).toFixed(0)}~${Math.max(...longGrowths).toFixed(0)} 倍`);
-check('長關比一般關多長一些(它是段落的中點)', Math.min(...longGrowths) > Math.max(...growths));
-check('裝備強化的幅度跟膨脹目標一致', GEAR_STEP > 1.1 && GEAR_STEP < 1.4, `x${GEAR_STEP}`);
+// 長關的閘門數跟一般關一樣,所以放大量也該落在同一個區間——它的「長」在波數(20 波)不在閘門。
+// 這一項現在是在盯「長關沒有偷偷多長一截」,方向跟舊版相反。
+check('長關的放大量跟一般關同一個量級(長在波數不在閘門)',
+  Math.max(...longGrowths) <= Math.max(...growths) * 1.6,
+  `一般 ${Math.max(...growths).toFixed(0)} 倍 / 長關 ${Math.max(...longGrowths).toFixed(0)} 倍`);
+// 上下界跟「一場幾個閘門」綁在一起:20 個閘門的時候 1.14 會把放大量推到 512 倍。
+// 每次改 ENEMY_EVERY / 波數,這個範圍就要重算。
+check('裝備強化的幅度跟膨脹目標一致', GEAR_STEP > 1.04 && GEAR_STEP < 1.2, `x${GEAR_STEP}`);
 
 // --- 敵人曲線綁在閘門成長上 ---
 check('好閘門的平均成長落在合理範圍', [0, 4, 8, 14].every((g) => goodGateGrowthAt(g) > 1.15 && goodGateGrowthAt(g) < 2.2),
   [0, 4, 8, 14].map((g) => `第${g}格 x${goodGateGrowthAt(g).toFixed(2)}`).join(' '));
+// 一般小關是「2 排閘門 + 1 排敵人」為一個波週期,所以每 3 排會經過 2 個閘門。
 check('這一排之前經過幾格閘門算得對',
-  gatesBeforeRow(3, 1) === 3 && gatesBeforeRow(7, 1) === 6 && gatesBeforeRow(11, 1) === 9 && gatesBeforeRow(19, 1) === 15);
+  gatesBeforeRow(3, 1) === 2 && gatesBeforeRow(6, 1) === 4 && gatesBeforeRow(30, 1) === 20,
+  `第3排前 ${gatesBeforeRow(3, 1)} 格 / 整關 ${gatesBeforeRow(rowsForStage(1), 1)} 格`);
 // 敵人戰力是照「這一場實際的最佳路線」算的,所以最佳玩家的領先幅度在每一排、每一場
 // 都必須精確等於 1/ENEMY_POWER_RATIO。這是結構保證,不是掃參數掃出來的近似。
 const exactMargins = [3, 11, 57, 99, 251, 808].flatMap((seed) =>
@@ -225,16 +239,20 @@ check('同一排的每一格都是同一批敵人', run.filter((r) => r.nodes.ev
 const unitsByRow = run.filter((r) => r.nodes.every((n) => n.kind === 'enemy')).map((r) => r.nodes[0].enemy!.units);
 check('越後面的波次小怪越多(數量看得出難度)', unitsByRow.every((u, i) => i === 0 || u >= unitsByRow[i - 1]),
   unitsByRow.join(' → '));
-check(`一波封頂 ${MAX_WAVE_SIZE} 隻`, waveSize(999) === MAX_WAVE_SIZE && waveSize(0) === 5);
+// 一波的隻數跟著理想人數走(人數就是血量,兩群的規模要同一個數量級)。
+check(`一波封頂 ${MAX_WAVE_SIZE} 隻、保底 ${MIN_WAVE_SIZE} 隻`,
+  waveSize(999) === MAX_WAVE_SIZE && waveSize(1) === MIN_WAVE_SIZE && waveSize(12) === 12);
+check('人數越多,面對的那一群也越大', [1, 5, 12, 20].map(waveSize).every((n, i, a) => i === 0 || n >= a[i - 1]));
 
 // --- 一波小怪的排列 ---
 const waveRow = run.find((r) => r.nodes.every((n) => n.kind === 'enemy'))!;
-const wave = waveMonsters(waveRow.index, 9, waveRow.distance, SPECIES_PER_WAVE);
+const SPREAD = waveLength(5, 9);
+const wave = waveMonsters(waveRow.index, 9, waveRow.distance, SPECIES_PER_WAVE, SPREAD);
 check('小怪數量等於這一波的隻數', wave.length === 9);
 check('小怪一隻一隻排開,不會疊在同一點', wave.every((m, i) => i === 0 || m.distance > wave[i - 1].distance));
 check('最後一隻剛好落在結算點', wave[wave.length - 1].distance === waveRow.distance);
 check('整波都在結算點前方一個波長內', wave.every((m) =>
-  m.distance > waveRow.distance - WAVE_LENGTH - 0.001 && m.distance <= waveRow.distance));
+  m.distance > waveRow.distance - SPREAD - 0.001 && m.distance <= waveRow.distance));
 check('小怪散在不同跑道(不會整波擠同一條)',
   new Set(wave.map((m) => m.lane)).size >= 2, `用到 ${new Set(wave.map((m) => m.lane)).size} 條`);
 // 單一波沒用滿每一條是正常的,但長期分佈不能偏——偏掉就代表雜湊常數又跟 LANE_COUNT 共因數了。
@@ -247,7 +265,7 @@ const evenShare = 1 / LANE_COUNT;
 check('長期看每條跑道分佈平均', laneShare.every((s: number) => Math.abs(s - evenShare) < evenShare * 0.15),
   laneShare.map((s: number) => (s * 100).toFixed(0) + '%').join(' / '));
 check('同一波每次算出來都一樣(重播對得起來)',
-  JSON.stringify(waveMonsters(waveRow.index, 9, waveRow.distance, SPECIES_PER_WAVE)) === JSON.stringify(wave));
+  JSON.stringify(waveMonsters(waveRow.index, 9, waveRow.distance, SPECIES_PER_WAVE, SPREAD)) === JSON.stringify(wave));
 check('小怪不會站成一直線(橫向位置各自偏移)',
   new Set(wave.map((m) => m.offset.toFixed(4))).size >= wave.length - 1);
 check('偏移不會把小怪推出跑道', wave.every((m) => m.offset >= 0 && m.offset <= 1));
@@ -272,7 +290,7 @@ const missState = initialRunState(5);
 const missed = resolveRow({ ...missState, lane: 0 }, gateRow, 0.5);
 check('沒踩到就整格漏掉(好處沒吃到,陷阱也沒踩到)',
   missed.message === '沒碰到' && missed.state.heroes === missState.heroes
-  && missed.state.perHero === missState.perHero && missed.state.hp === missState.hp);
+  && missed.state.perHero === missState.perHero);
 const landed = resolveRow({ ...missState, lane: 0 }, gateRow, laneCenterOffset(0));
 check('踩到就生效', landed.message !== '沒碰到');
 
@@ -286,23 +304,30 @@ check('每一關都有地面,而且會輪替',
   [1, 3, 5, 7].map(terrainForStage).join(' → '));
 check('同一關永遠是同一種地面', terrainForStage(9) === terrainForStage(9));
 
-// --- 打掉幾隻 vs 扣多少血:同一件事的兩種說法 ---
+// --- 打掉幾隻 vs 少幾個人:碰撞互換的核心 ---
+// 「漏過來的隻數」與「被換掉的人數」必須是同一件事的兩種說法,兩邊各自算就會漂,
+// 最後畫面上倒下的隻數跟實際扣的人對不起來(舊版血量時代就踩過這個)。
 const powerSample = 200;
-const baseState: RunState = initialRunState(1);
-const damageAt = (atk: number) => {
-  const before = { ...baseState, heroes: 1, perHero: atk };
-  const after = resolveEnemy(before, { power: powerSample, reward: 0, monsterId: 'blob-1', name: '史', units: 9 });
-  return before.hp - after.state.hp;
+const UNITS = 9;
+const sampleWave = { power: powerSample, reward: 0, species: [{ id: 'blob-1', name: '史' }], name: '史', units: UNITS };
+const lostAt = (atk: number, tradeRate = 1) => {
+  const before: RunState = { ...initialRunState(1), heroes: 40, perHero: atk / 40, tradeRate };
+  return before.heroes - resolveEnemy(before, sampleWave).state.heroes;
 };
-check('攻擊力壓過戰力 -> 全部打掉、零傷害',
-  waveKillCount(powerSample, powerSample, 9) === 9 && damageAt(powerSample) === 0);
+check('攻擊力壓過戰力 -> 全部打掉、零損失',
+  waveKillCount(powerSample, powerSample, UNITS) === UNITS && lostAt(powerSample) === 0);
 check('攻擊力遠超過 -> 一樣是全部打掉(不會算出超過總數)',
-  waveKillCount(powerSample * 5, powerSample, 9) === 9 && damageAt(powerSample * 5) === 0);
-check('攻擊力不足 -> 有漏過來的,而且確實有扣血',
-  waveKillCount(powerSample / 2, powerSample, 9) < 9 && damageAt(powerSample / 2) > 0);
-check('打掉的比例跟擋掉的傷害比例一致',
-  Math.abs(waveKillCount(powerSample / 2, powerSample, 9) / 9
-    - (1 - damageAt(powerSample / 2) / powerSample)) < 0.06);
+  waveKillCount(powerSample * 5, powerSample, UNITS) === UNITS && lostAt(powerSample * 5) === 0);
+check('攻擊力不足 -> 有漏過來的,而且確實換掉了人',
+  waveKillCount(powerSample / 2, powerSample, UNITS) < UNITS && lostAt(powerSample / 2) > 0);
+check('漏幾隻就換掉幾個人(兌換率 1)',
+  lostAt(powerSample / 2) === UNITS - waveKillCount(powerSample / 2, powerSample, UNITS));
+check('兌換率越高,同樣漏接損失越小',
+  lostAt(powerSample / 2, 2) < lostAt(powerSample / 2, 1),
+  `x1 少 ${lostAt(powerSample / 2, 1)} 人 / x2 少 ${lostAt(powerSample / 2, 2)} 人`);
+// 人數歸零才是死亡條件——閘門扣不死人(那是卡死不是懲罰),碰撞才可以。
+const wiped = resolveEnemy({ ...initialRunState(1), heroes: 2, perHero: 1, tradeRate: 1 }, sampleWave);
+check('被整群吃光就是死亡', wiped.state.phase === 'dead' && wiped.state.heroes === 0);
 check('攻擊力越高漏過來的越少', [0.2, 0.4, 0.6, 0.8, 1].map((f) => waveKillCount(powerSample * f, powerSample, 9))
   .every((k, i, a) => i === 0 || k >= a[i - 1]));
 
@@ -340,27 +365,13 @@ check('暴擊不影響打得掉幾隻(演出與結算是分開的)',
   '擊殺數只看 攻擊力/戰力 的比例');
 
 // --- 三種玩家跑同一場 ---
-type Picker = (s: RunState, row: ReturnType<typeof createRun>[number], rng: () => number) => Lane;
-function play(seed: number, stage: number, pick: Picker) {
-  const rows = createRun(seed, stage);
-  let st = initialRunState(stage);
-  let rng = (() => { let x = seed + 7; return () => { x = (x * 1103515245 + 12345) & 0x7fffffff; return x / 0x7fffffff; }; })();
-  for (const row of rows) {
-    st = { ...st, lane: pick(st, row, rng) };
-    const r = resolveRow(st, row);
-    st = r.state;
-    if (st.phase === 'dead') return { outcome: 'dead' as const, st };
-  }
-  return { outcome: 'cleared' as const, st };
-}
-
-const pickBest: Picker = (s, row) => bestLane(s, row);
-const pickWorst: Picker = (s, row) => worstLane(s, row);
-const pickRandom: Picker = (_s, _row, rng) => Math.floor(rng() * LANE_COUNT) as Lane;
-
-function rate(stage: number, pick: Picker, trials = 300) {
+// 跑一場一律走 scripts/simRun.ts。這裡曾經自己寫過一份 play(),而它**漏掉了場內技能**——
+// 敵人戰力是照「含技能的最佳路線」算的,所以少了那條曲線的玩家會在後段被輾過去,
+// 量出來是「每排都挑最好也會死」。看起來像設計壞了,其實是模擬器沒跟上。
+// 這是 CLAUDE.md 記過的坑,第二次犯。
+function rate(stage: number, pick: LanePicker, trials = 300) {
   let cleared = 0;
-  for (let t = 0; t < trials; t++) if (play(t * 31 + 1, stage, pick).outcome === 'cleared') cleared++;
+  for (let t = 0; t < trials; t++) if (simulateRun(t * 31 + 1, stage, pick).outcome === 'cleared') cleared++;
   return cleared / trials;
 }
 // 上面那個 play 沒有場內技能,只留給「戰力不會被卡死」那種不看過關率的檢查。
@@ -485,17 +496,17 @@ check('後半段仍然會死人(中段之後還有挑戰)',
 // --- 攻擊力不會被陷阱歸零卡死 ---
 let minAttack = Infinity;
 for (let t = 0; t < 200; t++) {
-  const res = play(t * 13 + 5, 20, pickWorst);
-  minAttack = Math.min(minAttack, totalAttack(res.st));
+  const res = simulateRun(t * 13 + 5, 20, simWorst);
+  minAttack = Math.min(minAttack, totalAttack(res.state));
 }
 check('戰力永遠 >= 1(不會被連續陷阱卡死)', minAttack >= 1, `最低 ${minAttack}`);
 
 // --- 選最佳時數值的成長感 ---
-const sample = play(42, 10, pickBest);
-console.log(`\n第10關全選最佳:戰力 ${totalAttack(initialRunState(10))} -> ${totalAttack(sample.st)}`
-  + `(${sample.st.heroes} 人 x 每人 ${sample.st.perHero}、裝備 ${sample.st.gear} 階)、`
-  + `血量 ${sample.st.hp}/${sample.st.maxHp}、金幣 ${sample.st.coins}`);
-check('全選最佳時戰力明顯成長(>= 8 倍)', totalAttack(sample.st) >= totalAttack(initialRunState(10)) * 8);
+const sample = simulateRun(42, 10, simBest);
+console.log(`\n第10關全選最佳:戰力 ${totalAttack(initialRunState(10))} -> ${totalAttack(sample.state)}`
+  + `(${sample.state.heroes} 人 x 每人 ${sample.state.perHero}、裝備 ${sample.state.gear} 階)、`
+  + `兌換率 x${sample.state.tradeRate.toFixed(2)}、金幣 ${sample.state.coins}`);
+check('全選最佳時戰力明顯成長(>= 8 倍)', totalAttack(sample.state) >= totalAttack(initialRunState(10)) * 8);
 
 console.log(fail === 0 ? '\n全部通過' : `\n${fail} 項失敗`);
 process.exit(fail === 0 ? 0 : 1);

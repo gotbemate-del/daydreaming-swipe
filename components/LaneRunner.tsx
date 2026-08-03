@@ -199,7 +199,8 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
   const spikeUntilRef = useRef<number[]>([]);
   const lastSeenShotRef = useRef(0);
 
-  const hpRatio = state.maxHp > 0 ? Math.max(0, state.hp / state.maxHp) : 0;
+  // 血條整條拿掉了:人數就是血量,螢幕上那一群人本身就是生命條(見 laneRun 的 RunState.heroes)。
+  // 留一條抽象的橫槓等於把「看得見的東西」再翻譯回「看不懂的數字」,那正是這次改版要修掉的。
   const progress = Math.min(1, distance / runLength(stage));
   const laneWidth = trackWidth / LANE_COUNT;
 
@@ -368,11 +369,8 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
       </View>
       <View style={styles.hud}>
         <Text style={styles.hudSub}>{jobTitle(job)}</Text>
-        <Text style={styles.hudSub}>血量 {state.hp}/{state.maxHp}</Text>
+        <Text style={styles.hudSub}>兌換率 x{state.tradeRate.toFixed(2)}</Text>
         <Text style={styles.hudSub}>金幣 {compact(state.coins)}</Text>
-      </View>
-      <View style={styles.hpTrack}>
-        <View style={[styles.hpFill, { width: `${hpRatio * 100}%` }, hpRatio <= 0.25 && styles.hpFillDanger]} />
       </View>
       <View style={styles.progressTrack}>
         <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
@@ -470,7 +468,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
               },
               feedback.message === MISS_MESSAGE
                 ? styles.feedbackMiss
-                : feedback.hpDelta < 0 || feedback.attackDelta < 0
+                : feedback.heroDelta < 0 || feedback.attackDelta < 0
                   ? styles.feedbackBad
                   : styles.feedbackGood,
             ]}
@@ -611,9 +609,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     zIndex: 20,
   },
-  hpTrack: { height: 8, borderRadius: 4, backgroundColor: '#2a2a35', overflow: 'hidden' },
-  hpFill: { height: '100%', backgroundColor: '#5ec26a' },
-  hpFillDanger: { backgroundColor: '#e05050' },
   progressTrack: { height: 4, borderRadius: 2, backgroundColor: '#2a2a35', overflow: 'hidden' },
   progressFill: { height: '100%', backgroundColor: '#e0a95c' },
   alertRow: { height: 16, alignItems: 'center', justifyContent: 'center' },

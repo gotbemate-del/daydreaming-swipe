@@ -46,9 +46,9 @@ const PER_LEVEL = {
    * 人數只能靠跑道上的閘門滾出來,任何養成都不該給起跑人數。
    */
   reinforceAttack: 0.02,
-  reinforceHp: 0.06,
-  /** 堅韌:血量 */
-  toughenHp: 0.12,
+  reinforceTrade: 0.06,
+  /** 堅韌:兌換率(一個勇者能換掉幾隻怪) */
+  toughenTrade: 0.12,
   /** 精工:每 2 級升一階起跑武器,外加一點戰力 */
   craftAttack: 0.02,
 };
@@ -63,13 +63,13 @@ export const SKILLS: SkillSpec[] = [
     id: 'reinforce',
     name: '增援',
     describe: (level) =>
-      `起跑血量 +${Math.round(PER_LEVEL.reinforceHp * level * 100)}%`
+      `起跑兌換率 +${Math.round(PER_LEVEL.reinforceTrade * level * 100)}%`
       + `,總戰力 +${Math.round(PER_LEVEL.reinforceAttack * level * 100)}%`,
   },
   {
     id: 'toughen',
     name: '堅韌',
-    describe: (level) => `起跑血量 +${Math.round(PER_LEVEL.toughenHp * level * 100)}%`,
+    describe: (level) => `起跑兌換率 +${Math.round(PER_LEVEL.toughenTrade * level * 100)}%`,
   },
   {
     id: 'craft',
@@ -130,7 +130,7 @@ export function applySkills(base: RunStart, skills: SkillState[]): RunStart {
   // 技能之間用「加起來」而不是「乘起來」:三個 +30% 相乘是 2.2 倍、相加是 1.9 倍,
   // 而且相加算得出上限、玩家看到的 +30% 就真的是 +30%。上限好算,守鐵則才守得住。
   let attackBonus = 0;
-  let hpBonus = 0;
+  let tradeBonus = 0;
   let heroes = base.heroes;
   let gear = base.gear;
 
@@ -139,9 +139,9 @@ export function applySkills(base: RunStart, skills: SkillState[]): RunStart {
     if (skill.id === 'forge') attackBonus += PER_LEVEL.forgeAttack * level;
     if (skill.id === 'reinforce') {
       attackBonus += PER_LEVEL.reinforceAttack * level;
-      hpBonus += PER_LEVEL.reinforceHp * level;
+      tradeBonus += PER_LEVEL.reinforceTrade * level;
     }
-    if (skill.id === 'toughen') hpBonus += PER_LEVEL.toughenHp * level;
+    if (skill.id === 'toughen') tradeBonus += PER_LEVEL.toughenTrade * level;
     if (skill.id === 'craft') {
       attackBonus += PER_LEVEL.craftAttack * level;
       gear = Math.min(MAX_GEAR, gear + Math.floor(level / 2));
@@ -151,7 +151,7 @@ export function applySkills(base: RunStart, skills: SkillState[]): RunStart {
     heroes,
     gear,
     attackMultiplier: base.attackMultiplier * (1 + attackBonus),
-    hpMultiplier: base.hpMultiplier * (1 + hpBonus),
+    tradeRate: base.tradeRate * (1 + tradeBonus),
   };
 }
 

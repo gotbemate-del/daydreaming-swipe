@@ -61,8 +61,8 @@ const PER_LEVEL = {
   edgeAttack: 0.18,
   /** 增殖:隊伍人數的幾成 */
   swarmHeroes: 0.25,
-  /** 壁壘:血量上限(同時補滿等量的血) */
-  bulwarkHp: 0.3,
+  /** 壁壘:兌換率(一個勇者能換掉幾隻怪)。血量拿掉之後,防禦軸一律走這個。 */
+  bulwarkTrade: 0.3,
   /** 專注:暴擊率(純演出,不影響擊殺數,見 laneRun 的 isCritHit) */
   focusCrit: 0.06,
 };
@@ -70,7 +70,7 @@ const PER_LEVEL = {
 export const RUN_SKILLS: RunSkillSpec[] = [
   { id: 'edge', name: '鋒刃', describe: (l) => `每人攻擊力 +${Math.round(PER_LEVEL.edgeAttack * l * 100)}%` },
   { id: 'swarm', name: '增殖', describe: (l) => `勇者數量 +${Math.round(PER_LEVEL.swarmHeroes * l * 100)}%` },
-  { id: 'bulwark', name: '壁壘', describe: (l) => `血量上限 +${Math.round(PER_LEVEL.bulwarkHp * l * 100)}%` },
+  { id: 'bulwark', name: '壁壘', describe: (l) => `兌換率 +${Math.round(PER_LEVEL.bulwarkTrade * l * 100)}%` },
   { id: 'focus', name: '專注', describe: (l) => `暴擊率 +${Math.round(PER_LEVEL.focusCrit * l * 100)}%` },
 ];
 
@@ -167,8 +167,8 @@ export interface RunSkillEffects {
   attackMultiplier: number;
   /** 隊伍人數乘這個 */
   heroMultiplier: number;
-  /** 血量上限乘這個 */
-  hpMultiplier: number;
+  /** 兌換率乘這個 */
+  tradeMultiplier: number;
   /** 額外暴擊率(純演出) */
   bonusCrit: number;
 }
@@ -180,19 +180,19 @@ export interface RunSkillEffects {
 export function runSkillEffects(skills: RunSkillState[]): RunSkillEffects {
   let attack = 0;
   let heroes = 0;
-  let hp = 0;
+  let trade = 0;
   let crit = 0;
   for (const s of skills) {
     const level = Math.min(MAX_RUN_SKILL_LEVEL, Math.max(0, s.level));
     if (s.id === 'edge') attack += PER_LEVEL.edgeAttack * level;
     if (s.id === 'swarm') heroes += PER_LEVEL.swarmHeroes * level;
-    if (s.id === 'bulwark') hp += PER_LEVEL.bulwarkHp * level;
+    if (s.id === 'bulwark') trade += PER_LEVEL.bulwarkTrade * level;
     if (s.id === 'focus') crit += PER_LEVEL.focusCrit * level;
   }
   return {
     attackMultiplier: 1 + attack,
     heroMultiplier: 1 + heroes,
-    hpMultiplier: 1 + hp,
+    tradeMultiplier: 1 + trade,
     bonusCrit: crit,
   };
 }
@@ -201,7 +201,7 @@ export function runSkillEffects(skills: RunSkillState[]): RunSkillEffects {
 export interface RunSkillStats {
   perHero: number;
   heroes: number;
-  maxHp: number;
+  tradeRate: number;
 }
 
 /**
@@ -225,13 +225,13 @@ export function applyRunSkillPick(
   const after = runSkillEffects(learnRunSkill(skills, choice));
   const atk = after.attackMultiplier / before.attackMultiplier;
   const her = after.heroMultiplier / before.heroMultiplier;
-  const hp = after.hpMultiplier / before.hpMultiplier;
+  const trade = after.tradeMultiplier / before.tradeMultiplier;
   return {
     perHero: Math.max(1, Math.round(stats.perHero * atk)),
     heroes: her > 1
       ? Math.max(stats.heroes + 1, Math.round(stats.heroes * her))
       : Math.max(1, Math.round(stats.heroes * her)),
-    maxHp: Math.max(1, Math.round(stats.maxHp * hp)),
+    tradeRate: Math.max(1, stats.tradeRate * trade),
   };
 }
 

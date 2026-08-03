@@ -50,9 +50,9 @@ const everyJob = ARCHETYPES.flatMap((archetype) =>
 check('每個職業都是 1 人起跑(含滿階與 B 分支)',
   everyJob.every((s) => s.heroes === 1) && DEFAULT_RUN_START.heroes === 1,
   `${everyJob.length} 種組合`);
-check('輔助路線起跑血比較厚',
-  runStartFor({ archetype: 'physicalSupport', branch: 'A', tier: 1 }).hpMultiplier
-  > runStartFor({ archetype: 'physicalRanged', branch: 'A', tier: 1 }).hpMultiplier);
+check('輔助路線起跑兌換率比較高(耐打)',
+  runStartFor({ archetype: 'physicalSupport', branch: 'A', tier: 1 }).tradeRate
+  > runStartFor({ archetype: 'physicalRanged', branch: 'A', tier: 1 }).tradeRate);
 check('近戰路線起跑裝備比較好',
   runStartFor({ archetype: 'physicalMelee', branch: 'A', tier: 3 }).gear
   > runStartFor({ archetype: 'physicalSupport', branch: 'A', tier: 3 }).gear);
@@ -60,7 +60,7 @@ check('A/B 分支還是分得出來(A 偏戰力、B 偏耐打)',
   ARCHETYPES.every((archetype) => {
     const a = runStartFor({ archetype, branch: 'A', tier: 2 });
     const b = runStartFor({ archetype, branch: 'B', tier: 2 });
-    return a.attackMultiplier > b.attackMultiplier && b.hpMultiplier > a.hpMultiplier;
+    return a.attackMultiplier > b.attackMultiplier && b.tradeRate > a.tradeRate;
   }));
 const tiers: JobTier[] = [1, 2, 3, 4, 5];
 const meleeAttack = tiers.map((tier) => initialRunState(20, runStartFor({ archetype: 'physicalMelee', branch: 'A', tier })));

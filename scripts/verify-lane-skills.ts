@@ -54,8 +54,8 @@ const maxedStart = applySkills(DEFAULT_RUN_START, maxed);
 check('點滿戰力技能之後起跑戰力真的變高',
   totalAttack(initialRunState(20, maxedStart)) > totalAttack(initialRunState(20, DEFAULT_RUN_START)),
   `${totalAttack(initialRunState(20, DEFAULT_RUN_START))} → ${totalAttack(initialRunState(20, maxedStart))}`);
-check('增援加血也加一點戰力',
-  applySkills(DEFAULT_RUN_START, [{ id: 'reinforce', level: 5 }]).hpMultiplier > DEFAULT_RUN_START.hpMultiplier
+check('增援加兌換率也加一點戰力',
+  applySkills(DEFAULT_RUN_START, [{ id: 'reinforce', level: 5 }]).tradeRate > DEFAULT_RUN_START.tradeRate
   && applySkills(DEFAULT_RUN_START, [{ id: 'reinforce', level: 5 }]).attackMultiplier > DEFAULT_RUN_START.attackMultiplier);
 // 任何養成都不准給起跑人數。給了的話 perHero 會被稀釋,而跑道上的「勇者 +N」是固定值,
 // 收益 = N x 每人攻擊力——於是點越多越弱。實測過一次:全開 22% vs 裸裝 54%。
@@ -65,8 +65,8 @@ check('沒有任何技能會增加起跑人數(給了就會讓玩家越點越弱
   everySkillCombo.every((s) => s.heroes === 1) && maxedStart.heroes === 1);
 check('精工真的升武器階', applySkills(DEFAULT_RUN_START, [{ id: 'craft', level: 5 }]).gear
   === DEFAULT_RUN_START.gear + 2);
-check('堅韌只加血不加戰力',
-  applySkills(DEFAULT_RUN_START, [{ id: 'toughen', level: 5 }]).hpMultiplier > DEFAULT_RUN_START.hpMultiplier
+check('堅韌只加兌換率不加戰力',
+  applySkills(DEFAULT_RUN_START, [{ id: 'toughen', level: 5 }]).tradeRate > DEFAULT_RUN_START.tradeRate
   && applySkills(DEFAULT_RUN_START, [{ id: 'toughen', level: 5 }]).attackMultiplier === DEFAULT_RUN_START.attackMultiplier);
 check('等級越高加得越多',
   [1, 2, 3, 4, 5].map((l) => applySkills(DEFAULT_RUN_START, [{ id: 'forge', level: l }]).attackMultiplier)
@@ -100,7 +100,7 @@ for (const [label, start] of [['全開', fullyLoaded], ['裸裝', DEFAULT_RUN_ST
   console.log(`  ${label}  最佳 ${(b * 100).toFixed(0)}%  隨機 ${(r * 100).toFixed(0)}%  最差 ${(w * 100).toFixed(0)}%`);
 }
 console.log(`  (全開的起跑倍率:戰力 x${fullyLoaded.attackMultiplier.toFixed(2)}、`
-  + `血量 x${fullyLoaded.hpMultiplier.toFixed(2)}、${fullyLoaded.heroes} 人、武器 ${fullyLoaded.gear} 階)`);
+  + `兌換率 x${fullyLoaded.tradeRate.toFixed(2)}、${fullyLoaded.heroes} 人、武器 ${fullyLoaded.gear} 階)`);
 
 check('全開之後亂選還是會輸(養成買不到勝利)', rate(25, fullyLoaded, pickRandom) <= 0.7,
   `${(rate(25, fullyLoaded, pickRandom) * 100).toFixed(0)}%`);
