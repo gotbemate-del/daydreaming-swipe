@@ -13,7 +13,7 @@ import {
   ENEMY_POWER_RATIO, goodGateGrowthAt, gatesBeforeRow, isTrapGate, runSeconds,
   applyGate, gateLabel, DOUBLE_GATES_PER_RUN, GEAR_STEP, doubleGatesForStage, LONG_LEVEL_RATIO_SCALE,
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
-  TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane,
+  TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane, MIN_WAVE_SIZE,
   type Lane, type RunState,
 } from '../game/laneRun';
 import {
@@ -225,7 +225,10 @@ check('同一排的每一格都是同一批敵人', run.filter((r) => r.nodes.ev
 const unitsByRow = run.filter((r) => r.nodes.every((n) => n.kind === 'enemy')).map((r) => r.nodes[0].enemy!.units);
 check('越後面的波次小怪越多(數量看得出難度)', unitsByRow.every((u, i) => i === 0 || u >= unitsByRow[i - 1]),
   unitsByRow.join(' → '));
-check(`一波封頂 ${MAX_WAVE_SIZE} 隻`, waveSize(999) === MAX_WAVE_SIZE && waveSize(0) === 5);
+// 一波的隻數跟著理想人數走(人數就是血量,兩群的規模要同一個數量級)。
+check(`一波封頂 ${MAX_WAVE_SIZE} 隻、保底 ${MIN_WAVE_SIZE} 隻`,
+  waveSize(999) === MAX_WAVE_SIZE && waveSize(1) === MIN_WAVE_SIZE && waveSize(12) === 12);
+check('人數越多,面對的那一群也越大', [1, 5, 12, 20].map(waveSize).every((n, i, a) => i === 0 || n >= a[i - 1]));
 
 // --- 一波小怪的排列 ---
 const waveRow = run.find((r) => r.nodes.every((n) => n.kind === 'enemy'))!;
@@ -272,7 +275,7 @@ const missState = initialRunState(5);
 const missed = resolveRow({ ...missState, lane: 0 }, gateRow, 0.5);
 check('沒踩到就整格漏掉(好處沒吃到,陷阱也沒踩到)',
   missed.message === '沒碰到' && missed.state.heroes === missState.heroes
-  && missed.state.perHero === missState.perHero && missed.state.hp === missState.hp);
+  && missed.state.perHero === missState.perHero);
 const landed = resolveRow({ ...missState, lane: 0 }, gateRow, laneCenterOffset(0));
 check('踩到就生效', landed.message !== '沒碰到');
 
@@ -286,23 +289,30 @@ check('每一關都有地面,而且會輪替',
   [1, 3, 5, 7].map(terrainForStage).join(' → '));
 check('同一關永遠是同一種地面', terrainForStage(9) === terrainForStage(9));
 
-// --- 打掉幾隻 vs 扣多少血:同一件事的兩種說法 ---
+// --- 打掉幾隻 vs 少幾個人:碰撞互換的核心 ---
+// 「漏過來的隻數」與「被換掉的人數」必須是同一件事的兩種說法,兩邊各自算就會漂,
+// 最後畫面上倒下的隻數跟實際扣的人對不起來(舊版血量時代就踩過這個)。
 const powerSample = 200;
-const baseState: RunState = initialRunState(1);
-const damageAt = (atk: number) => {
-  const before = { ...baseState, heroes: 1, perHero: atk };
-  const after = resolveEnemy(before, { power: powerSample, reward: 0, monsterId: 'blob-1', name: '史', units: 9 });
-  return before.hp - after.state.hp;
+const UNITS = 9;
+const sampleWave = { power: powerSample, reward: 0, species: [{ id: 'blob-1', name: '史' }], name: '史', units: UNITS };
+const lostAt = (atk: number, tradeRate = 1) => {
+  const before: RunState = { ...initialRunState(1), heroes: 40, perHero: atk / 40, tradeRate };
+  return before.heroes - resolveEnemy(before, sampleWave).state.heroes;
 };
-check('攻擊力壓過戰力 -> 全部打掉、零傷害',
-  waveKillCount(powerSample, powerSample, 9) === 9 && damageAt(powerSample) === 0);
+check('攻擊力壓過戰力 -> 全部打掉、零損失',
+  waveKillCount(powerSample, powerSample, UNITS) === UNITS && lostAt(powerSample) === 0);
 check('攻擊力遠超過 -> 一樣是全部打掉(不會算出超過總數)',
-  waveKillCount(powerSample * 5, powerSample, 9) === 9 && damageAt(powerSample * 5) === 0);
-check('攻擊力不足 -> 有漏過來的,而且確實有扣血',
-  waveKillCount(powerSample / 2, powerSample, 9) < 9 && damageAt(powerSample / 2) > 0);
-check('打掉的比例跟擋掉的傷害比例一致',
-  Math.abs(waveKillCount(powerSample / 2, powerSample, 9) / 9
-    - (1 - damageAt(powerSample / 2) / powerSample)) < 0.06);
+  waveKillCount(powerSample * 5, powerSample, UNITS) === UNITS && lostAt(powerSample * 5) === 0);
+check('攻擊力不足 -> 有漏過來的,而且確實換掉了人',
+  waveKillCount(powerSample / 2, powerSample, UNITS) < UNITS && lostAt(powerSample / 2) > 0);
+check('漏幾隻就換掉幾個人(兌換率 1)',
+  lostAt(powerSample / 2) === UNITS - waveKillCount(powerSample / 2, powerSample, UNITS));
+check('兌換率越高,同樣漏接損失越小',
+  lostAt(powerSample / 2, 2) < lostAt(powerSample / 2, 1),
+  `x1 少 ${lostAt(powerSample / 2, 1)} 人 / x2 少 ${lostAt(powerSample / 2, 2)} 人`);
+// 人數歸零才是死亡條件——閘門扣不死人(那是卡死不是懲罰),碰撞才可以。
+const wiped = resolveEnemy({ ...initialRunState(1), heroes: 2, perHero: 1, tradeRate: 1 }, sampleWave);
+check('被整群吃光就是死亡', wiped.state.phase === 'dead' && wiped.state.heroes === 0);
 check('攻擊力越高漏過來的越少', [0.2, 0.4, 0.6, 0.8, 1].map((f) => waveKillCount(powerSample * f, powerSample, 9))
   .every((k, i, a) => i === 0 || k >= a[i - 1]));
 
@@ -494,7 +504,7 @@ check('戰力永遠 >= 1(不會被連續陷阱卡死)', minAttack >= 1, `最低 
 const sample = play(42, 10, pickBest);
 console.log(`\n第10關全選最佳:戰力 ${totalAttack(initialRunState(10))} -> ${totalAttack(sample.st)}`
   + `(${sample.st.heroes} 人 x 每人 ${sample.st.perHero}、裝備 ${sample.st.gear} 階)、`
-  + `血量 ${sample.st.hp}/${sample.st.maxHp}、金幣 ${sample.st.coins}`);
+  + `兌換率 x${sample.st.tradeRate.toFixed(2)}、金幣 ${sample.st.coins}`);
 check('全選最佳時戰力明顯成長(>= 8 倍)', totalAttack(sample.st) >= totalAttack(initialRunState(10)) * 8);
 
 console.log(fail === 0 ? '\n全部通過' : `\n${fail} 項失敗`);
