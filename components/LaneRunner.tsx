@@ -19,7 +19,7 @@ import {
 } from '../game/laneRun';
 import { HIT_NUMBER_MS, useLaneRun, type HitNumber, type Projectile, type WaveView } from '../hooks/useLaneRun';
 import {
-  HERO_ASPECT, HERO_FRAME_MS, HERO_FRAMES, HERO_SEQUENCE, heroBoxHeight, heroForm, monsterArt, weaponArt,
+  heroBoxHeight, heroForm, squadForms, monsterArt, weaponArt,
 } from './artAssets';
 
 // 跑道畫面。角色固定在跑道底部、物件由上往下逼近——這是「角色在跑」最省效能的表現方式:
@@ -42,8 +42,14 @@ const TRACK_HEIGHT_MIN = 320;
  * 多出來的上半部是留給噴刺那一格的,身體位置不受影響(框是靠下對齊的)。
  */
 const HERO_BODY_HEIGHT = 44;
+/**
+ * 擲出武器之後,噴刺那一格要維持多久。
+ * 太短(< 100ms)在 30fps 下常常整格被跳過,看起來像沒動;太長會一直卡在噴刺的姿勢,
+ * 人多的時候投擲間隔只有 90ms,那樣就永遠回不到待機。
+ */
+const HERO_SPIKE_MS = 130;
+// 只給 headY 當基準用(見下方 form 那段的說明):版面錨點固定用基本型,合體不會讓它位移。
 const HERO_HEIGHT = heroBoxHeight(HERO_BODY_HEIGHT);
-const HERO_WIDTH = Math.round(HERO_HEIGHT * HERO_ASPECT);
 const HERO_BOTTOM = 10;
 /** 最高的物件高度。用來確保最遠的物件是從畫面外「冒出來」而不是憑空出現在上緣。 */
 const SPAWN_MARGIN = 72;
@@ -120,7 +126,7 @@ interface Props {
 
 export function LaneRunner({ stage, job, start, onFinish }: Props) {
   const run = useLaneRun(stage, start);
-  const { state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers, feedback, steer, dragTo } = run;
+  const { state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers, lastShotAt, feedback, steer, dragTo } = run;
   const attack = totalAttack(state);
 
   // 跑道的實際尺寸由 onLayout 回報(寬跟高都是)。高度沒量到之前不畫任何物件,
@@ -168,11 +174,15 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
     return () => window.removeEventListener('keydown', onKey);
   }, [steer]);
 
-  const [heroStep, setHeroStep] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => setHeroStep((s) => (s + 1) % HERO_SEQUENCE.length), HERO_FRAME_MS);
-    return () => clearInterval(id);
-  }, []);
+  /**
+   * 噴刺那一格**只在真的擲出武器的時候**播,不是照固定週期輪播。
+   * 固定週期的話,動作跟飛出去的東西各播各的,看起來像兩件不相干的事;綁在一起之後
+   * 才讀得出「史萊姆把身上的東西吐出去砸人」。
+   *
+   * 這裡直接用 lastShotAt 算,不另外開計時器:投擲進行中畫面本來就每 33ms 重畫一次
+   * (飛行中的武器在動),所以看得到即時的變化;沒有投擲的時候維持待機,也不需要重畫。
+   */
+  const spiking = lastShotAt > 0 && Date.now() - lastShotAt < HERO_SPIKE_MS;
 
   const hpRatio = state.maxHp > 0 ? Math.max(0, state.hp / state.maxHp) : 0;
   const progress = Math.min(1, distance / runLength());
@@ -186,17 +196,22 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
    * 改它的話,整條跑道的透視會當場位移,畫面上所有物件一起跳——連「哪一刻算數」的判定線
    * 都會移位。所以布局常數固定用基本型,國王只是貼圖畫大一點,一樣靠 HERO_BOTTOM 對齊底部。
    */
-  const form = heroForm(state.heroes);
-  const spriteHeight = heroBoxHeight(HERO_BODY_HEIGHT * form.scale, form.bodyRatio);
-  const spriteWidth = Math.round(spriteHeight * form.aspect);
+  // 畫面上要畫哪些(國王 + 湊不滿一隻國王的餘數)。橫向定位用「最前面那一隻」的寬度。
+  const units = squadForms(state.heroes, SQUAD_SLOTS.length);
+  const sizeOf = (f: ReturnType<typeof heroForm>) => {
+    const h = heroBoxHeight(HERO_BODY_HEIGHT * f.scale, f.bodyRatio);
+    return { h, w: Math.round(h * f.aspect) };
+  };
+  const leadSize = sizeOf(units[0]);
   const heroLeft = Math.min(
-    Math.max(heroOffset * trackWidth - spriteWidth / 2, 2),
-    Math.max(2, trackWidth - spriteWidth - 2),
+    Math.max(heroOffset * trackWidth - leadSize.w / 2, 2),
+    Math.max(2, trackWidth - leadSize.w - 2),
   );
   // 跑起來的上下微晃。用已跑距離當相位,所以跑得越快晃得越快,不必另外開一個計時器。
   const bob = state.phase === 'running' ? Math.round(Math.sin(distance / 7) * 2) : 0;
   // 由後往前畫(slice 之後 reverse),主角才會蓋在隊友上面而不是被壓在後面。
-  const drawnSlots = SQUAD_SLOTS.slice(0, Math.min(state.heroes, SQUAD_SLOTS.length)).reverse();
+  // 由後往前畫,最前面那一隻才會蓋在後排上面。
+  const drawn = units.map((form, i) => ({ form, slot: SQUAD_SLOTS[i] })).reverse();
   const terrain = TERRAIN_STYLE[terrainForStage(stage)];
   const incoming = wave ? upcoming.find((r) => r.index === wave.rowIndex)?.nodes[0].enemy : undefined;
 
@@ -423,7 +438,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
               styles.feedbackFloat,
               {
                 top: headY - 24,
-                left: Math.min(Math.max(heroLeft + HERO_WIDTH / 2 - 70, 2), Math.max(2, trackWidth - 142)),
+                left: Math.min(Math.max(heroLeft + leadSize.w / 2 - 70, 2), Math.max(2, trackWidth - 142)),
               },
               feedback.message === MISS_MESSAGE
                 ? styles.feedbackMiss
@@ -463,7 +478,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
 
         {/* 勇者群:橫向位置完全跟著手指(heroOffset),不吸附到跑道中央。
             由後往前畫,主角才會蓋在隊友上面。 */}
-        {drawnSlots.map((slot, i) => {
+        {drawn.map(({ form, slot }, i) => {
           // 每個人用不同的相位晃動,整團才像各自在跑;同相位的話會像同一張圖被複製。
           const phase = distance / 7 + i * 1.7;
           const wanderX = Math.round(Math.sin(phase * 0.9) * 3);
@@ -471,7 +486,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
           return (
             <Image
               key={i}
-              source={form.frames[HERO_SEQUENCE[heroStep]]}
+              source={form.frames[spiking ? 1 : 0]}
               resizeMode="contain"
               style={[
                 styles.hero,
@@ -479,15 +494,15 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
                 {
                   left: heroLeft + slot.dx + wanderX,
                   bottom: HERO_BOTTOM + bob - slot.dy + wanderY,
-                  width: Math.round(spriteWidth * slot.scale),
-                  height: Math.round(spriteHeight * slot.scale),
+                  width: Math.round(sizeOf(form).w * slot.scale),
+                  height: Math.round(sizeOf(form).h * slot.scale),
                   zIndex: i + 1,
                 },
               ]}
             />
           );
         })}
-        {state.heroes > SQUAD_SLOTS.length && (
+        {state.heroes > units.length && (
           <Text style={[styles.squadCount, { left: heroLeft - 12, bottom: HERO_BOTTOM + HERO_HEIGHT - 6 }]}>
             x{compact(state.heroes)}
           </Text>

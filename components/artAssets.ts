@@ -61,10 +61,33 @@ export const KING_FRAMES: ImageSourcePropType[] = [
 export const KING_ASPECT = 768 / 1024;
 export const KING_BODY_RATIO = 0.51;
 
-/** 超過幾隻進化。用「大於」,所以 21 隻才變。 */
-export const EVOLVE_AT_HEROES = 20;
-/** 國王比基本型大多少。進化要一眼看得出來,不然只是換了頂帽子。 */
-export const KING_SCALE = 1.25;
+/**
+ * 幾隻史萊姆合體成一隻國王。
+ *
+ * 這是**合體**不是換裝:10 隻不是「10 隻都戴上王冠」,而是消失變成 1 隻國王。
+ * 所以畫面上的隻數 = 國王 floor(n/10) 隻 + 剩下的 n%10 隻小史萊姆,
+ * 一路長上去會看到小史萊姆湊滿 10 隻就少一批、多一個國王。
+ *
+ * 戰力完全不受影響——合體只是畫法,state.heroes 還是原本的數字。
+ */
+export const SLIMES_PER_KING = 10;
+/** 國王比基本型大多少。牠代表 10 隻,要一眼看得出份量。 */
+export const KING_SCALE = 1.35;
+
+/**
+ * 這個人數在畫面上該畫哪些東西(由前往後)。國王排前面,湊不滿一隻國王的餘數排後面。
+ * 超過 maxDrawn 就截斷——真的畫 154 個會把跑道塞滿,而且每個 tick 要重排 154 個絕對定位的圖。
+ */
+export function squadForms(heroes: number, maxDrawn: number): HeroForm[] {
+  const kings = Math.floor(Math.max(0, heroes) / SLIMES_PER_KING);
+  const rest = Math.max(0, heroes) % SLIMES_PER_KING;
+  const out: HeroForm[] = [];
+  for (let i = 0; i < kings && out.length < maxDrawn; i++) out.push(heroForm(true));
+  for (let i = 0; i < rest && out.length < maxDrawn; i++) out.push(heroForm(false));
+  // 一隻都沒有的話至少畫一隻,不然畫面上會空掉
+  if (out.length === 0) out.push(heroForm(false));
+  return out;
+}
 
 export interface HeroForm {
   frames: ImageSourcePropType[];
@@ -75,11 +98,11 @@ export interface HeroForm {
 }
 
 /**
- * 這個人數該用哪一種造型。**純外觀,不動任何數值**——進化不會讓你變強,
- * 變強的是讓你進化的那些閘門。把戰力綁在造型上會讓 laneRun 的平衡整條失效。
+ * 一隻的造型資料。**純外觀,不動任何數值**——合體不會讓你變強,
+ * 變強的是讓你湊到 10 隻的那些閘門。把戰力綁在造型上會讓 laneRun 的平衡整條失效。
  */
-export function heroForm(heroes: number): HeroForm {
-  return heroes > EVOLVE_AT_HEROES
+export function heroForm(king: boolean): HeroForm {
+  return king
     ? { frames: KING_FRAMES, aspect: KING_ASPECT, bodyRatio: KING_BODY_RATIO, scale: KING_SCALE, king: true }
     : { frames: HERO_FRAMES, aspect: HERO_ASPECT, bodyRatio: HERO_BODY_RATIO, scale: 1, king: false };
 }
@@ -93,6 +116,25 @@ export const JOB_ART_ASPECT = 458 / 746;
 
 /** 勇者擲出去的武器。沿用既有的傳承之劍,不另外畫特效圖。 */
 export const PROJECTILE_ART: ImageSourcePropType = require('../assets/sprites/items/legacy_sword.png');
+
+/**
+ * 還沒轉職時扔出來的東西:整套學生裝備,不是只有劍。
+ *
+ * 史萊姆沒有手,「揮劍」本來就說不通;牠是把身上的東西一件一件吐出去砸人,所以扔披風、
+ * 扔褲子、扔書都合理,而且比清一色的劍好看得多——一波打下來畫面上飛的是九種不同的圖。
+ * 之後轉職了才換成該職業的武器(見 weaponArt)。
+ */
+export const STUDENT_PROJECTILES: ImageSourcePropType[] = [
+  require('../assets/sprites/items/legacy_sword.png'),
+  require('../assets/sprites/items/student_offhand.png'),
+  require('../assets/sprites/items/student_headwear.png'),
+  require('../assets/sprites/items/student_top.png'),
+  require('../assets/sprites/items/student_bottom.png'),
+  require('../assets/sprites/items/student_back.png'),
+  require('../assets/sprites/items/student_belt.png'),
+  require('../assets/sprites/items/student_gloves.png'),
+  require('../assets/sprites/items/student_face.png'),
+];
 
 /**
  * 主介面下方分頁列的圖示。沿用姊妹作既有的 icon_tab_*.png,不另外畫。
@@ -303,7 +345,8 @@ const WEAPON_ART_2H: Record<string, ImageSourcePropType> = {
  */
 export function weaponArt(archetype: string | null, gear: number, variant = 0): ImageSourcePropType {
   const tier = Math.min(5, Math.max(1, Math.round(gear)));
-  if (archetype === null) return PROJECTILE_ART;
+  // variant 是投射物的流水號,所以同一波裡每一件都不一樣,而且重播會長一樣(不用亂數)。
+  if (archetype === null) return STUDENT_PROJECTILES[Math.abs(variant) % STUDENT_PROJECTILES.length];
   const table = variant % 2 === 0 ? WEAPON_ART : WEAPON_ART_2H;
   return table[`${archetype}-${tier}`] ?? WEAPON_ART[`${archetype}-${tier}`] ?? PROJECTILE_ART;
 }

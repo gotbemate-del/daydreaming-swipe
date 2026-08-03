@@ -107,6 +107,11 @@ export interface LaneRunView {
   projectiles: Projectile[];
   /** 命中瞬間跳出來的傷害數字(含暴擊)。純演出,不影響擊殺數。 */
   hitNumbers: HitNumber[];
+  /**
+   * 最後一次擲出武器的時間戳。畫面拿它讓史萊姆的「噴刺」跟真正的投擲對上——
+   * 用固定週期播的話,動作跟丟出去的東西各播各的,看起來像兩件事。
+   */
+  lastShotAt: number;
   feedback: RunFeedback | null;
   speed: number;
   /** 手指拖曳:直接把角色放到這個位置 */
@@ -140,6 +145,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
   const [wave, setWave] = useState<WaveView | null>(null);
   const [projectiles, setProjectiles] = useState<Projectile[]>([]);
   const [hitNumbers, setHitNumbers] = useState<HitNumber[]>([]);
+  const [lastShotAt, setLastShotAt] = useState(0);
 
   const startedAtRef = useRef(Date.now());
   // 已結算過的排。跟判定同步讀寫,走 state 會慢一拍導致同一排被結算兩次。
@@ -251,6 +257,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
       const interval = base / volleyRate(stateRef.current.heroes);
       if (now - current.lastFireAt >= interval) {
         current.lastFireAt = now;
+        setLastShotAt(now);
         projectileIdRef.current += 1;
         const id = projectileIdRef.current;
         // 每一把從隊伍裡不同的人手上飛出去(依 id 散開),不是全部從同一個點噴出來。
@@ -383,6 +390,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
     wave,
     projectiles,
     hitNumbers,
+    lastShotAt,
     feedback,
     speed,
     dragTo,
