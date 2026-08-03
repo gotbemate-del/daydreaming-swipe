@@ -126,7 +126,10 @@ interface Props {
 
 export function LaneRunner({ stage, job, start, onFinish }: Props) {
   const run = useLaneRun(stage, start);
-  const { state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers, lastShotAt, feedback, steer, dragTo } = run;
+  const {
+    state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers,
+    lastShotAt, lastShotId, feedback, steer, dragTo,
+  } = run;
   const attack = totalAttack(state);
 
   // 跑道的實際尺寸由 onLayout 回報(寬跟高都是)。高度沒量到之前不畫任何物件,
@@ -175,14 +178,22 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
   }, [steer]);
 
   /**
-   * 噴刺那一格**只在真的擲出武器的時候**播,不是照固定週期輪播。
-   * 固定週期的話,動作跟飛出去的東西各播各的,看起來像兩件不相干的事;綁在一起之後
-   * 才讀得出「史萊姆把身上的東西吐出去砸人」。
+   * 噴刺那一格**只在真的擲出武器的時候**播,而且**一次只有丟的那一隻在噴**。
    *
-   * 這裡直接用 lastShotAt 算,不另外開計時器:投擲進行中畫面本來就每 33ms 重畫一次
-   * (飛行中的武器在動),所以看得到即時的變化;沒有投擲的時候維持待機,也不需要重畫。
+   * 兩個都踩過:
+   *   - 照固定週期輪播 → 動作跟飛出去的東西各播各的,看起來像兩件不相干的事。
+   *   - 用同一個布林值套用到全隊 → 一次投擲全隊一起噴,像整團在抽搐,而且畫面上
+   *     明明只飛出一件武器,卻有 14 隻同時做出擲出的動作,完全對不上。
+   *
+   * 現在每一隻各自記自己的噴刺截止時間:投擲的流水號決定這次輪到哪一隻(id % 隻數),
+   * 只有牠的計時器被推長。發射間隔(最快 90ms)比噴刺時間(130ms)短,所以連射時
+   * 會看到好幾隻錯開著此起彼落,而不是整齊劃一。
+   *
+   * 用 ref 不用 state:這是純演出的計時,每 33ms 的重畫本來就會發生(飛行中的武器在動),
+   * 再多開一個 state 只是多觸發一輪重畫。
    */
-  const spiking = lastShotAt > 0 && Date.now() - lastShotAt < HERO_SPIKE_MS;
+  const spikeUntilRef = useRef<number[]>([]);
+  const lastSeenShotRef = useRef(0);
 
   const hpRatio = state.maxHp > 0 ? Math.max(0, state.hp / state.maxHp) : 0;
   const progress = Math.min(1, distance / runLength());
@@ -203,6 +214,19 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
     return { h, w: Math.round(h * f.aspect) };
   };
   const leadSize = sizeOf(units[0]);
+  // 這次的投擲輪到哪一隻。只在流水號變動的那一輪記一次,之後的重畫不會重複延長。
+  if (lastShotId !== lastSeenShotRef.current) {
+    lastSeenShotRef.current = lastShotId;
+    if (lastShotId > 0 && units.length > 0) {
+      const shooter = lastShotId % units.length;
+      const until = spikeUntilRef.current.slice();
+      until.length = units.length;
+      until[shooter] = lastShotAt + HERO_SPIKE_MS;
+      spikeUntilRef.current = until;
+    }
+  }
+  const nowMs = Date.now();
+  const isSpiking = (unitIndex: number) => (spikeUntilRef.current[unitIndex] ?? 0) > nowMs;
   const heroLeft = Math.min(
     Math.max(heroOffset * trackWidth - leadSize.w / 2, 2),
     Math.max(2, trackWidth - leadSize.w - 2),
@@ -211,7 +235,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
   const bob = state.phase === 'running' ? Math.round(Math.sin(distance / 7) * 2) : 0;
   // 由後往前畫(slice 之後 reverse),主角才會蓋在隊友上面而不是被壓在後面。
   // 由後往前畫,最前面那一隻才會蓋在後排上面。
-  const drawn = units.map((form, i) => ({ form, slot: SQUAD_SLOTS[i] })).reverse();
+  const drawn = units.map((form, i) => ({ form, slot: SQUAD_SLOTS[i], spiking: isSpiking(i) })).reverse();
   const terrain = TERRAIN_STYLE[terrainForStage(stage)];
   const incoming = wave ? upcoming.find((r) => r.index === wave.rowIndex)?.nodes[0].enemy : undefined;
 
@@ -478,7 +502,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
 
         {/* 勇者群:橫向位置完全跟著手指(heroOffset),不吸附到跑道中央。
             由後往前畫,主角才會蓋在隊友上面。 */}
-        {drawn.map(({ form, slot }, i) => {
+        {drawn.map(({ form, slot, spiking }, i) => {
           // 每個人用不同的相位晃動,整團才像各自在跑;同相位的話會像同一張圖被複製。
           const phase = distance / 7 + i * 1.7;
           const wanderX = Math.round(Math.sin(phase * 0.9) * 3);

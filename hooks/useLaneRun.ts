@@ -108,10 +108,14 @@ export interface LaneRunView {
   /** 命中瞬間跳出來的傷害數字(含暴擊)。純演出,不影響擊殺數。 */
   hitNumbers: HitNumber[];
   /**
-   * 最後一次擲出武器的時間戳。畫面拿它讓史萊姆的「噴刺」跟真正的投擲對上——
+   * 最後一次擲出武器的時間戳與流水號。畫面拿它讓史萊姆的「噴刺」跟真正的投擲對上——
    * 用固定週期播的話,動作跟丟出去的東西各播各的,看起來像兩件事。
+   *
+   * 流水號是給「**哪一隻**在丟」用的:一次投擲只有一隻該噴刺,全隊一起噴看起來像
+   * 整團在抽搐,而且完全對不上畫面上只飛出一件武器這件事。
    */
   lastShotAt: number;
+  lastShotId: number;
   feedback: RunFeedback | null;
   speed: number;
   /** 手指拖曳:直接把角色放到這個位置 */
@@ -146,6 +150,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
   const [projectiles, setProjectiles] = useState<Projectile[]>([]);
   const [hitNumbers, setHitNumbers] = useState<HitNumber[]>([]);
   const [lastShotAt, setLastShotAt] = useState(0);
+  const [lastShotId, setLastShotId] = useState(0);
 
   const startedAtRef = useRef(Date.now());
   // 已結算過的排。跟判定同步讀寫,走 state 會慢一拍導致同一排被結算兩次。
@@ -257,9 +262,10 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
       const interval = base / volleyRate(stateRef.current.heroes);
       if (now - current.lastFireAt >= interval) {
         current.lastFireAt = now;
-        setLastShotAt(now);
         projectileIdRef.current += 1;
         const id = projectileIdRef.current;
+        setLastShotAt(now);
+        setLastShotId(id);
         // 每一把從隊伍裡不同的人手上飛出去(依 id 散開),不是全部從同一個點噴出來。
         const spread = Math.min(0.09, 0.02 * Math.min(stateRef.current.heroes, 6));
         const fromOffset = clampOffset(offsetRef.current + ((id % 5) / 4 - 0.5) * 2 * spread);
@@ -391,6 +397,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
     projectiles,
     hitNumbers,
     lastShotAt,
+    lastShotId,
     feedback,
     speed,
     dragTo,
