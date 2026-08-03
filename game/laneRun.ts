@@ -71,37 +71,32 @@ export type NodeKind = 'gate' | 'enemy' | 'coin';
  *   hp     血量——只讓你活著,不會讓你打得動
  * 加法給穩定成長、乘法給爆發,兩種混在同一排,玩家才需要真的算一下。
  *
- * op 有三種:
- *   add  固定值加減(裝備階級、扣血)
+ * op 只有兩種:
+ *   add  固定值加減(勇者 +N、裝備階級、扣血)
  *   mul  乘上去(勇者 x2、勇者 x0.5)
- *   grow 「+N」,但 N 是**當下隊伍的一個比例**(見 heroGrowAmount),不是寫死的數字。
  *
- * grow 為什麼不是寫死的 N:固定的「勇者 +5」對起跑 1 人的近戰職業價值是 5 x 每人攻擊力,
- * 對起跑 6 人的輔助職業卻只有 5 x (同樣總戰力/6)——同一格的收益差 6 倍,變成「閘門好不好
- * 取決於你怎麼轉職」。這個坑踩過一次,當時的處理是直接拿掉勇者 +N(見下方 makeGateRow 的註解)。
- * 改成比例之後收益恆等於「總戰力 x ratio」,跟人數/每人攻擊力怎麼拆完全無關,職業中立;
- * 玩家看到的仍然是「勇者 +8」這種具體數字,不是抽象的百分比。
+ * 「勇者 +N」的 N 是**產生跑圖時就決定好的固定數字**,不是看玩家當下有幾隻算出來的。
+ * 這條很重要:曾經做過比例制(N = 當下人數 x 60%),結果是同一排上的兩格會互相影響——
+ * 場上有「+2」跟「+4」,吃掉 +2 之後 +4 會跟著長成 +6,戰力浮濫。固定值沒有這個問題,
+ * 而且它自帶剎車:隊伍越大,同一個 +N 的相對收益越小,成長自然收斂。
+ *
+ * 固定值以前被拿掉過一次,理由是職業中立性(固定的 +5 對起跑 1 人的職業價值是起跑 6 人的
+ * 6 倍)。那個理由現在不成立了——所有職業一律 1 人起跑(見 laneJobs 的說明),
+ * 起跑的每人攻擊力對每個職業都一樣,固定 +N 對誰都一樣值。
  */
 export interface GateEffect {
   stat: 'heroes' | 'gear' | 'hp';
-  op: 'add' | 'mul' | 'grow';
+  op: 'add' | 'mul';
   value: number;
-}
-
-/** grow 閘門實際會多出幾個人。至少 +1,不然人少的時候四捨五入會變成「吃了沒事發生」。 */
-export function heroGrowAmount(heroes: number, ratio: number): number {
-  return Math.max(1, Math.round(heroes * ratio));
 }
 
 /**
  * 陷阱格(畫面標紅的那一種)。只算真正的負面效果——加得比較少的那格不算陷阱,
  * 那是玩家自己要判斷的取捨。放在這裡而不是畫面層,是因為畫面曾經自己寫過一份同樣的判斷,
- * op 一加新的就會兩邊不同步(grow 永遠是正的,漏掉就會被畫成紅框)。
+ * op 一加新的就會兩邊不同步。
  */
 export function isTrapGate(gate: GateEffect): boolean {
-  if (gate.op === 'mul') return gate.value < 1;
-  if (gate.op === 'grow') return gate.value < 0;
-  return gate.value < 0;
+  return gate.op === 'mul' ? gate.value < 1 : gate.value < 0;
 }
 
 export interface WaveSpecies {
@@ -323,86 +318,115 @@ export function baseHpForStage(stage: number): number {
  */
 
 /**
- * 敵人戰力佔「理想路線戰力」的比例。這是唯一的難度旋鈕:
+ * 敵人戰力佔「這一場最佳路線戰力」的比例。這是唯一的難度旋鈕:
  * 越大越懲罰失誤(1.0 = 一格都不能選錯),越小越寬鬆。1/ratio 就是最佳玩家的緩衝倍數,
- * 0.16 等於「大約可以選錯兩格」——一格失誤約落後 2.6 倍(好格 x1.69 vs 壞格 x0.64)。
+ * 0.25 等於「大約可以選錯兩格」。
  *
  * 掃出來的準確率曲線(第 20 關,準確率 → 過關率):
- *   100% → 100% | 95% → 85% | 90% → 62% | 85% → 42% | 80% → 25%
- * 0.22 時 90% 準確率只剩 53%(太緊,讀得懂閘門也常常死),
- * 0.12 時 85% 準確率就有 49%(太鬆,滑錯兩三次還是過)。
+ *   100% → 100% | 95% → 82% | 90% → 63% | 85% → 46% | 80% → 29%
+ * 0.34 時 90% 準確率只剩 49%(太緊),0.16 時 80% 準確率還有 48%(太鬆)。
  *
- * 注意:這裡**不再用「亂選過關率」當基準**。跑道加長到 20 排之後亂選在任何 ratio 下都是
- * 0~1%(15 個二選一、每格好壞差 2.6 倍,亂選等於 2.6^-7.5,不是調參能救的),
- * 拿它當指標只會逼著把難度調到沒有意義的低點。改用「準確率 → 過關率」的曲線,
- * 那也才是真人的樣子:玩家不是擲骰子,是會看閘門但偶爾看錯或拉不到。
+ * 「完全選對一定過關」現在是**結構保證**而不是掃參數的結果:敵人是照這一場實際的最佳路線
+ * 算出來的(見 createRun),所以只要 ratio < 1,最佳玩家在每一排都恰好領先 1/ratio 倍。
+ * 以前用「平均理想路線」估的時候不是這樣——抽牌運差的場次會讓最佳玩家也過不了關。
+ *
+ * 注意:這裡**不用「亂選過關率」當基準**。跑道 20 排之後亂選在任何 ratio 下都是 0~2%
+ * (15 個二選一),拿它當指標只會逼著把難度調到沒有意義的低點。
  */
-export const ENEMY_POWER_RATIO = 0.16;
+export const ENEMY_POWER_RATIO = 0.25;
 
-/** 理想路線(每一排都吃到好閘門)跑到這一排時的總戰力。 */
-export function idealAttackForRow(stage: number, rowIndex: number): number {
-  return baseAttackForStage(stage) * Math.pow(GOOD_GATE_GROWTH, gatesBeforeRow(rowIndex));
-}
-
-export function enemyPowerForRow(stage: number, rowIndex: number): number {
-  return Math.max(1, Math.round(idealAttackForRow(stage, rowIndex) * ENEMY_POWER_RATIO));
-}
+// 敵人戰力不在這裡算——它是產生跑圖時逐場模擬出來的(見 createRun)。
+// 這裡曾經有 idealAttackForRow / enemyPowerForRow 兩個「平均理想路線」的函式,
+// 固定 +N 之後平均值不再能代表個別場次,留著只會誤導。
 
 // ---- 產生一場跑圖 ----
 // 兩條跑道就是二選一,所以每一排固定「一好一壞」:兩格都正面的話玩家隨便選都在變強,
 // 左右滑就失去意義了。陷阱那格用扣除而不是歸零,選錯還有救,但會很痛。
 //
 // 好的那格三選一,全部直接影響戰力,玩家要比的是「這排我缺人還是缺裝備」:
-//   勇者 x2   —— 爆發,人數翻倍。整場最爽的一格,所以留著,但調成比較少見。
-//   勇者 +N   —— 穩定補人。N 是當下隊伍的一個比例(見 heroGrowAmount),畫面上是具體數字。
+//   勇者 x2   —— 爆發,人數翻倍。整場最爽的一格,所以留著,但**刻意調得很少見**。
+//   勇者 +N   —— 穩定補人。N 是產生跑圖時就決定好的固定數字(見 GateEffect)。
 //   裝備強化  —— 全隊每個人都變強,人越多越划算
 //
-// 為什麼不是每一格都 x2:每格都翻倍的話,一場 15 個閘門就是 2^15,敵人怎麼追都追不上,
+// 為什麼 x2 這麼少見:每格都翻倍的話,一場 15 個閘門就是 2^15,敵人怎麼追都追不上,
 // 中後段整個空掉(見 enemyPowerForRow 的註解與實測數字)。把大部分的格子換成幅度較小的
 // 「+N / 裝備」之後,爆發格才有「這次抽到好東西」的份量,而不是每一排都在翻倍。
-//
-// 「勇者 +N」曾經因為職業中立性被拿掉(固定的 N 對起跑人少的職業價值高好幾倍),
-// 現在改成比例制(op: 'grow')就沒有這個問題了——收益恆等於總戰力 x ratio。詳見 GateEffect。
 //
 // 另一種曾經放過又拿掉、不要再加回來的:
 //   血量 +N —— 不加戰力,吃了也打不動下一波,實際上是「這排跳過」。二選一的節奏下,
 //              一個不影響戰力的選項等於沒得選。血量只留在陷阱那側(扣血)。
 
-/** 「勇者 +N」一次補上當下隊伍的幾成。跟裝備強化(x1.6)等值,兩者的差別只在成長方向。 */
+/** 好閘門的抽中權重。x2 是爆發格,壓到一成出頭才有「抽到了」的份量。 */
+export const GATE_WEIGHT_DOUBLE = 0.12;
+export const GATE_WEIGHT_ADD = 0.4;
+export const GATE_WEIGHT_GEAR = 0.48;
+
+/**
+ * 「勇者 +N」的 N 是理想路線在這個深度的人數的幾成。
+ *
+ * 為什麼跟深度綁而不是跟玩家當下的人數綁:跟玩家綁的話,同一排的兩格會互相影響
+ * (吃掉 +2 之後 +4 會長成 +6),戰力浮濫。跟深度綁的話 N 在產生跑圖時就固定了,
+ * 吃不吃都不會變——而且自帶追趕機制:落後的玩家拿到的 +N 相對自己是大補,
+ * 領先的玩家拿到的只是零頭,成長自然收斂。
+ */
 export const HERO_ADD_RATIO = 0.6;
 
 /**
- * 好閘門的組成:抽中的權重,以及**對總戰力的倍率**。
- * 敵人的成長曲線由這張表推出來(GOOD_GATE_GROWTH),所以改組成不必再手動重掃敵人係數——
- * 以前那條「每次改好格子的組成就要重掃 GOOD_PATH_MARGIN」的規矩,就是因為兩邊沒有綁在一起。
+ * 理想路線的模擬:每一格都吃到好閘門,人數與每人攻擊力各自怎麼長。
+ *
+ * perHero 正規化成 1(= baseAttackForStage 的倍率)。整條路線跟關卡無關——
+ * 所有效果不是乘就是「加上 N x perHero」,兩邊都跟 base 成正比,所以算一次就能重複用。
+ *
+ * 用期望值往前推(三種好格各自的結果 x 權重),不是隨機模擬:敵人戰力必須是確定值,
+ * 同一關每次跑都要一樣。
  */
-const GOOD_GATES: { weight: number; growth: number; make: () => GateEffect }[] = [
-  { weight: 0.25, growth: 2, make: () => ({ stat: 'heroes', op: 'mul', value: 2 }) },
-  { weight: 0.35, growth: 1 + HERO_ADD_RATIO, make: () => ({ stat: 'heroes', op: 'grow', value: HERO_ADD_RATIO }) },
-  { weight: 0.4, growth: GEAR_STEP, make: () => ({ stat: 'gear', op: 'add', value: 1 }) },
-];
-
-/**
- * 吃到一格好閘門,總戰力平均乘多少(權重的幾何平均)。
- * 用幾何平均而不是算術平均,是因為這些效果是連乘的——算術平均會高估整場的成長。
- */
-export const GOOD_GATE_GROWTH = Math.exp(
-  GOOD_GATES.reduce((sum, g) => sum + g.weight * Math.log(g.growth), 0)
-    / GOOD_GATES.reduce((sum, g) => sum + g.weight, 0),
-);
-
-function pickGoodGate(rng: () => number): GateEffect {
-  const total = GOOD_GATES.reduce((sum, g) => sum + g.weight, 0);
-  let roll = rng() * total;
-  for (const option of GOOD_GATES) {
-    roll -= option.weight;
-    if (roll < 0) return option.make();
-  }
-  return GOOD_GATES[GOOD_GATES.length - 1].make();
+interface IdealStep {
+  heroes: number;
+  perHero: number;
+  /** 在這個深度的「勇者 +N」要給幾隻 */
+  addN: number;
 }
 
-function makeGateRow(rng: () => number, stage: number): RunNode[] {
-  const good: GateEffect = pickGoodGate(rng);
+const IDEAL_PATH: IdealStep[] = (() => {
+  const w = GATE_WEIGHT_DOUBLE + GATE_WEIGHT_ADD + GATE_WEIGHT_GEAR;
+  const [wDouble, wAdd, wGear] = [GATE_WEIGHT_DOUBLE / w, GATE_WEIGHT_ADD / w, GATE_WEIGHT_GEAR / w];
+  const out: IdealStep[] = [];
+  let heroes = 1;
+  let perHero = 1;
+  // 多算幾格當緩衝,免得之後把 ROWS_PER_RUN 調大就查表越界。
+  for (let g = 0; g <= ROWS_PER_RUN + 8; g++) {
+    const addN = Math.max(1, Math.round(heroes * HERO_ADD_RATIO));
+    out.push({ heroes, perHero, addN });
+    heroes = wDouble * (heroes * 2) + wAdd * (heroes + addN) + wGear * heroes;
+    perHero = wDouble * perHero + wAdd * perHero + wGear * (perHero * GEAR_STEP);
+  }
+  return out;
+})();
+
+/** 理想路線走過 g 格閘門之後的狀態。超出表格就用最後一格(不會發生,防呆用)。 */
+function idealStep(gates: number): IdealStep {
+  return IDEAL_PATH[Math.min(Math.max(0, gates), IDEAL_PATH.length - 1)];
+}
+
+/** 吃到一格好閘門,總戰力平均乘多少。給驗證腳本看趨勢用,不再拿來推敵人曲線。 */
+export function goodGateGrowthAt(gates: number): number {
+  const a = idealStep(gates);
+  const b = idealStep(gates + 1);
+  return (b.heroes * b.perHero) / (a.heroes * a.perHero);
+}
+
+function pickGoodGate(rng: () => number, gateDepth: number): GateEffect {
+  const total = GATE_WEIGHT_DOUBLE + GATE_WEIGHT_ADD + GATE_WEIGHT_GEAR;
+  const roll = rng() * total;
+  if (roll < GATE_WEIGHT_DOUBLE) return { stat: 'heroes', op: 'mul', value: 2 };
+  if (roll < GATE_WEIGHT_DOUBLE + GATE_WEIGHT_ADD) {
+    return { stat: 'heroes', op: 'add', value: idealStep(gateDepth).addN };
+  }
+  return { stat: 'gear', op: 'add', value: 1 };
+}
+
+function makeGateRow(rng: () => number, stage: number, gateDepth: number): RunNode[] {
+  const good: GateEffect = pickGoodGate(rng, gateDepth);
   const badRoll = rng();
   const bad: GateEffect =
     badRoll < 0.45
@@ -576,9 +600,9 @@ export function bossSpeciesForStage(stage: number): WaveSpecies {
   return { id: FINAL_BOSS_MONSTER.id, name: FINAL_BOSS_MONSTER.name };
 }
 
-function makeEnemyRow(rng: () => number, stage: number, rowIndex: number): RunNode[] {
+function makeEnemyRow(rng: () => number, stage: number, rowIndex: number, idealAttack: number): RunNode[] {
   const boss = isBossRow(stage, rowIndex);
-  const power = Math.round(enemyPowerForRow(stage, rowIndex) * (boss ? BOSS_POWER_MULTIPLIER : 1));
+  const power = Math.max(1, Math.round(idealAttack * ENEMY_POWER_RATIO * (boss ? BOSS_POWER_MULTIPLIER : 1)));
   if (boss) {
     const species = bossSpeciesForStage(stage);
     const enemy: EnemyEffect = {
@@ -623,19 +647,49 @@ function makeEnemyRow(rng: () => number, stage: number, rowIndex: number): RunNo
   }));
 }
 
+/**
+ * 產生一場跑圖。
+ *
+ * 敵人戰力用的是**這一場實際的最佳路線**,不是「平均的理想路線」:一邊產生閘門,
+ * 一邊模擬「每一格都吃到好的」會走到什麼數值,走到敵人排就照那個數字乘上 ENEMY_POWER_RATIO。
+ *
+ * 為什麼不能用平均值:固定 +N 之後成長不再是等比,各場的抽牌差異會被放大——用平均值估的話,
+ * 抽到一堆裝備格(人數停在低點)的那幾場,敵人會相對過強,實測最佳玩家的領先幅度在
+ * 第 10 關會從 8.6x 掉到 1.8x,同一顆 seed 甚至會讓「每排都挑最好」也過不了關。
+ * 改成逐場模擬之後,最佳玩家的領先幅度**每一排、每一場都精確等於 1/ENEMY_POWER_RATIO**,
+ * 「選對就一定過、不靠運氣」這條保證才是結構上的,不是靠參數掃出來的。
+ *
+ * 模擬用的是不含轉職/技能加成的基準值(baseAttackForStage),所以養成不會把敵人一起養大——
+ * 用玩家的實際起跑值去算的話,轉職越高敵人越強,養成就完全白做了。
+ */
 export function createRun(seed: number, stage: number): RunRow[] {
   const rng = createRng(seed);
   // 挑怪物造型用獨立的亂數流。混用同一條的話,加一次抽選就會把後面所有閘門的內容整個位移,
   // 已經驗證過的過關率(scripts/verify-lane-run.ts)全部要重跑——造型是外觀,不該動到數值。
   const artRng = createRng((seed ^ 0x9e3779b9) >>> 0);
   const rows: RunRow[] = [];
+  // 最佳路線的模擬狀態。跟 RunState 一樣是「人數 x 每人攻擊力」,起手 1 人。
+  let idealHeroes = 1;
+  let idealPerHero = baseAttackForStage(stage);
   for (let i = 0; i < ROWS_PER_RUN; i++) {
     const isEnemy = (i + 1) % ENEMY_EVERY === 0;
-    rows.push({
-      index: i,
-      distance: LEAD_IN_DISTANCE + i * ROW_SPACING,
-      nodes: isEnemy ? makeEnemyRow(artRng, stage, i) : makeGateRow(rng, stage),
-    });
+    if (isEnemy) {
+      rows.push({
+        index: i,
+        distance: LEAD_IN_DISTANCE + i * ROW_SPACING,
+        nodes: makeEnemyRow(artRng, stage, i, idealHeroes * idealPerHero),
+      });
+      continue;
+    }
+    const nodes = makeGateRow(rng, stage, gatesBeforeRow(i));
+    // 好的那格就是「不是陷阱」的那格——兩格固定一好一壞,所以這樣認得出來。
+    const good = nodes.find((n) => n.gate && !isTrapGate(n.gate))!.gate!;
+    if (good.stat === 'heroes') {
+      idealHeroes = good.op === 'mul' ? idealHeroes * good.value : idealHeroes + good.value;
+    } else if (good.stat === 'gear') {
+      idealPerHero *= Math.pow(GEAR_STEP, good.value);
+    }
+    rows.push({ index: i, distance: LEAD_IN_DISTANCE + i * ROW_SPACING, nodes });
   }
   return rows;
 }
@@ -656,10 +710,7 @@ export interface RowResolution {
 export function applyGate(state: RunState, gate: GateEffect): RunState {
   const next = { ...state };
   if (gate.stat === 'heroes') {
-    next.heroes =
-      gate.op === 'mul' ? next.heroes * gate.value
-        : gate.op === 'grow' ? next.heroes + heroGrowAmount(next.heroes, gate.value)
-          : next.heroes + gate.value;
+    next.heroes = gate.op === 'mul' ? next.heroes * gate.value : next.heroes + gate.value;
     // 人數下限 1:連吃幾次減半會趨近 0,全隊死光之後怎麼跑都沒有意義,那不是懲罰是卡死。
     next.heroes = Math.max(1, Math.round(next.heroes));
   } else if (gate.stat === 'gear') {
@@ -681,20 +732,15 @@ export function applyGate(state: RunState, gate: GateEffect): RunState {
 }
 
 /**
- * 閘門上要印什麼字。
+ * 閘門上要印什麼字。數字在產生跑圖時就定好了,所以不需要知道玩家當下有幾隻。
  *
- * grow 的那格要印出**具體會多幾個人**(「勇者 +8」),不是「勇者 +60%」——玩家在 1 秒內
- * 要跟隔壁格比大小,百分比得先在腦子裡換算一次,具體數字才比得動。所以這裡要吃 state;
- * 不給 state(驗證腳本、純文字場合)就退回百分比,不會壞掉只是比較不好讀。
+ * 「勇者 +N」印的是具體人數(「勇者 +8」)而不是百分比——玩家在 1 秒內要跟隔壁格比大小,
+ * 百分比得先在腦子裡換算一次,具體數字才比得動。
  */
-export function gateLabel(gate: GateEffect, state?: Pick<RunState, 'heroes'>): string {
+export function gateLabel(gate: GateEffect): string {
   if (gate.stat === 'gear') return gate.value >= 0 ? '裝備強化' : '裝備損壞';
   const stat = gate.stat === 'heroes' ? '勇者' : '血量';
   if (gate.op === 'mul') return `${stat} x${gate.value}`;
-  if (gate.op === 'grow') {
-    if (!state) return `${stat} +${Math.round(gate.value * 100)}%`;
-    return `${stat} +${heroGrowAmount(state.heroes, gate.value)}`;
-  }
   return `${stat} ${gate.value >= 0 ? '+' : ''}${gate.value}`;
 }
 
@@ -753,7 +799,7 @@ export function resolveRow(state: RunState, row: RunRow, offset?: number): RowRe
     if (after.hp <= 0) after.phase = 'dead';
     return {
       state: after,
-      message: gateLabel(node.gate, advanced),
+      message: gateLabel(node.gate),
       hpDelta: after.hp - advanced.hp,
       attackDelta: totalAttack(after) - totalAttack(advanced),
     };

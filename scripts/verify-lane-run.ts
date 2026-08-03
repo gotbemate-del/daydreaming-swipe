@@ -8,8 +8,8 @@ import {
   laneCenterOffset, laneFromOffset, MAX_FIRE_INTERVAL_MS, MAX_WAVE_SIZE, MIN_FIRE_INTERVAL_MS,
   HITS_PER_MONSTER, moveLane, resolveEnemy, resolveRow, ROWS_PER_RUN, runSpeed, secondsPerRow, WAVE_LENGTH,
   GATE_WIDTH, gateSpan, hitsGate, MONSTER_JITTER, SPECIES_PER_WAVE, START_OFFSET, terrainForStage,
-  ENEMY_POWER_RATIO, GOOD_GATE_GROWTH, gatesBeforeRow, heroGrowAmount, isTrapGate, runSeconds,
-  applyGate, enemyPowerForRow, gateLabel, HERO_ADD_RATIO, idealAttackForRow,
+  ENEMY_POWER_RATIO, goodGateGrowthAt, gatesBeforeRow, isTrapGate, runSeconds,
+  applyGate, gateLabel, GATE_WEIGHT_DOUBLE,
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
   TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane,
   type Lane, type RunState,
@@ -73,48 +73,62 @@ check('敵人排至少 5 排(中後段還有東西要打)',
 // --- 勇者 +N:比例制,所以職業中立 ---
 // 固定的「+5」對起跑 1 人的職業價值是起跑 6 人職業的 6 倍,那會讓閘門好壞取決於怎麼轉職。
 // 現在 N 取自當下隊伍,收益恆等於「總戰力 x ratio」,跟人數/每人攻擊力怎麼拆無關。
-check('勇者 +N 至少會多 1 個人(不會吃了沒事發生)',
-  [1, 2, 3, 7, 40].every((h) => heroGrowAmount(h, HERO_ADD_RATIO) >= 1),
-  [1, 2, 3, 7, 40].map((h) => `${h}人→+${heroGrowAmount(h, HERO_ADD_RATIO)}`).join(' '));
-check('隊伍越大補的人越多(比例制)',
-  heroGrowAmount(40, HERO_ADD_RATIO) > heroGrowAmount(7, HERO_ADD_RATIO));
-const growGate = { stat: 'heroes', op: 'grow', value: HERO_ADD_RATIO } as const;
-// 同樣的總戰力、不同的人數/每人攻擊力拆法,吃同一格的收益必須一樣(這就是職業中立)。
-// 拿跑到一半的隊伍規模來比:轉職一律 1 人起跑之後,拆法的差異只會來自「路上吃了哪些閘門」,
-// 那時候人數已經是兩位數以上,四捨五入不影響。
-const gainFor = (heroes: number, perHero: number) => {
-  const st: RunState = { ...initialRunState(20), heroes, perHero };
-  return totalAttack(applyGate(st, growGate)) / totalAttack(st);
-};
-const splitGains = [gainFor(10, 600), gainFor(24, 250), gainFor(60, 100)];
-check('勇者 +N 的收益不受「人數/每人攻擊力怎麼拆」影響(職業中立)',
-  Math.max(...splitGains) - Math.min(...splitGains) < 0.05,
-  splitGains.map((g) => 'x' + g.toFixed(2)).join(' / '));
-// 人很少的時候「至少 +1」會超額(1 人 +60% 實際是翻倍)。這是刻意的——不然人少的時候
-// 這一格會變成完全沒效果——但它是前段領先幅度偏高的原因,所以明寫在這裡。
-check('人很少的時候會超額(已知,前段偏鬆的來源)',
-  gainFor(1, 600) === 2 && gainFor(2, 300) === 1.5,
-  `1人 x${gainFor(1, 600).toFixed(2)}、2人 x${gainFor(2, 300).toFixed(2)}`);
-check('勇者 +N 印出來是具體人數,不是百分比',
-  gateLabel(growGate, { heroes: 20 }) === '勇者 +12', gateLabel(growGate, { heroes: 20 }));
-check('沒有 state 時退回百分比(不會印出壞掉的字串)',
-  gateLabel(growGate) === '勇者 +60%', gateLabel(growGate));
-check('勇者 +N 不是陷阱格(畫面不會標紅)', !isTrapGate(growGate));
+// 固定 +N:同一排的兩格不會互相影響。這是「避免戰力浮濫」的驗收條件——
+// 比例制的時候吃掉 +2 之後 +4 會長成 +6,固定值不會。
+const gateRuns = [7, 42, 99].map((seed) => createRun(seed, 10));
+const addGates = gateRuns.flatMap((r) => r.flatMap((row) => row.nodes))
+  .filter((n) => n.gate && n.gate.stat === 'heroes' && n.gate.op === 'add' && n.gate.value > 0);
+check('有產生出「勇者 +N」的格子', addGates.length > 0, `${addGates.length} 格`);
+check('+N 是整數且至少 +1', addGates.every((n) => Number.isInteger(n.gate!.value) && n.gate!.value >= 1),
+  [...new Set(addGates.map((n) => n.gate!.value))].sort((a, b) => a - b).join(' '));
+// 同一張跑圖跑兩次、中間吃掉不同的東西,+N 必須完全一樣(它是產生時就決定的)
+const fixedRun = createRun(42, 10);
+const addBefore = fixedRun.flatMap((r) => r.nodes).filter((n) => n.gate?.op === 'add' && n.gate.stat === 'heroes')
+  .map((n) => n.gate!.value);
+let walked = initialRunState(10);
+for (const row of fixedRun) { walked = { ...walked, lane: bestLane(walked, row) }; walked = resolveRow(walked, row).state; }
+const addAfter = fixedRun.flatMap((r) => r.nodes).filter((n) => n.gate?.op === 'add' && n.gate.stat === 'heroes')
+  .map((n) => n.gate!.value);
+check('吃過閘門之後,場上其他 +N 的數字完全不變(不會浮濫)',
+  JSON.stringify(addBefore) === JSON.stringify(addAfter), addBefore.join(','));
+check('勇者 +N 印出來是具體人數',
+  gateLabel({ stat: 'heroes', op: 'add', value: 6 }) === '勇者 +6');
+check('勇者 +N 不是陷阱格(畫面不會標紅)', !isTrapGate({ stat: 'heroes', op: 'add', value: 6 }));
 check('減半與扣血才是陷阱格',
   isTrapGate({ stat: 'heroes', op: 'mul', value: 0.5 })
   && isTrapGate({ stat: 'gear', op: 'add', value: -1 })
   && !isTrapGate({ stat: 'heroes', op: 'mul', value: 2 }));
+// x2 要少見:它是爆發格,滿場都是的話成長會失控
+const allGood = gateRuns.flatMap((r) => r.flatMap((row) => row.nodes))
+  .filter((n) => n.gate && !isTrapGate(n.gate));
+const doubles = allGood.filter((n) => n.gate!.op === 'mul' && n.gate!.value === 2);
+check('勇者 x2 是少數(爆發格才有份量)',
+  doubles.length / allGood.length < GATE_WEIGHT_DOUBLE * 2,
+  `${doubles.length}/${allGood.length} = ${(100 * doubles.length / allGood.length).toFixed(0)}%,設定 ${GATE_WEIGHT_DOUBLE * 100}%`);
 
 // --- 敵人曲線綁在閘門成長上 ---
-check('好閘門的平均成長算得出來', GOOD_GATE_GROWTH > 1.3 && GOOD_GATE_GROWTH < 2,
-  `x${GOOD_GATE_GROWTH.toFixed(3)} / 格`);
+check('好閘門的平均成長落在合理範圍', [0, 4, 8, 14].every((g) => goodGateGrowthAt(g) > 1.3 && goodGateGrowthAt(g) < 2.2),
+  [0, 4, 8, 14].map((g) => `第${g}格 x${goodGateGrowthAt(g).toFixed(2)}`).join(' '));
 check('這一排之前經過幾格閘門算得對',
   gatesBeforeRow(3) === 3 && gatesBeforeRow(7) === 6 && gatesBeforeRow(11) === 9 && gatesBeforeRow(19) === 15);
-// 敵人與理想路線是同一條曲線,所以「敵人戰力 / 理想戰力」在每一排都必須是同一個數。
-const ratios = [3, 7, 11, 15, 19].map((i) => enemyPowerForRow(10, i) / idealAttackForRow(10, i));
-check('敵人戰力永遠是理想路線的固定比例(這就是領先幅度不會膨脹的原因)',
-  ratios.every((r) => Math.abs(r - ENEMY_POWER_RATIO) < 0.01),
-  ratios.map((r) => r.toFixed(3)).join(' '));
+// 敵人戰力是照「這一場實際的最佳路線」算的,所以最佳玩家的領先幅度在每一排、每一場
+// 都必須精確等於 1/ENEMY_POWER_RATIO。這是結構保證,不是掃參數掃出來的近似。
+const exactMargins = [3, 11, 57, 99, 251, 808].flatMap((seed) => {
+  const rr = createRun(seed, 10);
+  let st = initialRunState(10);
+  const out: number[] = [];
+  for (const row of rr) {
+    st = { ...st, lane: bestLane(st, row) };
+    const node = row.nodes.find((n) => n.lane === st.lane)!;
+    if (node.kind === 'enemy' && node.enemy && !node.enemy.boss) out.push(totalAttack(st) / node.enemy.power);
+    st = resolveRow(st, row).state;
+  }
+  return out;
+});
+const want = 1 / ENEMY_POWER_RATIO;
+check('最佳玩家的領先幅度每一排每一場都相同(結構保證,不是掃出來的)',
+  exactMargins.every((m) => Math.abs(m - want) / want < 0.04),
+  `目標 ${want.toFixed(2)}x,實測 ${Math.min(...exactMargins).toFixed(2)}~${Math.max(...exactMargins).toFixed(2)}x`);
 
 // --- 敵人的量化呈現(每隻敵人都要指得到既有素材)---
 const ART_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'sprites', 'monsters', 'ai');

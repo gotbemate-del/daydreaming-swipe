@@ -53,8 +53,15 @@ const maxedStart = applySkills(DEFAULT_RUN_START, maxed);
 check('點滿戰力技能之後起跑戰力真的變高',
   totalAttack(initialRunState(20, maxedStart)) > totalAttack(initialRunState(20, DEFAULT_RUN_START)),
   `${totalAttack(initialRunState(20, DEFAULT_RUN_START))} → ${totalAttack(initialRunState(20, maxedStart))}`);
-check('增援真的多人', applySkills(DEFAULT_RUN_START, [{ id: 'reinforce', level: 5 }]).heroes
-  === DEFAULT_RUN_START.heroes + 5);
+check('增援加血也加一點戰力',
+  applySkills(DEFAULT_RUN_START, [{ id: 'reinforce', level: 5 }]).hpMultiplier > DEFAULT_RUN_START.hpMultiplier
+  && applySkills(DEFAULT_RUN_START, [{ id: 'reinforce', level: 5 }]).attackMultiplier > DEFAULT_RUN_START.attackMultiplier);
+// 任何養成都不准給起跑人數。給了的話 perHero 會被稀釋,而跑道上的「勇者 +N」是固定值,
+// 收益 = N x 每人攻擊力——於是點越多越弱。實測過一次:全開 22% vs 裸裝 54%。
+const everySkillCombo = (['forge', 'reinforce', 'toughen', 'craft'] as const)
+  .flatMap((id) => [1, 3, 5].map((level) => applySkills(DEFAULT_RUN_START, [{ id, level }])));
+check('沒有任何技能會增加起跑人數(給了就會讓玩家越點越弱)',
+  everySkillCombo.every((s) => s.heroes === 1) && maxedStart.heroes === 1);
 check('精工真的升武器階', applySkills(DEFAULT_RUN_START, [{ id: 'craft', level: 5 }]).gear
   === DEFAULT_RUN_START.gear + 2);
 check('堅韌只加血不加戰力',
@@ -87,6 +94,29 @@ function play(seed: number, stage: number, start: RunStart, pick: Picker) {
 const pickBest: Picker = (s, row) => bestLane(s, row);
 const pickWorst: Picker = (s, row) => worstLane(s, row);
 const pickRandom: Picker = (_s, _row, r) => Math.floor(r() * LANE_COUNT) as Lane;
+/**
+ * 準確率 p 的玩家:每排有 p 的機率挑對邊。
+ * 「養成有沒有意義」要用這個量,不能用亂選——跑道 20 排之後亂選在任何設定下都是 0~1%,
+ * 兩邊都貼著地板,比出來的是雜訊不是效果(同一個理由見 CLAUDE.md 的難度指標那段)。
+ */
+function accRate(stage: number, start: RunStart, p: number, trials = 400) {
+  let cleared = 0;
+  for (let t = 0; t < trials; t++) {
+    const seed = t * 31 + 1;
+    const rows = createRun(seed, stage);
+    let st = initialRunState(stage, start);
+    let x = seed + 7;
+    const rnd = () => { x = (x * 1103515245 + 12345) & 0x7fffffff; return x / 0x7fffffff; };
+    let alive = true;
+    for (const row of rows) {
+      const lane = rnd() < p ? bestLane(st, row) : worstLane(st, row);
+      st = resolveRow({ ...st, lane }, row).state;
+      if (st.phase === 'dead') { alive = false; break; }
+    }
+    if (alive) cleared++;
+  }
+  return cleared / trials;
+}
 function rate(stage: number, start: RunStart, pick: Picker, trials = 300) {
   let cleared = 0;
   for (let t = 0; t < trials; t++) if (play(t * 31 + 1, stage, start, pick) === 'cleared') cleared++;
@@ -105,8 +135,12 @@ console.log(`  (全開的起跑倍率:戰力 x${fullyLoaded.attackMultiplier.toF
 check('全開之後亂選還是會輸(養成買不到勝利)', rate(25, fullyLoaded, pickRandom) <= 0.7,
   `${(rate(25, fullyLoaded, pickRandom) * 100).toFixed(0)}%`);
 check('全開之後一路選最爛照樣死', rate(25, fullyLoaded, pickWorst) <= 0.05);
-check('全開確實比裸裝好過(養成有意義)',
-  rate(25, fullyLoaded, pickRandom) >= rate(25, DEFAULT_RUN_START, pickRandom));
+const accFull = accRate(25, fullyLoaded, 0.85);
+const accBare = accRate(25, DEFAULT_RUN_START, 0.85);
+check('全開確實比裸裝好過(養成有意義)', accFull > accBare,
+  `85% 準確率:全開 ${(accFull * 100).toFixed(0)}% vs 裸裝 ${(accBare * 100).toFixed(0)}%`);
+check('但養成的幅度是小的(買不到勝利)', accFull - accBare < 0.35,
+  `差 ${((accFull - accBare) * 100).toFixed(0)} 個百分點`);
 check('全開之後每排都挑最好的仍然一定過關', rate(25, fullyLoaded, pickBest) >= 0.99);
 
 console.log(fail === 0 ? '\n全部通過' : `\n${fail} 項失敗`);

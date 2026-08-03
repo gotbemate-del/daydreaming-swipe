@@ -33,8 +33,20 @@ export interface SkillState {
 const PER_LEVEL = {
   /** 鍛鍊:純戰力 */
   forgeAttack: 0.05,
-  /** 增援:多一個人,外加一點戰力(人數本身不加戰力,只決定怎麼分配) */
+  /**
+   * 增援:一點戰力 + 比較耐打。
+   *
+   * 原本是「每級多一個起跑人數」,已經拿掉——那是個會讓玩家**越點越弱**的陷阱。
+   * 起跑總戰力是固定的,人數只決定怎麼拆(perHero = 總戰力 / 人數),所以起跑 6 人的話
+   * 每人攻擊力只有 1/6;而跑道上的「勇者 +N」是固定值,收益 = N x 每人攻擊力,
+   * 於是同一格對 6 人起跑的玩家只值 1/6。實測第 25 關 85% 準確率:全開 22% vs 裸裝 54%,
+   * 點滿技能比什麼都不點還慘。
+   *
+   * 這跟「所有職業一律 1 人起跑」是同一條規則的兩面(見 laneJobs 的說明):
+   * 人數只能靠跑道上的閘門滾出來,任何養成都不該給起跑人數。
+   */
   reinforceAttack: 0.02,
+  reinforceHp: 0.06,
   /** 堅韌:血量 */
   toughenHp: 0.12,
   /** 精工:每 2 級升一階起跑武器,外加一點戰力 */
@@ -51,7 +63,8 @@ export const SKILLS: SkillSpec[] = [
     id: 'reinforce',
     name: '增援',
     describe: (level) =>
-      `起跑多 ${level} 個人,總戰力 +${Math.round(PER_LEVEL.reinforceAttack * level * 100)}%`,
+      `起跑血量 +${Math.round(PER_LEVEL.reinforceHp * level * 100)}%`
+      + `,總戰力 +${Math.round(PER_LEVEL.reinforceAttack * level * 100)}%`,
   },
   {
     id: 'toughen',
@@ -126,7 +139,7 @@ export function applySkills(base: RunStart, skills: SkillState[]): RunStart {
     if (skill.id === 'forge') attackBonus += PER_LEVEL.forgeAttack * level;
     if (skill.id === 'reinforce') {
       attackBonus += PER_LEVEL.reinforceAttack * level;
-      heroes += level;
+      hpBonus += PER_LEVEL.reinforceHp * level;
     }
     if (skill.id === 'toughen') hpBonus += PER_LEVEL.toughenHp * level;
     if (skill.id === 'craft') {

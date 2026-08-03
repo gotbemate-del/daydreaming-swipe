@@ -224,7 +224,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
           ]}
         >
           <Text style={styles.gateText} numberOfLines={2}>
-            {node.gate ? gateLabel(node.gate, state) : ''}
+            {node.gate ? gateLabel(node.gate) : ''}
           </Text>
         </View>
       );
