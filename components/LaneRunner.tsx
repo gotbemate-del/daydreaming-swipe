@@ -14,6 +14,7 @@ import {
   wavesForStage,
   terrainForStage,
   totalAttack,
+  ELITE_MASS,
   VISIBLE_AHEAD,
   type RunRow,
   type RunStart,
@@ -69,6 +70,8 @@ const GATE_HEIGHT = 50;
 const MONSTER_SIZE = 42;
 /** 大魔王畫多大。要一眼看出「這不是小怪」,但不能寬到蓋掉兩條跑道。 */
 const BOSS_SIZE = 132;
+/** 精英畫多大。介於小怪與魔王之間,一眼看出「這隻不一樣」但不會蓋掉兩條跑道。 */
+const ELITE_SIZE = 84;
 const PROJECTILE_SIZE = 30;
 
 
@@ -261,6 +264,9 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
         <View
           key={`${row.index}-${node.lane}`}
           pointerEvents="none"
+          // 給自動化測試用:機器人要看得出「這一格在哪條跑道、是不是陷阱」才能真的玩。
+          // 靠文字選取器會選到畫面上其他同字的東西(CLAUDE.md 記過的坑),所以走 aria-label。
+          accessibilityLabel={`閘門 ${node.lane} ${trap ? '陷阱' : '好格'}`}
           style={[
             styles.gate,
             trap ? styles.gateTrap : styles.gateGood,
@@ -282,7 +288,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
    */
   function renderWave(w: WaveView) {
     if (!ready) return null;
-    const size = w.boss ? BOSS_SIZE : MONSTER_SIZE;
+    const size = w.boss ? BOSS_SIZE : w.elite ? ELITE_SIZE : MONSTER_SIZE;
     return w.monsters.map((m) => {
       if (w.down[m.index]) return null;
       const ahead = m.distance - distance;
@@ -295,7 +301,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
       return (
         <View key={m.index} style={[styles.floating, { left, top, width: size }]} pointerEvents="none">
           <Image source={monsterArt(species.id)} resizeMode="contain" style={[styles.pixelArt, { width: size, height: size }]} />
-          {w.boss && (
+          {(w.boss || w.elite) && (
             <View style={styles.bossHpTrack}>
               <View style={[styles.bossHpFill, { width: `${hpLeft * 100}%` }]} />
             </View>
@@ -381,7 +387,10 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
           <Text style={styles.alertText} numberOfLines={1}>
             {incoming.boss
               ? `大魔王 ${incoming.name} · 戰力 ${compact(incoming.power)}`
-              : `來襲 ${incoming.name} x${incoming.units} · 戰力 ${compact(incoming.power)}`}
+              : incoming.elite
+                // 精英要標出「漏掉一隻抵幾個人」——牠的威脅不在隻數,玩家看不到就不會提早準備。
+                ? `精英 ${incoming.name} · 戰力 ${compact(incoming.power)} · 漏一隻 -${ELITE_MASS} 人`
+                : `來襲 ${incoming.name} x${incoming.units} · 戰力 ${compact(incoming.power)}`}
           </Text>
         )}
       </View>

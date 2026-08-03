@@ -127,6 +127,13 @@ export interface EnemyEffect {
   name: string;
   /** 這一波總共幾隻小怪。戰力是指數成長的,數字看久了會無感,一波湧幾隻才看得出「這波比上一波難」。 */
   units: number;
+  /** 精英排:一隻大的,不是一群小的。畫面要畫大,而且漏掉牠的代價是一整群的份。 */
+  elite?: boolean;
+  /**
+   * 每漏掉一隻要換掉幾個勇者。一般小怪是 1,**精英是一整群的份**——
+   * 「大」在這個模型裡的意思就是這個:牠一隻抵一群,擋不下來就是一次大額兌換。
+   */
+  leakCost?: number;
 }
 
 export interface RunNode {
@@ -812,6 +819,24 @@ export function enemyRarityForRow(rowIndex: number): Rarity {
 export const SPECIES_PER_WAVE = 3;
 
 /** 這一排是不是大魔王:魔王關的最後一排敵人。 */
+/**
+ * 精英排:每一小關的**中點**放一隻大的。
+ *
+ * 3 分鐘的小關如果十波都是同一種節奏,中段會很平。放一隻「大而慢」的在中點,
+ * 整關就有了一個高潮:牠一隻抵一群(leakCost),要多打幾下才倒(hitsPerUnit),
+ * 所以牠會在畫面上待很久——玩家有時間看清楚、有時間決定要不要硬吃。
+ */
+export function isEliteRow(stage: number, rowIndex: number): boolean {
+  if (!isEnemyRowIndex(rowIndex, stage) || isBossRow(stage, rowIndex)) return false;
+  const waveIndex = Math.floor(rowIndex / enemyEveryForStage(stage));
+  return waveIndex === Math.floor(wavesForStage(stage) / 2) - 1;
+}
+
+/** 精英一隻抵幾隻小怪(同時是牠的 leakCost 與體型倍率的依據)。 */
+export const ELITE_MASS = 6;
+/** 精英要挨幾下才倒。介於小怪 3 下與魔王 12 下之間。 */
+export const ELITE_HITS = 6;
+
 function isBossRow(stage: number, rowIndex: number): boolean {
   return isBossStage(stage) && rowIndex === lastEnemyRowIndex(stage);
 }
@@ -867,12 +892,19 @@ function makeEnemyRow(
       }
     }
   }
+  const elite = isEliteRow(stage, rowIndex);
+  // 精英是「同樣的一波戰力,壓縮成少少幾隻」——總戰力不變,所以難度曲線完全不受影響,
+  // 變的只有「擋不下來的時候一次掉多少人」以及畫面上的體感。
+  const units = elite
+    ? Math.max(1, Math.round(waveSize(idealHeroes) / ELITE_MASS))
+    : waveSize(idealHeroes);
   const enemy: EnemyEffect = {
     power,
-    reward: Math.round(power * 0.4),
-    species,
+    reward: Math.round(power * (elite ? 0.6 : 0.4)),
+    species: elite ? [species[0]] : species,
     name: species[0].name,
-    units: waveSize(idealHeroes),
+    units,
+    ...(elite ? { elite: true, leakCost: ELITE_MASS, hitsPerUnit: ELITE_HITS } : {}),
   };
   return Array.from({ length: LANE_COUNT }, (_, lane) => ({
     lane: lane as Lane,
@@ -1044,7 +1076,8 @@ export function resolveEnemy(state: RunState, enemy: EnemyEffect): RowResolution
       attackDelta: 0,
     };
   }
-  const lost = Math.ceil(leaked / Math.max(BASE_TRADE_RATE, next.tradeRate));
+  const cost = Math.max(1, enemy.leakCost ?? 1);
+  const lost = Math.ceil((leaked * cost) / Math.max(BASE_TRADE_RATE, next.tradeRate));
   const before = totalAttack(next);
   next.heroes = next.heroes - lost;
   if (next.heroes <= 0) {

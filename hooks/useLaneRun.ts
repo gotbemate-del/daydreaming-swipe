@@ -89,6 +89,8 @@ export interface WaveView {
   rowIndex: number;
   species: WaveSpecies[];
   boss: boolean;
+  /** 精英排:一隻大的。畫面要畫大、要有血條(牠要打好幾下才倒)。 */
+  elite: boolean;
   /** 每隻的血條:已挨幾下 / 要挨幾下。魔王打很久,沒有進度條會不知道打到哪了。 */
   hitsOn: number[];
   hitsPerUnit: number;
@@ -144,9 +146,10 @@ interface WaveRuntime {
   rowIndex: number;
   species: WaveSpecies[];
   power: number;
-  /** 這一波每隻要挨幾下。一般小怪 3 下,大魔王 12 下——所以魔王戰才有「打很久」的過程。 */
+  /** 這一波每隻要挨幾下。一般小怪 3 下,精英 6 下,大魔王 12 下。 */
   hitsPerUnit: number;
   boss: boolean;
+  elite: boolean;
   monsters: WaveMonster[];
   /** 每一隻各自挨了幾下。打不倒的那幾隻也會累加——勇者照樣丟,只是丟不倒。 */
   hitsOn: number[];
@@ -278,6 +281,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         power: enemy.power,
         hitsPerUnit: enemy.hitsPerUnit ?? HITS_PER_MONSTER,
         boss: enemy.boss === true,
+        elite: enemy.elite === true,
         monsters: waveMonsters(
           enemyRow.index, enemy.units, enemyRow.distance, enemy.species.length,
           waveLength(stage, enemy.units),
@@ -389,6 +393,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
             rowIndex: current!.rowIndex,
             species: current!.species,
             boss: current!.boss,
+            elite: current!.elite,
             hitsOn: [...current!.hitsOn],
             hitsPerUnit: current!.hitsPerUnit,
             monsters: current!.monsters,

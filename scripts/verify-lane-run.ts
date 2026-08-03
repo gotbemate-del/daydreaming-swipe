@@ -10,7 +10,7 @@ import {
   rowsForStage, wavesForStage, stageLabel, chapterOfStage, levelOfStage, enemyPowerRatioForStage,
   LEVELS_PER_CHAPTER, WAVES_PER_LEVEL, LONG_LEVEL_WAVES, EASY_RATIO, lastEnemyRowIndex, isBossStage,
   GATE_WIDTH, gateSpan, hitsGate, MONSTER_JITTER, SPECIES_PER_WAVE, START_OFFSET, terrainForStage,
-  ENEMY_POWER_RATIO, goodGateGrowthAt, gatesBeforeRow, isTrapGate, runSeconds,
+  ENEMY_POWER_RATIO, goodGateGrowthAt, gatesBeforeRow, isTrapGate, runSeconds, ELITE_MASS, ELITE_HITS,
   applyGate, gateLabel, DOUBLE_GATES_PER_RUN, GEAR_STEP, doubleGatesForStage, LONG_LEVEL_RATIO_SCALE,
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
   TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane, MIN_WAVE_SIZE,
@@ -219,11 +219,19 @@ const allEnemies = [1, 5, 20, 40].flatMap((s) =>
     .flatMap((r) => r.flatMap((row) => row.nodes))
     .flatMap((n) => (n.kind === 'enemy' && n.enemy ? [n.enemy] : [])));
 const allSpecies = allEnemies.flatMap((e) => e.species);
-const mobWaves = allEnemies.filter((e) => !e.boss);
+// 精英是刻意的例外:牠一隻抵一群,所以隻數少、造型也只有一種(要看得出「那一隻」是誰)。
+const mobWaves = allEnemies.filter((e) => !e.boss && !e.elite);
+const eliteWaves = allEnemies.filter((e) => e.elite);
 const bossWaves = allEnemies.filter((e) => e.boss);
 check('每一波小怪都混了好幾種(整關不會只看到同一隻)',
   mobWaves.every((e) => e.species.length === SPECIES_PER_WAVE),
   `每波 ${SPECIES_PER_WAVE} 種`);
+check('每個小關中點都有一隻精英', eliteWaves.length > 0
+  && eliteWaves.every((e) => e.leakCost === ELITE_MASS && e.hitsPerUnit === ELITE_HITS && e.species.length === 1),
+  `${eliteWaves.length} 隻精英,漏掉一隻抵 ${ELITE_MASS} 人`);
+check('精英比同一排的小怪波少很多隻(牠是一隻大的,不是一群)',
+  eliteWaves.every((e) => e.units <= MAX_WAVE_SIZE / 2),
+  `最多 ${Math.max(...eliteWaves.map((e) => e.units))} 隻`);
 check('大魔王只有一隻', bossWaves.every((e) => e.units === 1 && e.species.length === 1),
   `${bossWaves.length} 場魔王`);
 check('同一波裡的怪種不重複', allEnemies.every((e) => new Set(e.species.map((sp) => sp.id)).size === e.species.length));
@@ -236,7 +244,11 @@ check('每種造型都有對應的既有素材檔(含魔王)',
   + [...new Set(allSpecies.map((sp) => artFileFor(sp.id)))].length + ' 個檔案');
 check('同一排的每一格都是同一批敵人', run.filter((r) => r.nodes.every((n) => n.kind === 'enemy'))
   .every((r) => new Set(r.nodes.map((n) => JSON.stringify(n.enemy!.species))).size === 1));
-const unitsByRow = run.filter((r) => r.nodes.every((n) => n.kind === 'enemy')).map((r) => r.nodes[0].enemy!.units);
+// 精英排跳過:牠的隻數本來就是壓縮過的(同樣的戰力擠成少少幾隻),放進來比會誤判成退化。
+const unitsByRow = run.filter((r) => r.nodes.every((n) => n.kind === 'enemy'))
+  .map((r) => r.nodes[0].enemy!)
+  .filter((e) => !e.elite)
+  .map((e) => e.units);
 check('越後面的波次小怪越多(數量看得出難度)', unitsByRow.every((u, i) => i === 0 || u >= unitsByRow[i - 1]),
   unitsByRow.join(' → '));
 // 一波的隻數跟著理想人數走(人數就是血量,兩群的規模要同一個數量級)。
