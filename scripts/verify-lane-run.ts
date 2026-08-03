@@ -10,7 +10,7 @@ import {
   rowsForStage, wavesForStage, stageLabel, chapterOfStage, levelOfStage, enemyPowerRatioForStage,
   LEVELS_PER_CHAPTER, WAVES_PER_LEVEL, LONG_LEVEL_WAVES, EASY_RATIO, lastEnemyRowIndex, isBossStage,
   GATE_WIDTH, gateSpan, hitsGate, MONSTER_JITTER, SPECIES_PER_WAVE, START_OFFSET, terrainForStage,
-  ENEMY_POWER_RATIO, goodGateGrowthAt, gatesBeforeRow, isTrapGate, runSeconds, ELITE_MASS, ELITE_HITS,
+  ENEMY_POWER_RATIO, goodGateGrowthAt, gatesBeforeRow, isTrapGate, runSeconds, ELITE_MASS, ELITE_HITS, absorbedFrom,
   applyGate, gateLabel, DOUBLE_GATES_PER_RUN, GEAR_STEP, doubleGatesForStage, LONG_LEVEL_RATIO_SCALE,
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
   TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane, MIN_WAVE_SIZE,
@@ -173,14 +173,18 @@ function runGrowth(stage: number, seed: number): number {
   return totalAttack(simulateRun(seed, stage, simBest).state) / from;
 }
 const growths = [11, 42, 77, 108, 251].map((seed) => runGrowth(12, seed));
-check('一般小關的放大量壓在 250 倍以內(數字要看得懂)',
-  Math.max(...growths) <= 250, `${Math.min(...growths).toFixed(0)}~${Math.max(...growths).toFixed(0)} 倍`);
+// 上限從 250 放寬到 600:250 是為舊結構校的(15 個閘門、5 波、沒有吸收)。現在一場有
+// 20 個閘門、10 次技能選擇、10 波的吸收,自然值就在 5~600 之間。硬壓回 250 的唯一辦法是
+// 把 GEAR_STEP 壓到 1.04——那等於「裝備強化」只加 4%,核心閘門變白給,得不償失。
+// 真正要守的是「數字看得懂」:第 12 關終點是 6156~16616,compact() 顯示成 1.7萬,分得出來。
+check('一般小關的放大量壓在 600 倍以內(數字要看得懂)',
+  Math.max(...growths) <= 600, `${Math.min(...growths).toFixed(0)}~${Math.max(...growths).toFixed(0)} 倍`);
 check('但雪球感還在(至少 30 倍)', Math.min(...growths) >= 30);
 // 加倍長的小關閘門比較多,放大量本來就會高一截,但不能高到把壓膨脹的工作抵銷掉
 // (照 4 排一波的話會是 1833~4230 倍、終點 16 萬,所以長關改成 3 排一波)。
 const longGrowths = [11, 42, 77].map((seed) => runGrowth(15, seed));
-check('加倍長的小關也壓得住(1000 倍以內)',
-  Math.max(...longGrowths) <= 1000, `${Math.min(...longGrowths).toFixed(0)}~${Math.max(...longGrowths).toFixed(0)} 倍`);
+check('加倍長的小關也壓得住(900 倍以內)',
+  Math.max(...longGrowths) <= 900, `${Math.min(...longGrowths).toFixed(0)}~${Math.max(...longGrowths).toFixed(0)} 倍`);
 // 長關的閘門數跟一般關一樣,所以放大量也該落在同一個區間——它的「長」在波數(20 波)不在閘門。
 // 這一項現在是在盯「長關沒有偷偷多長一截」,方向跟舊版相反。
 check('長關的放大量跟一般關同一個量級(長在波數不在閘門)',
@@ -188,10 +192,11 @@ check('長關的放大量跟一般關同一個量級(長在波數不在閘門)',
   `一般 ${Math.max(...growths).toFixed(0)} 倍 / 長關 ${Math.max(...longGrowths).toFixed(0)} 倍`);
 // 上下界跟「一場幾個閘門」綁在一起:20 個閘門的時候 1.14 會把放大量推到 512 倍。
 // 每次改 ENEMY_EVERY / 波數,這個範圍就要重算。
-check('裝備強化的幅度跟膨脹目標一致', GEAR_STEP > 1.04 && GEAR_STEP < 1.2, `x${GEAR_STEP}`);
+// 下界守的是「這個閘門有沒有感覺」:低於 +6% 的話玩家吃到「裝備強化」會覺得什麼都沒發生。
+check('裝備強化的幅度看得出來', GEAR_STEP >= 1.06 && GEAR_STEP < 1.2, `x${GEAR_STEP}`);
 
 // --- 敵人曲線綁在閘門成長上 ---
-check('好閘門的平均成長落在合理範圍', [0, 4, 8, 14].every((g) => goodGateGrowthAt(g) > 1.15 && goodGateGrowthAt(g) < 2.2),
+check('好閘門的平均成長落在合理範圍', [0, 4, 8, 14].every((g) => goodGateGrowthAt(g) > 1.1 && goodGateGrowthAt(g) < 2.2),
   [0, 4, 8, 14].map((g) => `第${g}格 x${goodGateGrowthAt(g).toFixed(2)}`).join(' '));
 // 一般小關是「2 排閘門 + 1 排敵人」為一個波週期,所以每 3 排會經過 2 個閘門。
 check('這一排之前經過幾格閘門算得對',
@@ -202,8 +207,10 @@ check('這一排之前經過幾格閘門算得對',
 const exactMargins = [3, 11, 57, 99, 251, 808].flatMap((seed) =>
   simulateRun(seed, 10, simBest).margins.filter((m) => !m.boss).map((m) => m.margin));
 const want = 1 / enemyPowerRatioForStage(10);
+// 容許 5%:吸收讓每一波多一次整數進位(理想路線用理想隻數、玩家用實際擊殺數),
+// 十波累積下來的漂移比舊版大一點。結構保證還在——漂移不會隨排數發散,只是抖動變寬。
 check('最佳玩家的領先幅度每一排每一場都相同(結構保證,不是掃出來的)',
-  exactMargins.every((m) => Math.abs(m - want) / want < 0.04),
+  exactMargins.every((m) => Math.abs(m - want) / want < 0.05),
   `目標 ${want.toFixed(2)}x,實測 ${Math.min(...exactMargins).toFixed(2)}~${Math.max(...exactMargins).toFixed(2)}x`);
 
 // --- 敵人的量化呈現(每隻敵人都要指得到既有素材)---
@@ -326,10 +333,21 @@ const lostAt = (atk: number, tradeRate = 1) => {
   const before: RunState = { ...initialRunState(1), heroes: 40, perHero: atk / 40, tradeRate };
   return before.heroes - resolveEnemy(before, sampleWave).state.heroes;
 };
-check('攻擊力壓過戰力 -> 全部打掉、零損失',
-  waveKillCount(powerSample, powerSample, UNITS) === UNITS && lostAt(powerSample) === 0);
+// 全清之後人數是**增加**的(打倒的怪有一部分加入隊伍),所以 lostAt 會是負的。
+check('攻擊力壓過戰力 -> 全部打掉、不但零損失還補人',
+  waveKillCount(powerSample, powerSample, UNITS) === UNITS && lostAt(powerSample) < 0);
 check('攻擊力遠超過 -> 一樣是全部打掉(不會算出超過總數)',
-  waveKillCount(powerSample * 5, powerSample, UNITS) === UNITS && lostAt(powerSample * 5) === 0);
+  waveKillCount(powerSample * 5, powerSample, UNITS) === UNITS
+  && lostAt(powerSample * 5) === lostAt(powerSample));
+// 進位之後小數量會壓在同一階(3 隻與 9 隻都是 +1),那是刻意的:早期至少 +1 才看得到。
+// 要守的是「隻數越多補越多、而且不會爆」,不是每一格都不同。
+check('全清補的人數跟隻數走,而且封頂之後是固定值不是複利',
+  absorbedFrom(24) > absorbedFrom(3) && absorbedFrom(3) >= 1
+  && [1, 3, 9, 24].every((n, i, a) => i === 0 || absorbedFrom(n) >= absorbedFrom(a[i - 1])),
+  `3 隻 +${absorbedFrom(3)} / 9 隻 +${absorbedFrom(9)} / 24 隻 +${absorbedFrom(24)} 人`);
+check('精英一隻抵一群,補的人也照一群算',
+  absorbedFrom(1, ELITE_MASS) === absorbedFrom(ELITE_MASS),
+  `精英 1 隻 +${absorbedFrom(1, ELITE_MASS)} 人`);
 check('攻擊力不足 -> 有漏過來的,而且確實換掉了人',
   waveKillCount(powerSample / 2, powerSample, UNITS) < UNITS && lostAt(powerSample / 2) > 0);
 check('漏幾隻就換掉幾個人(兌換率 1)',

@@ -187,6 +187,37 @@ export interface RunState {
 export const BASE_TRADE_RATE = 1;
 
 /**
+ * 打倒的怪有多少比例會加入你的隊伍。
+ *
+ * 為什麼需要這個:
+ * 1. **打完一波原本完全沒有正向回饋**,只有「有沒有活下來」。人群跑酷的爽點是隊伍越滾越大,
+ *    而在這之前人數只能從閘門來,戰鬥純粹是消耗。
+ * 2. **它是「左右不對稱」能成立的前提。** 兌換模型裡 kills 跟隻數無關,所以隻數少的那格
+ *    永遠漏得少、永遠安全;多的那格要有「這一場之內有用」的報酬才會變成真的選擇,
+ *    而這款唯一有用的東西就是人(見 docs/DESIGN.md §3.1a)。
+ *
+ * 幅度不會失控的原因:`waveSize` 封頂 24 隻,所以人數超過 24 之後吸收就變成**固定 +N**,
+ * 不再是複利——早期滾雪球(有感),後期只是涓滴(不膨脹)。
+ */
+export const ABSORB_RATIO = 0.08;
+
+/**
+ * 打贏這一波會補幾個人。精英一隻抵一群,所以牠的份量也照 leakCost 算。
+ *
+ * **無條件進位,所以全清一定至少 +1。** 用 floor 的話 9 隻以下都是 +0——
+ * 早期(隻數少)跟精英(1 隻 x 6 份量 = 0.72)通通看不到效果,玩家會認定這機制不存在。
+ * 而它最該有感的地方正是早期:那時候 +1 人是 +50% 戰力。
+ *
+ * 進位同時把成長從**複利**變成**加法**:每波固定 +1~2,而不是「人越多吸得越多」。
+ * 複利版本(floor + 0.12)實測會把單場放大量推到 309 倍,逼得 GEAR_STEP 要壓到 1.04——
+ * 那等於「裝備強化」只加 4%,核心閘門變成白給,拿閘門去換一個新機制完全不划算。
+ */
+export function absorbedFrom(kills: number, leakCost = 1): number {
+  if (kills <= 0) return 0;
+  return Math.ceil(kills * Math.max(1, leakCost) * ABSORB_RATIO);
+}
+
+/**
  * 總戰力 = 人數 x 每人攻擊力。這是唯一拿去跟敵人比的數字。
  * 兩個乘數缺一不可:只堆人數沒換裝備,人再多也打不動後面的怪;只換裝備沒堆人數,
  * 一個人再強也擋不住一整波。玩家每一排都在決定要補哪一邊。
@@ -235,7 +266,7 @@ export const START_OFFSET = 0.5;
  *
  * 難度不受影響:敵人是照這一場的最佳路線算的,閘門調小敵人自動跟著小(見 ENEMY_POWER_RATIO)。
  */
-export const GEAR_STEP = 1.07;
+export const GEAR_STEP = 1.08;
 export const MAX_GEAR = 5;
 
 // ---- 節奏 ----
@@ -479,7 +510,7 @@ export function baseAttackForStage(stage: number): number {
  * **難度不變,但失誤的相對代價會變**,所以每次動 GEAR_STEP / HERO_ADD_RATIO 都要重掃這個值。
  * 上一次重掃就是因為把單場膨脹從 2700 倍壓到 130 倍。
  */
-export const ENEMY_POWER_RATIO = 0.42;
+export const ENEMY_POWER_RATIO = 0.48;
 
 /**
  * 第一大關刻意放寬。
@@ -565,7 +596,7 @@ export const GATE_WEIGHT_GEAR = 0.55;
  * 吃不吃都不會變——而且自帶追趕機制:落後的玩家拿到的 +N 相對自己是大補,
  * 領先的玩家拿到的只是零頭,成長自然收斂。
  */
-export const HERO_ADD_RATIO = 0.07;
+export const HERO_ADD_RATIO = 0.08;
 
 /**
  * 理想路線的模擬:每一格都吃到好閘門,人數與每人攻擊力各自怎麼長。
@@ -960,6 +991,10 @@ export function createRun(seed: number, stage: number): RunRow[] {
         distance: distances[i],
         nodes: makeEnemyRow(artRng, stage, i, idealHeroes * idealPerHero, idealHeroes),
       });
+      // 理想玩家一定全清,所以一定吃到吸收——這條**必須**同步,不然玩家會越跑越超前敵人
+      // (跟場內技能同一個道理,見 laneRunSkills 的「兩側必須同時算」)。
+      const cleared = rows[rows.length - 1].nodes[0].enemy!;
+      idealHeroes += absorbedFrom(cleared.units, cleared.leakCost);
       // 這一波之後玩家會拿到幾次選擇,理想路線照「每次都挑最能加戰力的」同步吃下去。
       // 人數與每人攻擊力分開乘,不是通通乘在戰力上:「勇者 +N」是固定值,
       // 人數被增殖拉高之後,後面每一格 +N 相對就變小了——合成一個數字會漏掉這層互動。
@@ -1067,13 +1102,19 @@ export function resolveEnemy(state: RunState, enemy: EnemyEffect): RowResolution
   const kills = waveKillCount(totalAttack(state), enemy.power, enemy.units);
   const leaked = Math.max(0, enemy.units - kills);
   const next = { ...state };
+  // 打倒的怪有一部分加入隊伍。放在「漏 0」那條路徑上而不是照 kills 給:
+  // 半殘的一波已經在扣人了,再補回來會讓「擋不住」這件事變得模糊。
   if (leaked === 0) {
+    const joined = absorbedFrom(kills, enemy.leakCost);
     next.coins += enemy.reward;
+    next.heroes += joined;
     return {
       state: next,
-      message: `擊倒${enemy.name} +${enemy.reward} 金幣`,
-      heroDelta: 0,
-      attackDelta: 0,
+      message: joined > 0
+        ? `擊倒${enemy.name} +${joined} 人`
+        : `擊倒${enemy.name} +${enemy.reward} 金幣`,
+      heroDelta: joined,
+      attackDelta: joined * next.perHero,
     };
   }
   const cost = Math.max(1, enemy.leakCost ?? 1);
