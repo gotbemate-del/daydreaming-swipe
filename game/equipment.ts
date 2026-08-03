@@ -1871,7 +1871,7 @@ export function getGenderUnlockItems(gender: Gender): string[] {
   return Object.values(GENDER_DEFAULT_LOADOUT[gender]);
 }
 
-// 座標系對應 game/sprites/heroSilhouette.ts 的原生 64 欄 x 56 列網格(密度提升後的版本,
+// 座標系是姊妹作立繪的原生 64 欄 x 56 列網格(這款沒有在用,穿裝疊圖尚未接上;
 // 原本是 20x24,座標依 x*3.2/y*2.33 等比例換算),僅以「normal」體型的輪廓比例校準;
 // thin/fat 選擇時疊圖會有些微不貼合,屬於這個架構驗證階段可接受的簡化,尚未做到依體型即時縮放錨點。
 //
@@ -1903,7 +1903,7 @@ export const SLOT_ANCHORS: Record<EquipmentSlot, Rect[]> = {
     { x: 47, y: 28, w: 4, h: 4 },
   ],
   offhand: [{ x: 8, y: 24, w: 14, h: 14 }],
-  // 跟武器外型(game/sprites/weapons.ts,放大3倍後 18x30)完全對齊,不拉伸變形。
+  // 跟武器外型(放大3倍後 18x30)完全對齊,不拉伸變形。
   mainhand: [{ x: 45, y: 19, w: 18, h: 30 }],
 };
 

@@ -16,7 +16,6 @@ import {
   TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane,
   type Lane, type RunState,
 } from '../game/laneRun';
-import { hasMonsterVisual } from '../game/sprites/monsters';
 import {
   clearRate, pickAccurate, pickBest as simBest, pickRandom as simRandom, pickWorst as simWorst,
   simulateRun,
@@ -215,11 +214,12 @@ check('大魔王只有一隻', bossWaves.every((e) => e.units === 1 && e.species
   `${bossWaves.length} 場魔王`);
 check('同一波裡的怪種不重複', allEnemies.every((e) => new Set(e.species.map((sp) => sp.id)).size === e.species.length));
 check('每隻敵人都有名字與造型 id', allSpecies.every((sp) => sp.name.length > 0 && sp.id.length > 0));
-check('敵人造型 id 都在怪物圖庫裡', allSpecies.every((sp) => hasMonsterVisual(sp.id)),
-  `${new Set(allSpecies.map((sp) => sp.id)).size} 種造型`);
+// 造型只認 assets/sprites 底下的既有素材檔。先前還多驗一次程序化圖庫(game/sprites),
+// 但畫面根本沒在畫那一套,驗它等於驗一個不存在的東西 —— 那包已經整個移除。
 check('每種造型都有對應的既有素材檔(含魔王)',
   allSpecies.every((sp) => existsSync(join(ART_DIR, artFileFor(sp.id)))),
-  [...new Set(allSpecies.map((sp) => artFileFor(sp.id)))].length + ' 個檔案');
+  `${new Set(allSpecies.map((sp) => sp.id)).size} 種造型 / `
+  + [...new Set(allSpecies.map((sp) => artFileFor(sp.id)))].length + ' 個檔案');
 check('同一排的每一格都是同一批敵人', run.filter((r) => r.nodes.every((n) => n.kind === 'enemy'))
   .every((r) => new Set(r.nodes.map((n) => JSON.stringify(n.enemy!.species))).size === 1));
 const unitsByRow = run.filter((r) => r.nodes.every((n) => n.kind === 'enemy')).map((r) => r.nodes[0].enemy!.units);

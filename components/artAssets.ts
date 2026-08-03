@@ -167,7 +167,7 @@ export const LOCK_ICON: ImageSourcePropType = require('../assets/sprites/ui/icon
 export const COIN_ICON: ImageSourcePropType = require('../assets/sprites/ui/icon_coin.png');
 
 // 12 種身體原型,對應 game/monsters.ts 的 ARCHETYPE_CATALOG.key。怪物 id 是 `${archetype}-${slot}`,
-// slot(強度稱號)共用同一張原型圖——這跟 game/sprites/monsters.ts 的做法一致:一副骨架、多種強度。
+// slot(強度稱號)共用同一張原型圖:一副骨架、多種強度。
 const MONSTER_ART: Record<string, ImageSourcePropType> = {
   blob: require('../assets/sprites/monsters/ai/blob_open.png'),
   flying: require('../assets/sprites/monsters/ai/flying_open.png'),

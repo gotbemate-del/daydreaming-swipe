@@ -55,7 +55,7 @@
 ## 目前進度
 
 - [x] 資料層搬遷(裝備 3000 件、怪物 120 種、寵物坐騎、技能樹、成就、材料)
-- [x] 美術資產搬遷(`assets/sprites` 1500+ 檔 + `game/sprites` 程序化像素圖)
+- [x] 美術資產搬遷(`assets/sprites` 1500+ 檔)
 - [x] 跑道闖關核心 `game/laneRun.ts`(數值驗證全通過)
 - [x] 跑道畫面 + 拖曳操作(連續位置;方向鍵是給桌機測試用的,會吸附到跑道中央)
 - [x] 勇者與敵人改用 `assets/sprites` 的既有像素圖
@@ -111,7 +111,6 @@ game/         遊戲核心邏輯(純函式,禁止 import React)
   laneRunSkills.ts 場內技能:選項、等級、當場加成(每波一次,跑完歸零)
   equipment.ts    3000 件裝備(自姊妹作搬入,未改)
   monsters.ts     120 種怪物(自姊妹作搬入,未改)
-  sprites/        程序化像素美術
 hooks/        自訂 hooks
 assets/       圖片、音效
 scripts/      驗證腳本
@@ -242,7 +241,7 @@ scripts/      驗證腳本
 
 | 需求 | 做法 |
 |---|---|
-| 16x16 小圖示 | `game/sprites/` 加 frame,用 `PixelSprite` 渲染 |
+| 16x16 小圖示 | 從 `assets/sprites/ui/` 挑既有的 PNG(分頁圖示、鎖頭、金幣都已經有) |
 | 面板外框、進度環、大尺寸橫幅 | 手寫 SVG + `react-native-svg` |
 
 純排版符號 `✕`(關閉)、`✓`(已完成)、`→`(前往)不算 emoji,但不要擴大使用。
