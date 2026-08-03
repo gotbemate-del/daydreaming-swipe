@@ -80,9 +80,11 @@ export function jobChoices(current: LaneJob, tier: JobTier): JobChoice[] {
 }
 
 // 三種路線給三種不同的起跑「樣子」,但總戰力幾乎一樣:
-//   近戰 melee   :武器好(起跑就拿第 2 階武器),血中等
-//   遠程 ranged  :戰力略高,血最薄
-//   輔助 support :戰力略低,血最厚
+//   近戰 melee   :武器好(起跑就拿第 2 階武器),兌換率中等
+//   遠程 ranged  :戰力略高,兌換率最低
+//   輔助 support :戰力略低,兌換率最高
+// 兌換率 = 一個勇者能換掉幾隻怪(取代舊版的血量倍率)。它只在「已經漏接了」的時候生效,
+// 完美玩家碰不到怪所以拿不到好處——所以它是抬地板不抬天花板的那種養成。
 // 差異放在「怎麼分配」而不是「給多少」,是因為閘門全是相對值(x2、裝備強化都是乘的),
 // 起跑倍率一旦拉大就會一路放大到終點,變成養成買勝利。實測滿階起跑 7 倍時,第 25 關亂選的
 // 過關率會從 38% 衝到 85%——所以總戰力倍率只由 calcCombatMultiplier 決定(1.0 → 1.5),
@@ -100,14 +102,14 @@ export function runStartFor(job: LaneJob): RunStart {
   // 以前這裡是「B 多一個人」,人數收回去之後改用這兩個小倍率——幅度刻意壓在 3%/5%,
   // 起跑差距會一路被閘門放大,不能大。
   const branchAttack = job.branch === 'A' ? 1.03 : 1;
-  const branchHp = job.branch === 'B' ? 0.05 : 0;
+  const branchTrade = job.branch === 'B' ? 0.05 : 0;
 
   if (subtype === 'melee') {
     return {
       heroes: 1,
       gear: 2,
       attackMultiplier: multiplier * branchAttack,
-      hpMultiplier: 1 + 0.04 * job.tier + branchHp,
+      tradeRate: 1 + 0.04 * job.tier + branchTrade,
     };
   }
   if (subtype === 'support') {
@@ -115,14 +117,14 @@ export function runStartFor(job: LaneJob): RunStart {
       heroes: 1,
       gear: 1,
       attackMultiplier: multiplier * 0.95 * branchAttack,
-      hpMultiplier: 1 + 0.08 * job.tier + branchHp,
+      tradeRate: 1 + 0.08 * job.tier + branchTrade,
     };
   }
   return {
     heroes: 1,
     gear: 1,
     attackMultiplier: multiplier * 1.05 * branchAttack,
-    hpMultiplier: 1 + 0.02 * job.tier + branchHp,
+    tradeRate: 1 + 0.02 * job.tier + branchTrade,
   };
 }
 
@@ -130,7 +132,7 @@ export function runStartFor(job: LaneJob): RunStart {
 export function describeStart(job: LaneJob): string {
   const start = runStartFor(job);
   return `武器 ${start.gear} 階 · 戰力 x${start.attackMultiplier.toFixed(2)}`
-    + ` · 血量 x${start.hpMultiplier.toFixed(2)}`;
+    + ` · 兌換率 x${start.tradeRate.toFixed(2)}`;
 }
 
 export function jobTitle(job: LaneJob): string {

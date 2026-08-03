@@ -52,7 +52,8 @@ const FIRE_RANGE = 260;
 export interface RunFeedback {
   key: number;
   message: string;
-  hpDelta: number;
+  /** 人數變化。負的就是被撞掉了——這一版沒有血量。 */
+  heroDelta: number;
   attackDelta: number;
 }
 
@@ -395,12 +396,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
       // 乘在讀取端的話,閘門的加減會跟技能的倍率互相糾纏(先乘還是先加會得到不同答案),
       // 而且 totalAttack 在畫面、戰鬥演出、結算三個地方都會被讀,任何一處漏乘就對不起來。
       // 算式走 applyRunSkillPick(共用),敵人那邊的理想路線用的是同一支。
-      setState((st) => {
-        const grown = applyRunSkillPick(prev, choice, st);
-        // 血量上限提高時同步補等量的血,不然「+30% 血量」在滿血以外的情況等於沒效果。
-        const hp = Math.min(grown.maxHp, st.hp + Math.max(0, grown.maxHp - st.maxHp));
-        return { ...st, ...grown, hp };
-      });
+      setState((st) => ({ ...st, ...applyRunSkillPick(prev, choice, st) }));
       setPendingPicks((left) => {
         const remaining = left - 1;
         if (remaining > 0) {
@@ -430,7 +426,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         setFeedback({
           key: feedbackKeyRef.current,
           message: r.message,
-          hpDelta: r.hpDelta,
+          heroDelta: r.heroDelta,
           attackDelta: r.attackDelta,
         });
         return r.state;
