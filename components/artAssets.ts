@@ -33,9 +33,9 @@ export const HERO_ASPECT = 686 / 930;
  */
 export const HERO_BODY_RATIO = 0.47;
 
-/** 想要的身體高度 → 該給的框高。 */
-export function heroBoxHeight(bodyHeight: number): number {
-  return Math.round(bodyHeight / HERO_BODY_RATIO);
+/** 想要的身體高度 → 該給的框高。進化型的身體佔比不同,所以比例可以傳進來。 */
+export function heroBoxHeight(bodyHeight: number, bodyRatio: number = HERO_BODY_RATIO): number {
+  return Math.round(bodyHeight / bodyRatio);
 }
 
 /**
@@ -45,6 +45,44 @@ export function heroBoxHeight(bodyHeight: number): number {
  */
 export const HERO_SEQUENCE = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
 export const HERO_FRAME_MS = 170;
+
+/**
+ * 進化型:史萊姆國王。隊伍超過 20 隻就變成這個造型。
+ *
+ * 素材是一張 1536x1024 的兩格圖(待機/噴刺),跟基本型一樣是實心黑背景,同樣做邊界連通去背。
+ * 額外處理了一件事:切開之後兩格的**身體並沒有對齊**(重心差 103px),直接播會左右跳一下。
+ * 所以是先算「畫布下方 35%(身體與披風)的不透明重心」,再把兩格各自平移到畫布中央對齊——
+ * 用整張圖的 bbox 對齊會被噴刺與飄浮的小點帶偏,那些東西本來就不對稱。
+ */
+export const KING_FRAMES: ImageSourcePropType[] = [
+  require('../assets/sprites/hero/king_idle.png'),
+  require('../assets/sprites/hero/king_spike.png'),
+];
+export const KING_ASPECT = 768 / 1024;
+export const KING_BODY_RATIO = 0.51;
+
+/** 超過幾隻進化。用「大於」,所以 21 隻才變。 */
+export const EVOLVE_AT_HEROES = 20;
+/** 國王比基本型大多少。進化要一眼看得出來,不然只是換了頂帽子。 */
+export const KING_SCALE = 1.25;
+
+export interface HeroForm {
+  frames: ImageSourcePropType[];
+  aspect: number;
+  bodyRatio: number;
+  scale: number;
+  king: boolean;
+}
+
+/**
+ * 這個人數該用哪一種造型。**純外觀,不動任何數值**——進化不會讓你變強,
+ * 變強的是讓你進化的那些閘門。把戰力綁在造型上會讓 laneRun 的平衡整條失效。
+ */
+export function heroForm(heroes: number): HeroForm {
+  return heroes > EVOLVE_AT_HEROES
+    ? { frames: KING_FRAMES, aspect: KING_ASPECT, bodyRatio: KING_BODY_RATIO, scale: KING_SCALE, king: true }
+    : { frames: HERO_FRAMES, aspect: HERO_ASPECT, bodyRatio: HERO_BODY_RATIO, scale: 1, king: false };
+}
 
 /**
  * 職業立繪的長寬比。只有轉職選擇畫面在用(那裡是在介紹職業,所以還是畫人)。

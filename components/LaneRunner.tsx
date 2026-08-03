@@ -19,7 +19,7 @@ import {
 } from '../game/laneRun';
 import { HIT_NUMBER_MS, useLaneRun, type HitNumber, type Projectile, type WaveView } from '../hooks/useLaneRun';
 import {
-  HERO_ASPECT, HERO_FRAME_MS, HERO_FRAMES, HERO_SEQUENCE, heroBoxHeight, monsterArt, weaponArt,
+  HERO_ASPECT, HERO_FRAME_MS, HERO_FRAMES, HERO_SEQUENCE, heroBoxHeight, heroForm, monsterArt, weaponArt,
 } from './artAssets';
 
 // 跑道畫面。角色固定在跑道底部、物件由上往下逼近——這是「角色在跑」最省效能的表現方式:
@@ -177,9 +177,21 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
   const hpRatio = state.maxHp > 0 ? Math.max(0, state.hp / state.maxHp) : 0;
   const progress = Math.min(1, distance / runLength());
   const laneWidth = trackWidth / LANE_COUNT;
+
+  /**
+   * 進化只換貼圖尺寸,**不動 HERO_HEIGHT**。
+   *
+   * HERO_HEIGHT 被 headY 吃著(headY = 跑道高 - HERO_BOTTOM - HERO_HEIGHT),而 headY 是
+   * bottomYFor 的基準,決定閘門、怪物、投射物、傷害數字、判定線每一個東西畫在哪。跑到一半
+   * 改它的話,整條跑道的透視會當場位移,畫面上所有物件一起跳——連「哪一刻算數」的判定線
+   * 都會移位。所以布局常數固定用基本型,國王只是貼圖畫大一點,一樣靠 HERO_BOTTOM 對齊底部。
+   */
+  const form = heroForm(state.heroes);
+  const spriteHeight = heroBoxHeight(HERO_BODY_HEIGHT * form.scale, form.bodyRatio);
+  const spriteWidth = Math.round(spriteHeight * form.aspect);
   const heroLeft = Math.min(
-    Math.max(heroOffset * trackWidth - HERO_WIDTH / 2, 2),
-    Math.max(2, trackWidth - HERO_WIDTH - 2),
+    Math.max(heroOffset * trackWidth - spriteWidth / 2, 2),
+    Math.max(2, trackWidth - spriteWidth - 2),
   );
   // 跑起來的上下微晃。用已跑距離當相位,所以跑得越快晃得越快,不必另外開一個計時器。
   const bob = state.phase === 'running' ? Math.round(Math.sin(distance / 7) * 2) : 0;
@@ -459,7 +471,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
           return (
             <Image
               key={i}
-              source={HERO_FRAMES[HERO_SEQUENCE[heroStep]]}
+              source={form.frames[HERO_SEQUENCE[heroStep]]}
               resizeMode="contain"
               style={[
                 styles.hero,
@@ -467,8 +479,8 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
                 {
                   left: heroLeft + slot.dx + wanderX,
                   bottom: HERO_BOTTOM + bob - slot.dy + wanderY,
-                  width: Math.round(HERO_WIDTH * slot.scale),
-                  height: Math.round(HERO_HEIGHT * slot.scale),
+                  width: Math.round(spriteWidth * slot.scale),
+                  height: Math.round(spriteHeight * slot.scale),
                   zIndex: i + 1,
                 },
               ]}
