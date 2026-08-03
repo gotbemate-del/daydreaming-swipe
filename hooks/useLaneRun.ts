@@ -363,7 +363,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
       });
       return;
     }
-    if (distance >= runLength()) {
+    if (distance >= runLength(stage)) {
       setState((prev) => (prev.phase === 'running' ? { ...prev, phase: 'cleared' } : prev));
     }
   }, [distance, rows, state.phase]);

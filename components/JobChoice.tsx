@@ -1,6 +1,7 @@
 import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { jobChoices, jobTitle, type JobTier, type LaneJob } from '../game/laneJobs';
+import { stageLabel } from '../game/laneRun';
 import { jobHeroArt } from './artAssets';
 
 // 轉職畫面。每 5 關出現一次,是這款唯一的養成介面。
@@ -22,7 +23,7 @@ export function JobChoice({ current, tier, clearedStage, onChoose }: Props) {
   const choices = jobChoices(current, tier);
   return (
     <View style={styles.wrapper}>
-      <Text style={styles.title}>第 {clearedStage} 關通過 · 轉職</Text>
+      <Text style={styles.title}>{stageLabel(clearedStage)} 通過 · 轉職</Text>
       <Text style={styles.subtitle}>
         目前 {jobTitle(current)} · 選一條路線走第 {tier} 階
       </Text>

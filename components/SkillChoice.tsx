@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   describeSkill, MAX_SKILL_LEVEL, MAX_SKILL_SLOTS, skillLevel, skillSpec, type SkillState,
 } from '../game/laneSkills';
+import { stageLabel } from '../game/laneRun';
 
 // 通關之後的技能選擇。每關一次,所以要能「看一眼就選」——
 // 卡片只放三件事:名字、這一級加什麼、目前幾級。不放技能樹、不放說明文,那些會打斷跑圖的節奏。
@@ -20,7 +21,7 @@ interface Props {
 export function SkillChoice({ clearedStage, skills, offers, onChoose }: Props) {
   return (
     <View style={styles.wrapper}>
-      <Text style={styles.title}>第 {clearedStage} 關通過 · 學技能</Text>
+      <Text style={styles.title}>{stageLabel(clearedStage)} 通過 · 學技能</Text>
       <Text style={styles.subtitle}>
         最多帶 {MAX_SKILL_SLOTS} 組,每組最高 {MAX_SKILL_LEVEL} 級 · 目前帶了 {skills.length} 組
       </Text>

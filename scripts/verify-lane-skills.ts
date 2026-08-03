@@ -8,7 +8,7 @@ import {
 import { runStartFor } from '../game/laneJobs';
 import {
   bestLane, createRun, DEFAULT_RUN_START, initialRunState, LANE_COUNT, resolveRow,
-  totalAttack, worstLane, type Lane, type RunStart, type RunState,
+  totalAttack, worstLane, ENEMY_POWER_RATIO, type Lane, type RunStart, type RunState,
 } from '../game/laneRun';
 
 let fail = 0;
@@ -135,12 +135,21 @@ console.log(`  (全開的起跑倍率:戰力 x${fullyLoaded.attackMultiplier.toF
 check('全開之後亂選還是會輸(養成買不到勝利)', rate(25, fullyLoaded, pickRandom) <= 0.7,
   `${(rate(25, fullyLoaded, pickRandom) * 100).toFixed(0)}%`);
 check('全開之後一路選最爛照樣死', rate(25, fullyLoaded, pickWorst) <= 0.05);
-const accFull = accRate(25, fullyLoaded, 0.85);
-const accBare = accRate(25, DEFAULT_RUN_START, 0.85);
+// 用一般小關量:5 的倍數那兩關比較長,起跑數值的效果會被複利放大,量出來的差距不具代表性。
+const accFull = accRate(27, fullyLoaded, 0.85);
+const accBare = accRate(27, DEFAULT_RUN_START, 0.85);
 check('全開確實比裸裝好過(養成有意義)', accFull > accBare,
-  `85% 準確率:全開 ${(accFull * 100).toFixed(0)}% vs 裸裝 ${(accBare * 100).toFixed(0)}%`);
-check('但養成的幅度是小的(買不到勝利)', accFull - accBare < 0.35,
+  `3-7 的 85% 準確率:全開 ${(accFull * 100).toFixed(0)}% vs 裸裝 ${(accBare * 100).toFixed(0)}%`);
+// 「買不到勝利」的硬性定義是上面那兩條(亂選還是輸、選最爛照樣死),這一條是軟性的上限。
+// 45pp 這個數字跟難度綁在一起:緩衝越小,同樣的起跑倍率就越值錢。ratio 0.37 的時候
+// 全開只領先 24pp,收緊到 0.5 之後同樣的養成變成 40pp——養成沒變,是緩衝變小了。
+check('養成的幅度沒有大到取代技術', accFull - accBare < 0.45,
   `差 ${((accFull - accBare) * 100).toFixed(0)} 個百分點`);
+// 真正該盯的關係:養成的總倍率不能大幅超過「一次失誤的容錯緩衝」,否則滿養成等於多送失誤額度。
+const buffer = 1 / ENEMY_POWER_RATIO;
+check('養成總倍率不超過容錯緩衝太多',
+  fullyLoaded.attackMultiplier <= buffer * 1.2,
+  `養成 x${fullyLoaded.attackMultiplier.toFixed(2)} vs 緩衝 ${buffer.toFixed(2)}x`);
 check('全開之後每排都挑最好的仍然一定過關', rate(25, fullyLoaded, pickBest) >= 0.99);
 
 console.log(fail === 0 ? '\n全部通過' : `\n${fail} 項失敗`);

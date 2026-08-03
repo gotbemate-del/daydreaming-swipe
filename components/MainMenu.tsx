@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { jobTitle, type LaneJob } from '../game/laneJobs';
+import { chapterOfStage, stageLabel, wavesForStage } from '../game/laneRun';
 import {
   COIN_ICON, HERO_ASPECT, HERO_FRAME_MS, HERO_FRAMES, HERO_SEQUENCE, heroBoxHeight, LOCK_ICON, TAB_ICONS,
 } from './artAssets';
@@ -66,7 +67,7 @@ export function MainMenu({ stage, job, coins, lastResult, onStart }: Props) {
         </View>
       </View>
 
-      <Text style={styles.jobLine}>{jobTitle(job)}</Text>
+      <Text style={styles.jobLine}>第 {chapterOfStage(stage)} 大關 · {jobTitle(job)}</Text>
 
       {/* 中間:勇者站在正中央。這裡刻意什麼都不做——沒有跑道、沒有敵人,
           就是一個站著的角色 + 一顆開始闖關。戰鬥全部發生在跑道畫面裡。 */}
@@ -82,14 +83,14 @@ export function MainMenu({ stage, job, coins, lastResult, onStart }: Props) {
       <View style={styles.resultRow}>
         {lastResult !== null && (
           <Text style={lastResult === 'cleared' ? styles.resultWin : styles.resultLose}>
-            {lastResult === 'cleared' ? `第 ${stage - 1} 關通關` : `第 ${stage} 關失敗,再挑戰一次`}
+            {lastResult === 'cleared' ? `${stageLabel(stage - 1)} 通關` : `${stageLabel(stage)} 失敗,再挑戰一次`}
           </Text>
         )}
       </View>
 
       <Pressable style={styles.startButton} accessibilityLabel="開始闖關" onPress={onStart}>
         <Text style={styles.startLabel}>開始闖關</Text>
-        <Text style={styles.startSub}>第 {stage} 關</Text>
+        <Text style={styles.startSub}>{stageLabel(stage)} · 共 {wavesForStage(stage)} 波</Text>
       </Pressable>
 
       {/* 提示列的高度固定佔著,有沒有訊息都一樣高——不然點分頁時整個版面會上下跳。 */}

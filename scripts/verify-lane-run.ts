@@ -6,10 +6,12 @@ import { fileURLToPath } from 'node:url';
 import {
   bestLane, clampOffset, createRun, ENEMY_EVERY, fireIntervalMs, initialRunState, LANE_COUNT,
   laneCenterOffset, laneFromOffset, MAX_FIRE_INTERVAL_MS, MAX_WAVE_SIZE, MIN_FIRE_INTERVAL_MS,
-  HITS_PER_MONSTER, moveLane, resolveEnemy, resolveRow, ROWS_PER_RUN, runSpeed, secondsPerRow, WAVE_LENGTH,
+  HITS_PER_MONSTER, moveLane, resolveEnemy, resolveRow, runSpeed, secondsPerRow, WAVE_LENGTH,
+  rowsForStage, wavesForStage, stageLabel, chapterOfStage, levelOfStage, enemyPowerRatioForStage,
+  LEVELS_PER_CHAPTER, WAVES_PER_LEVEL, LONG_LEVEL_WAVES, EASY_RATIO, lastEnemyRowIndex, isBossStage,
   GATE_WIDTH, gateSpan, hitsGate, MONSTER_JITTER, SPECIES_PER_WAVE, START_OFFSET, terrainForStage,
   ENEMY_POWER_RATIO, goodGateGrowthAt, gatesBeforeRow, isTrapGate, runSeconds,
-  applyGate, gateLabel, GATE_WEIGHT_DOUBLE,
+  applyGate, gateLabel, DOUBLE_GATES_PER_RUN, GEAR_STEP, doubleGatesForStage, LONG_LEVEL_RATIO_SCALE,
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
   TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane,
   type Lane, type RunState,
@@ -51,13 +53,12 @@ check('從左拖到右,格子只會依序遞增不跳號',
 
 // --- 跑圖結構 ---
 const run = createRun(1234, 5);
-check('排數正確', run.length === ROWS_PER_RUN);
+check('排數正確', run.length === rowsForStage(5));
 check(`每排都有 ${LANE_COUNT} 個節點`, run.every((r) => r.nodes.length === LANE_COUNT));
 check('每條跑道各一個節點', run.every((r) => new Set(r.nodes.map((n) => n.lane)).size === LANE_COUNT));
 check('距離嚴格遞增', run.every((r, i) => i === 0 || r.distance > run[i - 1].distance));
 const enemyRows = run.filter((r) => r.nodes.every((n) => n.kind === 'enemy'));
-check(`每 ${ENEMY_EVERY} 排一次敵人`, enemyRows.length === Math.floor(ROWS_PER_RUN / ENEMY_EVERY),
-  `${enemyRows.length} 排敵人`);
+check(`每 ${ENEMY_EVERY} 排一次敵人`, enemyRows.length === wavesForStage(5), `${enemyRows.length} 排敵人`);
 const gateRows = run.filter((r) => r.nodes.every((n) => n.kind === 'gate'));
 check('閘門排兩格效果一定不一樣(不然就不用選了)', gateRows.every((r) =>
   new Set(r.nodes.map((n) => JSON.stringify(n.gate))).size === 2));
@@ -67,8 +68,46 @@ check('不同 seed 不一樣', JSON.stringify(createRun(999, 5)) !== JSON.string
 // --- 關卡長度 ---
 check('一關比以前長(第1關 >= 45 秒)', runSeconds(1) >= 45, `${runSeconds(1).toFixed(0)} 秒`);
 check('最快的關卡也還有十幾秒', runSeconds(40) >= 15, `${runSeconds(40).toFixed(0)} 秒`);
-check('敵人排至少 5 排(中後段還有東西要打)',
-  Math.floor(ROWS_PER_RUN / ENEMY_EVERY) >= 5, `${Math.floor(ROWS_PER_RUN / ENEMY_EVERY)} 排`);
+check('敵人排至少 5 排(中後段還有東西要打)', wavesForStage(1) >= 5, `${wavesForStage(1)} 排`);
+
+// --- 關卡結構:大關 / 小關 ---
+check('關卡編號換算正確',
+  stageLabel(1) === '1-1' && stageLabel(10) === '1-10' && stageLabel(11) === '2-1' && stageLabel(27) === '3-7',
+  [1, 10, 11, 27].map(stageLabel).join(' '));
+check('一個大關十個小關',
+  chapterOfStage(10) === 1 && chapterOfStage(11) === 2 && levelOfStage(10) === LEVELS_PER_CHAPTER);
+check(`一般小關 ${WAVES_PER_LEVEL} 波、5 的倍數 ${LONG_LEVEL_WAVES} 波`,
+  [1, 2, 3, 4, 6, 7, 8, 9].every((l) => wavesForStage(l) === WAVES_PER_LEVEL)
+  && [5, 10, 15, 20].every((l) => wavesForStage(l) === LONG_LEVEL_WAVES),
+  [1, 5, 10, 11, 15].map((s) => `${stageLabel(s)}:${wavesForStage(s)}波`).join(' '));
+check('每一小關都結束在一場戰鬥(最後一排是敵人)',
+  [1, 5, 10, 11, 15, 27].every((st) => {
+    const rr = createRun(7, st);
+    return rr.length === rowsForStage(st) && rr[rr.length - 1].nodes[0].kind === 'enemy';
+  }));
+check('魔王關就是每個大關的第 10 小關',
+  [10, 20, 30].every(isBossStage) && ![1, 5, 9, 11].some(isBossStage));
+check('魔王站在最後一排', [10, 20].every((st) => {
+  const rr = createRun(7, st);
+  return rr[lastEnemyRowIndex(st)].nodes[0].enemy?.boss === true;
+}));
+// 長關是「10 波塞在 30 排」而不是「40 排」,所以時間約 1.4 倍而不是 2 倍——
+// 波數翻倍、閘門只多三分之一,這正是壓住膨脹與難度的做法。
+check('加倍長的小關明顯更長', runSeconds(10) > runSeconds(9) * 1.3,
+  `1-9 ${runSeconds(9).toFixed(0)}s(${wavesForStage(9)}波) / 1-10 ${runSeconds(10).toFixed(0)}s(${wavesForStage(10)}波)`);
+check('長關的波數真的翻倍', wavesForStage(10) === wavesForStage(9) * 2);
+
+// --- 第一大關要好上手 ---
+// 只看一般小關的走勢:5 的倍數那兩關會再乘 LONG_LEVEL_RATIO_SCALE,本來就會往下凹一格。
+const ch1Normal = [1, 2, 3, 4, 6, 7, 8, 9].map(enemyPowerRatioForStage);
+check('第一大關由鬆到緊',
+  ch1Normal[0] === EASY_RATIO && ch1Normal.every((v, i) => i === 0 || v > ch1Normal[i - 1]),
+  ch1Normal.map((v) => v.toFixed(2)).join(' → '));
+check('進大關 2 之後維持正式難度',
+  enemyPowerRatioForStage(11) === ENEMY_POWER_RATIO && enemyPowerRatioForStage(99) === ENEMY_POWER_RATIO);
+check('加倍長的小關會再放寬一點(補回它變長的代價)',
+  enemyPowerRatioForStage(15) < enemyPowerRatioForStage(14)
+  && Math.abs(enemyPowerRatioForStage(15) - ENEMY_POWER_RATIO * LONG_LEVEL_RATIO_SCALE) < 1e-9);
 
 // --- 勇者 +N:比例制,所以職業中立 ---
 // 固定的「+5」對起跑 1 人的職業價值是起跑 6 人職業的 6 倍,那會讓閘門好壞取決於怎麼轉職。
@@ -98,19 +137,51 @@ check('減半與扣血才是陷阱格',
   isTrapGate({ stat: 'heroes', op: 'mul', value: 0.5 })
   && isTrapGate({ stat: 'gear', op: 'add', value: -1 })
   && !isTrapGate({ stat: 'heroes', op: 'mul', value: 2 }));
-// x2 要少見:它是爆發格,滿場都是的話成長會失控
-const allGood = gateRuns.flatMap((r) => r.flatMap((row) => row.nodes))
-  .filter((n) => n.gate && !isTrapGate(n.gate));
-const doubles = allGood.filter((n) => n.gate!.op === 'mul' && n.gate!.value === 2);
-check('勇者 x2 是少數(爆發格才有份量)',
-  doubles.length / allGood.length < GATE_WEIGHT_DOUBLE * 2,
-  `${doubles.length}/${allGood.length} = ${(100 * doubles.length / allGood.length).toFixed(0)}%,設定 ${GATE_WEIGHT_DOUBLE * 100}%`);
+// 爆發格每場固定次數,不靠運氣。獨立抽的話一場會抽到 0~4 個,而每個都是翻倍,
+// 玩家感覺到的變成「這場運氣好不好」而不是「我選得好不好」。
+const countDoubles = (seed: number, st: number) =>
+  createRun(seed, st).flatMap((r) => r.nodes)
+    .filter((n) => n.gate && n.gate.stat === 'heroes' && n.gate.op === 'mul' && n.gate.value === 2).length;
+const seeds = [3, 7, 42, 99, 251, 808];
+check(`一般小關每場都剛好 ${DOUBLE_GATES_PER_RUN} 個爆發格(不靠運氣)`,
+  seeds.every((sd) => countDoubles(sd, 12) === DOUBLE_GATES_PER_RUN),
+  seeds.map((sd) => countDoubles(sd, 12)).join(','));
+check('長關按比例多給,每格的機率跟一般關一致',
+  seeds.every((sd) => countDoubles(sd, 15) === doubleGatesForStage(15)) && doubleGatesForStage(15) > DOUBLE_GATES_PER_RUN,
+  `長關 ${doubleGatesForStage(15)} 個 / ${rowsForStage(15) - wavesForStage(15)} 個閘門`);
+// 第一格不當爆發格:起手 1 隻,x2 只變成 2 隻,「翻倍」的畫面完全看不出來。
+const firstGateIsDouble = [3, 7, 42, 99, 251, 808].map((seed) => {
+  const first = createRun(seed, 10).find((r) => r.nodes[0].kind === 'gate')!;
+  return first.nodes.some((n) => n.gate?.op === 'mul' && n.gate.value === 2);
+});
+check('第一格不會是爆發格', firstGateIsDouble.every((v) => !v));
+
+// --- 單場的戰力膨脹要壓住 ---
+// 2100~6900 倍的時候數字大到看不懂,而且單場雪球比整條關卡進度大 460 倍,養成完全無感。
+function runGrowth(stage: number, seed: number): number {
+  const rr = createRun(seed, stage);
+  let st = initialRunState(stage);
+  const from = totalAttack(st);
+  for (const row of rr) { st = { ...st, lane: bestLane(st, row) }; st = resolveRow(st, row).state; }
+  return totalAttack(st) / from;
+}
+const growths = [11, 42, 77, 108, 251].map((seed) => runGrowth(12, seed));
+check('一般小關的放大量壓在 250 倍以內(數字要看得懂)',
+  Math.max(...growths) <= 250, `${Math.min(...growths).toFixed(0)}~${Math.max(...growths).toFixed(0)} 倍`);
+check('但雪球感還在(至少 30 倍)', Math.min(...growths) >= 30);
+// 加倍長的小關閘門比較多,放大量本來就會高一截,但不能高到把壓膨脹的工作抵銷掉
+// (照 4 排一波的話會是 1833~4230 倍、終點 16 萬,所以長關改成 3 排一波)。
+const longGrowths = [11, 42, 77].map((seed) => runGrowth(15, seed));
+check('加倍長的小關也壓得住(1000 倍以內)',
+  Math.max(...longGrowths) <= 1000, `${Math.min(...longGrowths).toFixed(0)}~${Math.max(...longGrowths).toFixed(0)} 倍`);
+check('長關比一般關多長一些(它是段落的中點)', Math.min(...longGrowths) > Math.max(...growths));
+check('裝備強化的幅度跟膨脹目標一致', GEAR_STEP > 1.1 && GEAR_STEP < 1.4, `x${GEAR_STEP}`);
 
 // --- 敵人曲線綁在閘門成長上 ---
-check('好閘門的平均成長落在合理範圍', [0, 4, 8, 14].every((g) => goodGateGrowthAt(g) > 1.3 && goodGateGrowthAt(g) < 2.2),
+check('好閘門的平均成長落在合理範圍', [0, 4, 8, 14].every((g) => goodGateGrowthAt(g) > 1.15 && goodGateGrowthAt(g) < 2.2),
   [0, 4, 8, 14].map((g) => `第${g}格 x${goodGateGrowthAt(g).toFixed(2)}`).join(' '));
 check('這一排之前經過幾格閘門算得對',
-  gatesBeforeRow(3) === 3 && gatesBeforeRow(7) === 6 && gatesBeforeRow(11) === 9 && gatesBeforeRow(19) === 15);
+  gatesBeforeRow(3, 1) === 3 && gatesBeforeRow(7, 1) === 6 && gatesBeforeRow(11, 1) === 9 && gatesBeforeRow(19, 1) === 15);
 // 敵人戰力是照「這一場實際的最佳路線」算的,所以最佳玩家的領先幅度在每一排、每一場
 // 都必須精確等於 1/ENEMY_POWER_RATIO。這是結構保證,不是掃參數掃出來的近似。
 const exactMargins = [3, 11, 57, 99, 251, 808].flatMap((seed) => {
@@ -125,7 +196,7 @@ const exactMargins = [3, 11, 57, 99, 251, 808].flatMap((seed) => {
   }
   return out;
 });
-const want = 1 / ENEMY_POWER_RATIO;
+const want = 1 / enemyPowerRatioForStage(10);
 check('最佳玩家的領先幅度每一排每一場都相同(結構保證,不是掃出來的)',
   exactMargins.every((m) => Math.abs(m - want) / want < 0.04),
   `目標 ${want.toFixed(2)}x,實測 ${Math.min(...exactMargins).toFixed(2)}~${Math.max(...exactMargins).toFixed(2)}x`);
@@ -335,7 +406,7 @@ function accuracyRate(stage: number, p: number, trials = 400) {
 const ACCURACIES = [1, 0.95, 0.9, 0.85, 0.8];
 console.log('\n準確率 -> 過關率(每一排有 p 的機率挑對邊):');
 console.log('           ' + ACCURACIES.map((a) => (a * 100).toFixed(0).padStart(5) + '%').join(''));
-const accByStage = [1, 20, 100].map((stage) => {
+const accByStage = [1, 12, 102].map((stage) => {
   const r = ACCURACIES.map((a) => accuracyRate(stage, a));
   console.log(`  第${String(stage).padStart(3)}關  ` + r.map((v) => (v * 100).toFixed(0).padStart(5) + '%').join(''));
   return { stage, r };
@@ -345,10 +416,23 @@ check('準確率越高過關率越高(而且是單調的)',
 check('完全選對 -> 一定過關', accByStage.every((s) => s.r[0] >= 0.99));
 check('準確率 95% -> 大致過得去(讀得懂閘門就不該一直死)',
   accByStage.every((s) => s.r[1] >= 0.7), accByStage.map((s) => (s.r[1] * 100).toFixed(0) + '%').join(' / '));
+// 第 1 關刻意比較寬鬆(它是玩家的第一次接觸),所以「失誤要有代價」只對後面的關卡要求。
 check('準確率 80% -> 明顯會死(失誤要有代價)',
-  accByStage.every((s) => s.r[4] <= 0.45), accByStage.map((s) => (s.r[4] * 100).toFixed(0) + '%').join(' / '));
+  accByStage.filter((s) => s.stage > 1).every((s) => s.r[4] <= 0.4),
+  accByStage.map((s) => `第${s.stage}關 ${(s.r[4] * 100).toFixed(0)}%`).join(' / '));
+check('第 1 關是最寬鬆的(第一次接觸不該勸退)',
+  accByStage[0].r.every((v, i) => v >= accByStage[accByStage.length - 1].r[i]),
+  accByStage.map((s) => `第${s.stage}關 ${(s.r[2] * 100).toFixed(0)}%`).join(' / ') + '(90% 準確率)');
+// 第 1 關刻意寬鬆,整條曲線被往上壓,所以差距那一項只對正式難度的關卡要求。
 check('95% 與 80% 之間拉得開(選擇真的有意義)',
-  accByStage.every((s) => s.r[1] - s.r[4] >= 0.35));
+  accByStage.filter((s) => s.stage > 1).every((s) => s.r[1] - s.r[4] >= 0.35),
+  accByStage.map((s) => `${stageLabel(s.stage)} ${((s.r[1] - s.r[4]) * 100).toFixed(0)}pp`).join(' / '));
+// 加倍長的小關要比同一大關的一般小關硬,但不能硬到變成另一個遊戲。
+const normalAcc = accuracyRate(12, 0.9);
+const longAcc = accuracyRate(15, 0.9);
+check('加倍長的小關比較硬,但沒有硬過頭',
+  longAcc < normalAcc && longAcc >= normalAcc * 0.6,
+  `一般 ${(normalAcc * 100).toFixed(0)}% / 長關 ${(longAcc * 100).toFixed(0)}%`);
 
 // 手不準的玩家:每排都挑對邊,但站的位置在該格中心 ±sloppy 之間亂飄,所以有機率整格漏掉。
 // 這一組是「留空隙」這個設計的實測值——漏接要有代價,但不能懲罰到「選對了還是會死」。
@@ -415,8 +499,8 @@ check('領先幅度不會一路膨脹(中段不會變成沒事做)',
 // GOOD_GATE_GROWTH,追不上這幾格的超額,前兩排敵人因此偏鬆(實測 10~12x,後段收斂到 4.5~6x)。
 // 這個形狀是對的——張力應該往後遞增,而不是像舊版那樣往後遞減。下面的死亡分佈才是真正的驗收。
 check('最佳玩家的領先幅度就是設定的緩衝倍數(沒有額外的無敵)',
-  marginRuns.every((m) => m.every((v) => v <= 2.2 / ENEMY_POWER_RATIO)),
-  `緩衝 ${(1 / ENEMY_POWER_RATIO).toFixed(1)}x,實測最高 ${Math.max(...marginRuns.flat()).toFixed(1)}x`);
+  marginRuns.every((m) => m.every((v) => v <= 2.2 / enemyPowerRatioForStage(10))),
+  `緩衝 ${(1 / enemyPowerRatioForStage(10)).toFixed(1)}x,實測最高 ${Math.max(...marginRuns.flat()).toFixed(1)}x`);
 check('張力往後遞增(後段的領先幅度不會比前段大)',
   marginRuns.every((m) => m[m.length - 1] <= m[0] * 1.2),
   marginRuns.map((m) => `${m[0].toFixed(1)}→${m[m.length - 1].toFixed(1)}`).join(' / '));
@@ -440,8 +524,8 @@ function deathRows(stage: number, p: number, trials = 600): number[] {
   }
   return out;
 }
-const deaths = deathRows(20, 0.85);
-const enemyRowIdx = Array.from({ length: ROWS_PER_RUN }, (_, i) => i).filter((i) => (i + 1) % ENEMY_EVERY === 0);
+const deaths = deathRows(12, 0.85);
+const enemyRowIdx = Array.from({ length: rowsForStage(12) }, (_, i) => i).filter((i) => (i + 1) % ENEMY_EVERY === 0);
 const deathShare = enemyRowIdx.map((i) => deaths.filter((d) => d === i).length / deaths.length);
 console.log('\n85% 準確率的玩家死在第幾排敵人(共 ' + deaths.length + ' 次陣亡):');
 console.log('  ' + enemyRowIdx.map((i, k) => `第${i}排 ${(deathShare[k] * 100).toFixed(0)}%`).join('   '));

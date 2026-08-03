@@ -8,7 +8,7 @@ import {
   type JobState, type JobTier,
 } from '../game/laneJobs';
 import {
-  bestLane, createRun, DEFAULT_RUN_START, initialRunState, LANE_COUNT, resolveRow, ROWS_PER_RUN,
+  bestLane, createRun, DEFAULT_RUN_START, initialRunState, LANE_COUNT, resolveRow, rowsForStage,
   totalAttack, worstLane, type Lane, type RunStart, type RunState,
 } from '../game/laneRun';
 
@@ -128,7 +128,7 @@ check('每個職業 1~5 階都有武器圖(裝備閘門吃下去要看得出換�
 const rowsA = createRun(4242, 12);
 const rowsB = createRun(4242, 12);
 check('跑圖內容跟職業無關(轉職不會改閘門也不會減陷阱)',
-  JSON.stringify(rowsA) === JSON.stringify(rowsB) && rowsA.length === ROWS_PER_RUN);
+  JSON.stringify(rowsA) === JSON.stringify(rowsB) && rowsA.length === rowsForStage(12));
 
 console.log(fail === 0 ? '\n全部通過' : `\n${fail} 項失敗`);
 process.exit(fail === 0 ? 0 : 1);

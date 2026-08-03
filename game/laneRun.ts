@@ -189,8 +189,17 @@ export const DEFAULT_RUN_START: RunStart = { heroes: 1, gear: 1, attackMultiplie
 /** 起跑位置:跑道正中央。兩條跑道沒有「中立格」,站中間只是還沒表態,第一排之前一定要選邊。 */
 export const START_OFFSET = 0.5;
 
-/** 換一級裝備等於每個人的攻擊力乘/除這個數。 */
-export const GEAR_STEP = 1.6;
+/**
+ * 換一級裝備等於每個人的攻擊力乘/除這個數。
+ *
+ * 1.6 → 1.22 是為了壓單場的戰力膨脹。1.6 的時候一場 15 個閘門會把戰力放大 2100~6900 倍
+ * (第 1 關 10 → 24528),數字大到玩家分不出 13160 跟 67368 的差別,前半段的選擇在數值上
+ * 被完全抹平,而且**單場的雪球比整條關卡進度大 460 倍**——養成做得再多都感覺不到。
+ * 現在是 71~186 倍(第 1 關 10 → 705~1860),數字停在 4 位數,單場成長只比 25 關的進度大 29 倍。
+ *
+ * 難度不受影響:敵人是照這一場的最佳路線算的,閘門調小敵人自動跟著小(見 ENEMY_POWER_RATIO)。
+ */
+export const GEAR_STEP = 1.22;
 export const MAX_GEAR = 5;
 
 // ---- 節奏 ----
@@ -247,27 +256,81 @@ export function bossIndexForStage(stage: number): number {
   return Math.floor(stage / BOSS_EVERY);
 }
 
+// ---- 關卡結構 ----
+//
+//   大關 1 底下是 1-1、1-2 … 1-10,十個小關;打完 1-10 進入大關 2。
+//   每個小關由「幾波敵人」組成,波與波之間夾 ENEMY_EVERY-1 排閘門。
+//   小關編號是 5 的倍數(x-5、x-10)的那兩關**加倍長**,當作段落的中點與結尾。
+//   x-10 同時是魔王關(BOSS_EVERY = LEVELS_PER_CHAPTER,兩者刻意對齊)。
+//
+// 所以一個大關的節奏是:短短短短長 短短短短長(魔王),十關剛好兩個小段落。
+
+/** 一個大關幾個小關。 */
+export const LEVELS_PER_CHAPTER = 10;
+/** 一般小關幾波敵人。 */
+export const WAVES_PER_LEVEL = 5;
+/** 加倍長的小關(編號是 5 的倍數)幾波敵人。 */
+export const LONG_LEVEL_WAVES = 10;
+
+/** 第幾大關(從 1 開始)。 */
+export function chapterOfStage(stage: number): number {
+  return Math.floor((Math.max(1, stage) - 1) / LEVELS_PER_CHAPTER) + 1;
+}
+/** 在該大關裡的第幾小關(1~10)。 */
+export function levelOfStage(stage: number): number {
+  return ((Math.max(1, stage) - 1) % LEVELS_PER_CHAPTER) + 1;
+}
+/** 畫面上顯示的關卡編號,例如「2-7」。 */
+export function stageLabel(stage: number): string {
+  return `${chapterOfStage(stage)}-${levelOfStage(stage)}`;
+}
+/** 這一小關有幾波敵人。 */
+export function wavesForStage(stage: number): number {
+  return levelOfStage(stage) % 5 === 0 ? LONG_LEVEL_WAVES : WAVES_PER_LEVEL;
+}
 /**
- * 一場跑幾排。12 排的時候一關只有 30 秒(第 40 關剩 12 秒),而且只有 3 排敵人——
- * 前 3 個閘門就把勝負決定完了,剩下的路是在跑完流程而不是在玩。20 排讓一關變成
- * 約 48 秒 / 19 秒,敵人排從 3 排變成 5 排,中後段才有「還要再撐幾波」的感覺。
- *
- * 加長之所以安全,是因為敵人戰力現在直接跟著好閘門的成長走(見 enemyPowerForRow):
- * 排數變多不會讓玩家越跑越無敵,只是同一種張力多維持幾波。以前不是這樣——12 排就已經
- * 讓最佳玩家從領先 3.5 倍膨脹到 17.6 倍,再加長只會讓後半段更沒事做。
+ * 這一小關有幾排。每一波敵人前面固定墊 ENEMY_EVERY-1 排閘門,所以排數 = 波數 x ENEMY_EVERY,
+ * 而且最後一排一定是敵人——小關永遠結束在一場戰鬥,不會結束在一個閘門上。
  */
-export const ROWS_PER_RUN = 20;
-/** 每隔幾排出現一排敵人(敵人排三條跑道都是敵人,一定要正面對上)。 */
+export function rowsForStage(stage: number): number {
+  return wavesForStage(stage) * enemyEveryForStage(stage);
+}
+
+/** 最長的小關有幾排。給查表預留長度用(取兩種節奏裡比較長的那個)。 */
+export const MAX_ROWS_PER_RUN = LONG_LEVEL_WAVES * 4;
+/** 每隔幾排出現一排敵人(敵人排兩條跑道都是敵人,一定要正面對上)。 */
 export const ENEMY_EVERY = 4;
+/**
+ * 加倍長的小關改成「每 3 排一波」,而不是照 4 排。
+ *
+ * 照 4 排的話,10 波 = 40 排 = 30 個閘門,而閘門數量是**指數的指數**:
+ * 實測放大倍率從 54~134 倍衝到 1833~4230 倍(終點戰力 16 萬),把壓膨脹的工作整個抵銷;
+ * 難度也一起爆掉——90% 準確率的過關率從 80% 掉到 44%,而那不是設計決定的,
+ * 純粹是「路變長所以失誤機會變多」的副作用。
+ *
+ * 改成 3 排一波之後,長關是**打得更密**(10 波塞在 30 排裡)而不是**多逛 15 個閘門**,
+ * 「這關比較硬」來自敵人一波接一波,不是來自數字又翻了幾十倍。
+ */
+export const LONG_ENEMY_EVERY = 3;
+
+/** 這一小關每幾排一波敵人。 */
+export function enemyEveryForStage(stage: number): number {
+  return wavesForStage(stage) === LONG_LEVEL_WAVES ? LONG_ENEMY_EVERY : ENEMY_EVERY;
+}
+
+/** 這一排是不是敵人排。 */
+export function isEnemyRowIndex(rowIndex: number, stage: number): boolean {
+  return (rowIndex + 1) % enemyEveryForStage(stage) === 0;
+}
 
 /** 這一排之前總共經過幾排閘門。敵人戰力要跟「理想路線吃過幾格」對齊,靠的就是這個。 */
-export function gatesBeforeRow(rowIndex: number): number {
-  return rowIndex - Math.floor(rowIndex / ENEMY_EVERY);
+export function gatesBeforeRow(rowIndex: number, stage: number): number {
+  return rowIndex - Math.floor(rowIndex / enemyEveryForStage(stage));
 }
 
 /** 一場跑完要幾秒(給驗證腳本量關卡長度用)。 */
 export function runSeconds(stage: number): number {
-  return runLength() / runSpeed(stage);
+  return runLength(stage) / runSpeed(stage);
 }
 
 export function createRng(seed: number): () => number {
@@ -319,21 +382,52 @@ export function baseHpForStage(stage: number): number {
 
 /**
  * 敵人戰力佔「這一場最佳路線戰力」的比例。這是唯一的難度旋鈕:
- * 越大越懲罰失誤(1.0 = 一格都不能選錯),越小越寬鬆。1/ratio 就是最佳玩家的緩衝倍數,
- * 0.25 等於「大約可以選錯兩格」。
+ * 越大越懲罰失誤(1.0 = 一格都不能選錯),越小越寬鬆。1/ratio 就是最佳玩家的緩衝倍數。
  *
  * 掃出來的準確率曲線(第 20 關,準確率 → 過關率):
- *   100% → 100% | 95% → 82% | 90% → 63% | 85% → 46% | 80% → 29%
- * 0.34 時 90% 準確率只剩 49%(太緊),0.16 時 80% 準確率還有 48%(太鬆)。
+ *   100% → 100% | 95% → 85% | 90% → 63% | 85% → 46% | 80% → 27%
+ * 0.25 時 90% 準確率有 83%(太鬆),0.40 時只剩 59%(太緊)。
  *
- * 「完全選對一定過關」現在是**結構保證**而不是掃參數的結果:敵人是照這一場實際的最佳路線
+ * 「完全選對一定過關」是**結構保證**而不是掃參數的結果:敵人是照這一場實際的最佳路線
  * 算出來的(見 createRun),所以只要 ratio < 1,最佳玩家在每一排都恰好領先 1/ratio 倍。
- * 以前用「平均理想路線」估的時候不是這樣——抽牌運差的場次會讓最佳玩家也過不了關。
  *
- * 注意:這裡**不用「亂選過關率」當基準**。跑道 20 排之後亂選在任何 ratio 下都是 0~2%
- * (15 個二選一),拿它當指標只會逼著把難度調到沒有意義的低點。
+ * 這個值跟閘門幅度是綁在一起的:閘門調小,敵人自動跟著小(因為敵人照最佳路線走),
+ * **難度不變,但失誤的相對代價會變**,所以每次動 GEAR_STEP / HERO_ADD_RATIO 都要重掃這個值。
+ * 上一次重掃就是因為把單場膨脹從 2700 倍壓到 130 倍。
  */
-export const ENEMY_POWER_RATIO = 0.25;
+export const ENEMY_POWER_RATIO = 0.5;
+
+/**
+ * 第一大關刻意放寬。
+ *
+ * 這是玩家第一次接觸這個機制:要先看懂「閘門只有站上去才算數」「兩格一定一好一壞」
+ * 「站中間什麼都吃不到」這三件事,才談得上比較好壞。用正式難度接待新手,學會之前就先死了。
+ *
+ * 從 EASY_RATIO 一路拉到正式值,1-1 最鬆、1-10(魔王)已經接近正式難度,
+ * 進大關 2 之後就是正式值不再變動——難度的成長改由跑速接手(見 runSpeed)。
+ *
+ * 只動這個係數、不動閘門與跑速:跑速是「看得清楚嗎」,閘門是「選得對嗎」,
+ * 這兩個是機制本身,放水會讓玩家學到錯的東西。放寬容錯是讓他有機會學,不是幫他過。
+ */
+export const EASY_RATIO = 0.18;
+
+/**
+ * 加倍長的小關要放寬多少。
+ *
+ * 長關的閘門比較多(20 個 vs 15 個),失誤是複利的,所以同樣的容錯係數下過關率會低一截——
+ * 實測 90% 準確率是 56% vs 一般關的 80%。那個落差不是設計決定的,是「路比較長」的副作用。
+ * 乘上這個係數把它補回來一部分:長關仍然比一般關硬(它是段落的中點與魔王關,本來就該硬),
+ * 但硬的程度是選出來的,不是長度附贈的。
+ */
+export const LONG_LEVEL_RATIO_SCALE = 0.82;
+
+export function enemyPowerRatioForStage(stage: number): number {
+  const long = wavesForStage(stage) === LONG_LEVEL_WAVES ? LONG_LEVEL_RATIO_SCALE : 1;
+  const chapter = chapterOfStage(stage);
+  if (chapter > 1) return ENEMY_POWER_RATIO * long;
+  const t = (levelOfStage(stage) - 1) / (LEVELS_PER_CHAPTER - 1);
+  return (EASY_RATIO + t * (ENEMY_POWER_RATIO - EASY_RATIO)) * long;
+}
 
 // 敵人戰力不在這裡算——它是產生跑圖時逐場模擬出來的(見 createRun)。
 // 這裡曾經有 idealAttackForRow / enemyPowerForRow 兩個「平均理想路線」的函式,
@@ -356,10 +450,28 @@ export const ENEMY_POWER_RATIO = 0.25;
 //   血量 +N —— 不加戰力,吃了也打不動下一波,實際上是「這排跳過」。二選一的節奏下,
 //              一個不影響戰力的選項等於沒得選。血量只留在陷阱那側(扣血)。
 
-/** 好閘門的抽中權重。x2 是爆發格,壓到一成出頭才有「抽到了」的份量。 */
-export const GATE_WEIGHT_DOUBLE = 0.12;
-export const GATE_WEIGHT_ADD = 0.4;
-export const GATE_WEIGHT_GEAR = 0.48;
+/**
+ * 「勇者 x2」每一場**固定出現幾次**,不是每格獨立去抽。
+ *
+ * 獨立抽的問題是離散度:15 個閘門、每格 12% 機率,運氣好的一場會抽到 4 個、壞的 0 個,
+ * 而每個 x2 都是翻倍——實測同一關的單場放大量會差 2.4 倍(112x vs 270x)。
+ * 玩家感覺到的不是「我選得好」而是「這場運氣好」,那跟這款「玩得好才打得贏」的前提相反。
+ *
+ * 固定次數之後,爆發格的**份量完全不變**(還是 x2),消失的只有「這場有沒有」的隨機性:
+ * 每一場都保證有兩次翻倍的高光,只是不知道會落在第幾排。
+ */
+export const DOUBLE_GATES_PER_RUN = 2;
+/** 爆發格佔全部閘門的比例。長關閘門比較多,要按比例給,不然長關的每格機率會被稀釋。 */
+const DOUBLE_GATE_RATE = DOUBLE_GATES_PER_RUN / (WAVES_PER_LEVEL * (ENEMY_EVERY - 1));
+
+export function doubleGatesForStage(stage: number): number {
+  const totalGates = rowsForStage(stage) - wavesForStage(stage);
+  return Math.max(1, Math.round(totalGates * DOUBLE_GATE_RATE));
+}
+
+/** 不是爆發格的時候,補人與補裝備的比重。兩者等值,差別只在成長方向。 */
+export const GATE_WEIGHT_ADD = 0.45;
+export const GATE_WEIGHT_GEAR = 0.55;
 
 /**
  * 「勇者 +N」的 N 是理想路線在這個深度的人數的幾成。
@@ -369,7 +481,7 @@ export const GATE_WEIGHT_GEAR = 0.48;
  * 吃不吃都不會變——而且自帶追趕機制:落後的玩家拿到的 +N 相對自己是大補,
  * 領先的玩家拿到的只是零頭,成長自然收斂。
  */
-export const HERO_ADD_RATIO = 0.6;
+export const HERO_ADD_RATIO = 0.22;
 
 /**
  * 理想路線的模擬:每一格都吃到好閘門,人數與每人攻擊力各自怎麼長。
@@ -388,13 +500,16 @@ interface IdealStep {
 }
 
 const IDEAL_PATH: IdealStep[] = (() => {
-  const w = GATE_WEIGHT_DOUBLE + GATE_WEIGHT_ADD + GATE_WEIGHT_GEAR;
-  const [wDouble, wAdd, wGear] = [GATE_WEIGHT_DOUBLE / w, GATE_WEIGHT_ADD / w, GATE_WEIGHT_GEAR / w];
+  // x2 現在是「每場固定幾次」,換算成每一格的期望比重才能往前推。
+  const wDouble = Math.min(1, DOUBLE_GATE_RATE);
+  const rest = 1 - wDouble;
+  const w = GATE_WEIGHT_ADD + GATE_WEIGHT_GEAR;
+  const [wAdd, wGear] = [rest * (GATE_WEIGHT_ADD / w), rest * (GATE_WEIGHT_GEAR / w)];
   const out: IdealStep[] = [];
   let heroes = 1;
   let perHero = 1;
-  // 多算幾格當緩衝,免得之後把 ROWS_PER_RUN 調大就查表越界。
-  for (let g = 0; g <= ROWS_PER_RUN + 8; g++) {
+  // 多算幾格當緩衝,免得之後把小關拉長就查表越界。
+  for (let g = 0; g <= MAX_ROWS_PER_RUN + 8; g++) {
     const addN = Math.max(1, Math.round(heroes * HERO_ADD_RATIO));
     out.push({ heroes, perHero, addN });
     heroes = wDouble * (heroes * 2) + wAdd * (heroes + addN) + wGear * heroes;
@@ -415,18 +530,28 @@ export function goodGateGrowthAt(gates: number): number {
   return (b.heroes * b.perHero) / (a.heroes * a.perHero);
 }
 
-function pickGoodGate(rng: () => number, gateDepth: number): GateEffect {
-  const total = GATE_WEIGHT_DOUBLE + GATE_WEIGHT_ADD + GATE_WEIGHT_GEAR;
-  const roll = rng() * total;
-  if (roll < GATE_WEIGHT_DOUBLE) return { stat: 'heroes', op: 'mul', value: 2 };
-  if (roll < GATE_WEIGHT_DOUBLE + GATE_WEIGHT_ADD) {
-    return { stat: 'heroes', op: 'add', value: idealStep(gateDepth).addN };
-  }
+function pickGoodGate(rng: () => number, gateDepth: number, isDouble: boolean): GateEffect {
+  if (isDouble) return { stat: 'heroes', op: 'mul', value: 2 };
+  const roll = rng() * (GATE_WEIGHT_ADD + GATE_WEIGHT_GEAR);
+  if (roll < GATE_WEIGHT_ADD) return { stat: 'heroes', op: 'add', value: idealStep(gateDepth).addN };
   return { stat: 'gear', op: 'add', value: 1 };
 }
 
-function makeGateRow(rng: () => number, stage: number, gateDepth: number): RunNode[] {
-  const good: GateEffect = pickGoodGate(rng, gateDepth);
+/** 這一場的哪幾格是爆發格。用跑圖自己的 rng,所以同一顆 seed 落點一樣。 */
+function pickDoubleGateDepths(rng: () => number, totalGates: number, wanted: number): Set<number> {
+  const picked = new Set<number>();
+  // 第一格不當爆發格:起手只有 1 隻,x2 只是變成 2 隻,那個「翻倍」的畫面完全看不出來。
+  const candidates = Array.from({ length: Math.max(0, totalGates - 1) }, (_, i) => i + 1);
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+  }
+  for (const d of candidates.slice(0, wanted)) picked.add(d);
+  return picked;
+}
+
+function makeGateRow(rng: () => number, stage: number, gateDepth: number, isDouble: boolean): RunNode[] {
+  const good: GateEffect = pickGoodGate(rng, gateDepth, isDouble);
   const badRoll = rng();
   const bad: GateEffect =
     badRoll < 0.45
@@ -583,11 +708,12 @@ export const SPECIES_PER_WAVE = 3;
 
 /** 這一排是不是大魔王:魔王關的最後一排敵人。 */
 function isBossRow(stage: number, rowIndex: number): boolean {
-  return isBossStage(stage) && rowIndex === lastEnemyRowIndex();
+  return isBossStage(stage) && rowIndex === lastEnemyRowIndex(stage);
 }
 
-export function lastEnemyRowIndex(): number {
-  return Math.floor(ROWS_PER_RUN / ENEMY_EVERY) * ENEMY_EVERY - 1;
+/** 最後一排敵人的索引。排數 = 波數 x ENEMY_EVERY,所以最後一排永遠是敵人。 */
+export function lastEnemyRowIndex(stage: number): number {
+  return rowsForStage(stage) - 1;
 }
 
 /** 這一場的魔王長什麼樣。前 5 場用 5 款關卡魔王,第 6 場以後都是大魔王本尊。 */
@@ -602,7 +728,8 @@ export function bossSpeciesForStage(stage: number): WaveSpecies {
 
 function makeEnemyRow(rng: () => number, stage: number, rowIndex: number, idealAttack: number): RunNode[] {
   const boss = isBossRow(stage, rowIndex);
-  const power = Math.max(1, Math.round(idealAttack * ENEMY_POWER_RATIO * (boss ? BOSS_POWER_MULTIPLIER : 1)));
+  const power = Math.max(1,
+    Math.round(idealAttack * enemyPowerRatioForStage(stage) * (boss ? BOSS_POWER_MULTIPLIER : 1)));
   if (boss) {
     const species = bossSpeciesForStage(stage);
     const enemy: EnemyEffect = {
@@ -671,8 +798,12 @@ export function createRun(seed: number, stage: number): RunRow[] {
   // 最佳路線的模擬狀態。跟 RunState 一樣是「人數 x 每人攻擊力」,起手 1 人。
   let idealHeroes = 1;
   let idealPerHero = baseAttackForStage(stage);
-  for (let i = 0; i < ROWS_PER_RUN; i++) {
-    const isEnemy = (i + 1) % ENEMY_EVERY === 0;
+  // 先決定這一場的爆發格落在第幾格,再一路產生——每場保證固定次數,不靠運氣。
+  const rows_ = rowsForStage(stage);
+  const totalGates = rows_ - Math.floor(rows_ / enemyEveryForStage(stage));
+  const doubleDepths = pickDoubleGateDepths(rng, totalGates, doubleGatesForStage(stage));
+  for (let i = 0; i < rows_; i++) {
+    const isEnemy = isEnemyRowIndex(i, stage);
     if (isEnemy) {
       rows.push({
         index: i,
@@ -681,7 +812,8 @@ export function createRun(seed: number, stage: number): RunRow[] {
       });
       continue;
     }
-    const nodes = makeGateRow(rng, stage, gatesBeforeRow(i));
+    const depth = gatesBeforeRow(i, stage);
+    const nodes = makeGateRow(rng, stage, depth, doubleDepths.has(depth));
     // 好的那格就是「不是陷阱」的那格——兩格固定一好一壞,所以這樣認得出來。
     const good = nodes.find((n) => n.gate && !isTrapGate(n.gate))!.gate!;
     if (good.stat === 'heroes') {
@@ -694,8 +826,8 @@ export function createRun(seed: number, stage: number): RunRow[] {
   return rows;
 }
 
-export function runLength(): number {
-  return LEAD_IN_DISTANCE + ROWS_PER_RUN * ROW_SPACING;
+export function runLength(stage: number): number {
+  return LEAD_IN_DISTANCE + rowsForStage(stage) * ROW_SPACING;
 }
 
 // ---- 結算 ----

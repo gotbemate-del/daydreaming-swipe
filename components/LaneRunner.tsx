@@ -10,6 +10,8 @@ import {
   LANE_COUNT,
   MISS_MESSAGE,
   runLength,
+  stageLabel,
+  wavesForStage,
   terrainForStage,
   totalAttack,
   VISIBLE_AHEAD,
@@ -196,7 +198,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
   const lastSeenShotRef = useRef(0);
 
   const hpRatio = state.maxHp > 0 ? Math.max(0, state.hp / state.maxHp) : 0;
-  const progress = Math.min(1, distance / runLength());
+  const progress = Math.min(1, distance / runLength(stage));
   const laneWidth = trackWidth / LANE_COUNT;
 
   /**
@@ -485,7 +487,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
                 {state.phase === 'cleared' ? '抵達終點' : '倒下了'}
               </Text>
               <Text style={styles.resultSummary}>
-                第 {stage} 關 · 勇者 {compact(state.heroes)} · 戰力 {compact(attack)} · 金幣 {compact(state.coins)}
+                {stageLabel(stage)} · 勇者 {compact(state.heroes)} · 戰力 {compact(attack)} · 金幣 {compact(state.coins)}
               </Text>
               {/* 通關還要先選技能/轉職才回主介面,所以寫「繼續」而不是「回主介面」——
                   按下去馬上跳到別的畫面,標示成回主介面會對不上。陣亡沒有後續,直接回。 */}
@@ -533,7 +535,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
         )}
       </View>
 
-      <Text style={styles.hint}>第 {stage} 關 · 拖著勇者左右移動</Text>
+      <Text style={styles.hint}>{stageLabel(stage)} · 共 {wavesForStage(stage)} 波 · 拖著勇者左右移動</Text>
     </View>
   );
 }
