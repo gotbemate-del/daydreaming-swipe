@@ -19,6 +19,7 @@ import {
   volleyRate,
   waveKillCount,
   waveMonsters,
+  waveLength,
   DEFAULT_RUN_START,
   isEnemyRowIndex,
   wavesForStage,
@@ -272,7 +273,9 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         power: enemy.power,
         hitsPerUnit: enemy.hitsPerUnit ?? HITS_PER_MONSTER,
         boss: enemy.boss === true,
-        monsters: waveMonsters(enemyRow.index, enemy.units, enemyRow.distance, enemy.species.length),
+        monsters: waveMonsters(
+          enemyRow.index, enemy.units, enemyRow.distance, enemy.species.length, waveLength(stage),
+        ),
         hitsOn: new Array(enemy.units).fill(0),
         lastFireAt: 0,
       };

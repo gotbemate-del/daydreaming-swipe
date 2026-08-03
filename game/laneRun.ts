@@ -228,7 +228,7 @@ export const START_OFFSET = 0.5;
  *
  * 難度不受影響:敵人是照這一場的最佳路線算的,閘門調小敵人自動跟著小(見 ENEMY_POWER_RATIO)。
  */
-export const GEAR_STEP = 1.14;
+export const GEAR_STEP = 1.07;
 export const MAX_GEAR = 5;
 
 // ---- 節奏 ----
@@ -296,10 +296,21 @@ export function bossIndexForStage(stage: number): number {
 
 /** 一個大關幾個小關。 */
 export const LEVELS_PER_CHAPTER = 10;
-/** 一般小關幾波敵人。 */
-export const WAVES_PER_LEVEL = 5;
+/** 總共幾個大關。 */
+export const TOTAL_CHAPTERS = 300;
+/** 一般小關幾波敵人。**每打完一波給一次技能選擇**,所以這個數字就是一場能挑幾次。 */
+export const WAVES_PER_LEVEL = 10;
 /** 加倍長的小關(編號是 5 的倍數)幾波敵人。 */
-export const LONG_LEVEL_WAVES = 10;
+export const LONG_LEVEL_WAVES = 20;
+
+/**
+ * 一個一般小關要跑幾秒。長關是兩倍。
+ *
+ * 3 分鐘是刻意的:舊版一般小關只有 37~48 秒、5 次技能選擇,等於**每 9 秒被打斷一次**,
+ * 玩家的原話是「好像是在選擇技能而不是在玩遊戲」。現在 10 波攤在 180 秒裡,
+ * 兩次選擇之間有 18 秒,而且那 18 秒大部分是**打架**不是趕路(見下方 battleDistance)。
+ */
+export const TARGET_LEVEL_SECONDS = 180;
 
 /** 第幾大關(從 1 開始)。 */
 export function chapterOfStage(stage: number): number {
@@ -326,21 +337,45 @@ export function rowsForStage(stage: number): number {
 }
 
 /** 最長的小關有幾排。給查表預留長度用(取兩種節奏裡比較長的那個)。 */
-export const MAX_ROWS_PER_RUN = LONG_LEVEL_WAVES * 4;
-/** 每隔幾排出現一排敵人(敵人排兩條跑道都是敵人,一定要正面對上)。 */
-export const ENEMY_EVERY = 4;
+export const MAX_ROWS_PER_RUN = LONG_LEVEL_WAVES * 2;
 /**
- * 加倍長的小關改成「每 3 排一波」,而不是照 4 排。
+ * 每隔幾排出現一排敵人:一般小關是「2 排閘門 + 1 排敵人」為一個波週期。
  *
- * 照 4 排的話,10 波 = 40 排 = 30 個閘門,而閘門數量是**指數的指數**:
- * 實測放大倍率從 54~134 倍衝到 1833~4230 倍(終點戰力 16 萬),把壓膨脹的工作整個抵銷;
- * 難度也一起爆掉——90% 準確率的過關率從 80% 掉到 44%,而那不是設計決定的,
- * 純粹是「路變長所以失誤機會變多」的副作用。
- *
- * 改成 3 排一波之後,長關是**打得更密**(10 波塞在 30 排裡)而不是**多逛 15 個閘門**,
- * 「這關比較硬」來自敵人一波接一波,不是來自數字又翻了幾十倍。
+ * **閘門總數是要被壓住的那個數字,不是排數。** 10 波 x 2 個閘門 = 20 個閘門,
+ * 而閘門數量是指數的指數(CLAUDE.md:30 個閘門把放大倍率炸到 1833~4230 倍)。
  */
-export const LONG_ENEMY_EVERY = 3;
+export const ENEMY_EVERY = 3;
+/**
+ * 加倍長的小關是「1 排閘門 + 1 排敵人」——**波數翻倍,閘門數不變**。
+ *
+ * 20 波照 3 排一波的話會是 40 個閘門,放大倍率直接爆掉,而那不是設計決定的,
+ * 純粹是「路變長所以閘門變多」的副作用。改成 2 排一波之後,長關跟一般小關**同樣 20 個閘門**,
+ * 它的「硬」來自敵人一波接一波(20 波)而不是數字又翻幾十倍。
+ */
+export const LONG_ENEMY_EVERY = 2;
+
+/**
+ * 一個波週期裡,**戰鬥段**佔多少距離。
+ *
+ * 這是這一版最重要的結構改動:舊版「一波 = 一排」,一瞬間結算完,所以想把關卡拉長
+ * 只能塞更多排 = 更多閘門 = 膨脹爆掉。現在戰鬥段是**時間**(怪一路衝過來的那段路),
+ * 排數不變、閘門不變,關卡卻可以拉到 3 分鐘——而且拉長的那段是打架,不是趕路。
+ *
+ * 用秒回推距離而不是寫死距離:跑速從 45 爬到 111,寫死的話後期小關會只剩一分半。
+ */
+export function battleSecondsPerWave(stage: number): number {
+  const waves = wavesForStage(stage);
+  const gateRows = enemyEveryForStage(stage) - 1;
+  const target = TARGET_LEVEL_SECONDS * (waves === LONG_LEVEL_WAVES ? 2 : 1);
+  // 一個波週期 = 閘門段(排數 x 排距,速度越快越短)+ 戰鬥段(固定秒數)。
+  const gateSeconds = (gateRows * ROW_SPACING) / runSpeed(stage);
+  return Math.max(2, target / waves - gateSeconds);
+}
+
+/** 戰鬥段的距離(怪從多遠開始衝過來)。 */
+export function battleDistance(stage: number): number {
+  return battleSecondsPerWave(stage) * runSpeed(stage);
+}
 
 /** 這一小關每幾排一波敵人。 */
 export function enemyEveryForStage(stage: number): number {
@@ -355,6 +390,24 @@ export function isEnemyRowIndex(rowIndex: number, stage: number): boolean {
 /** 這一排之前總共經過幾排閘門。敵人戰力要跟「理想路線吃過幾格」對齊,靠的就是這個。 */
 export function gatesBeforeRow(rowIndex: number, stage: number): number {
   return rowIndex - Math.floor(rowIndex / enemyEveryForStage(stage));
+}
+
+/**
+ * 每一排落在哪個距離。**排距不再是固定的 ROW_SPACING**:
+ * 閘門排之間是一排的距離(短、緊湊),敵人排前面是一整個戰鬥段(長)。
+ *
+ * 這就是「波與排拆開」的實作:排數(= 閘門數)不變,關卡長度靠戰鬥段拉,
+ * 所以拉長關卡不會把單場的戰力膨脹一起拉大。
+ */
+export function rowDistances(stage: number): number[] {
+  const battle = battleDistance(stage);
+  const out: number[] = [];
+  let at = LEAD_IN_DISTANCE;
+  for (let i = 0; i < rowsForStage(stage); i++) {
+    at += isEnemyRowIndex(i, stage) ? battle : ROW_SPACING;
+    out.push(at);
+  }
+  return out;
 }
 
 /** 一場跑完要幾秒(給驗證腳本量關卡長度用)。 */
@@ -419,7 +472,7 @@ export function baseAttackForStage(stage: number): number {
  * **難度不變,但失誤的相對代價會變**,所以每次動 GEAR_STEP / HERO_ADD_RATIO 都要重掃這個值。
  * 上一次重掃就是因為把單場膨脹從 2700 倍壓到 130 倍。
  */
-export const ENEMY_POWER_RATIO = 0.53;
+export const ENEMY_POWER_RATIO = 0.42;
 
 /**
  * 第一大關刻意放寬。
@@ -433,7 +486,7 @@ export const ENEMY_POWER_RATIO = 0.53;
  * 只動這個係數、不動閘門與跑速:跑速是「看得清楚嗎」,閘門是「選得對嗎」,
  * 這兩個是機制本身,放水會讓玩家學到錯的東西。放寬容錯是讓他有機會學,不是幫他過。
  */
-export const EASY_RATIO = 0.24;
+export const EASY_RATIO = 0.18;
 
 /**
  * 加倍長的小關要放寬多少。
@@ -443,7 +496,7 @@ export const EASY_RATIO = 0.24;
  * 乘上這個係數把它補回來一部分:長關仍然比一般關硬(它是段落的中點與魔王關,本來就該硬),
  * 但硬的程度是選出來的,不是長度附贈的。
  */
-export const LONG_LEVEL_RATIO_SCALE = 0.82;
+export const LONG_LEVEL_RATIO_SCALE = 1;
 
 export function enemyPowerRatioForStage(stage: number): number {
   const long = wavesForStage(stage) === LONG_LEVEL_WAVES ? LONG_LEVEL_RATIO_SCALE : 1;
@@ -505,7 +558,7 @@ export const GATE_WEIGHT_GEAR = 0.55;
  * 吃不吃都不會變——而且自帶追趕機制:落後的玩家拿到的 +N 相對自己是大補,
  * 領先的玩家拿到的只是零頭,成長自然收斂。
  */
-export const HERO_ADD_RATIO = 0.14;
+export const HERO_ADD_RATIO = 0.07;
 
 /**
  * 理想路線的模擬:每一格都吃到好閘門,人數與每人攻擊力各自怎麼長。
@@ -599,8 +652,15 @@ function makeGateRow(rng: () => number, stage: number, gateDepth: number, isDoub
 // 結算本身沒有變:傷害仍然只在這一排的結算點算一次。小怪的生死是「把那個數字畫出來」,
 // 不是另一套獨立的戰鬥判定——兩套判定會各自漂移,最後畫面演的跟實際扣的血對不起來。
 
-/** 一波小怪散布的距離。最後一隻抵達的位置就是這一排的結算點,前面的排在它前方。 */
-export const WAVE_LENGTH = 150;
+/**
+ * 一波小怪散布多長的距離。最後一隻抵達的位置就是這一排的結算點,前面的排在它前方。
+ *
+ * 從固定的 150 改成「整個戰鬥段」:一波要打 13 秒,怪卻擠在 150 距離內的話,
+ * 玩家會看到一小撮怪衝過來、然後空等十秒——戰鬥段的長度必須真的由怪填滿。
+ */
+export function waveLength(stage: number): number {
+  return battleDistance(stage) * 0.9;
+}
 /**
  * 一波幾隻。**跟著理想路線的人數走**,不是跟著排數走。
  *
@@ -650,7 +710,9 @@ function hashFor(rowIndex: number, index: number, salt: number): number {
   return ((h ^ (h >>> 16)) >>> 0) / 0x100000000;
 }
 
-export function waveMonsters(rowIndex: number, size: number, rowDistance: number, speciesCount = 1): WaveMonster[] {
+export function waveMonsters(
+  rowIndex: number, size: number, rowDistance: number, speciesCount = 1, spread = 150,
+): WaveMonster[] {
   return Array.from({ length: size }, (_, index) => {
     const lane = laneForWaveMonster(rowIndex, index);
     const jitter = (hashFor(rowIndex, index, 1) * 2 - 1) * MONSTER_JITTER;
@@ -659,7 +721,7 @@ export function waveMonsters(rowIndex: number, size: number, rowDistance: number
       lane,
       offset: clampOffset(laneCenterOffset(lane) + jitter),
       speciesIndex: Math.min(speciesCount - 1, Math.floor(hashFor(rowIndex, index, 2) * speciesCount)),
-      distance: rowDistance - (WAVE_LENGTH * (size - 1 - index)) / size,
+      distance: rowDistance - (spread * (size - 1 - index)) / size,
     };
   });
 }
@@ -836,6 +898,7 @@ export function createRun(seed: number, stage: number): RunRow[] {
   // 已經驗證過的過關率(scripts/verify-lane-run.ts)全部要重跑——造型是外觀,不該動到數值。
   const artRng = createRng((seed ^ 0x9e3779b9) >>> 0);
   const rows: RunRow[] = [];
+  const distances = rowDistances(stage);
   // 最佳路線的模擬狀態。跟 RunState 一樣是「人數 x 每人攻擊力」,起手 1 人。
   let idealHeroes = 1;
   let idealPerHero = baseAttackForStage(stage);
@@ -858,7 +921,7 @@ export function createRun(seed: number, stage: number): RunRow[] {
     if (isEnemy) {
       rows.push({
         index: i,
-        distance: LEAD_IN_DISTANCE + i * ROW_SPACING,
+        distance: distances[i],
         nodes: makeEnemyRow(artRng, stage, i, idealHeroes * idealPerHero, idealHeroes),
       });
       // 這一波之後玩家會拿到幾次選擇,理想路線照「每次都挑最能加戰力的」同步吃下去。
@@ -891,13 +954,15 @@ export function createRun(seed: number, stage: number): RunRow[] {
     } else if (good.stat === 'gear') {
       idealPerHero *= Math.pow(GEAR_STEP, good.value);
     }
-    rows.push({ index: i, distance: LEAD_IN_DISTANCE + i * ROW_SPACING, nodes });
+    rows.push({ index: i, distance: distances[i], nodes });
   }
   return rows;
 }
 
 export function runLength(stage: number): number {
-  return LEAD_IN_DISTANCE + rowsForStage(stage) * ROW_SPACING;
+  // 最後一排(一定是敵人)之後再留一小段,不然剛打完就瞬間結算,看起來像被切掉。
+  const d = rowDistances(stage);
+  return d[d.length - 1] + ROW_SPACING;
 }
 
 // ---- 結算 ----
