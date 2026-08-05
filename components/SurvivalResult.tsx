@@ -3,6 +3,7 @@ import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { stageLabel } from '../game/laneRun';
 import { booksForSurvival, SURVIVAL_BOOK_THRESHOLDS } from '../game/save';
 import { COIN_ICON } from './artAssets';
+import { PixelFrame } from './PixelFrame';
 
 // 生存模式的結算畫面。**它的重點是「下一級技能書還差幾關」**——
 // 生存模式沒有進度可以推(關卡進度是一般模式的事),所以如果只顯示「你撐了 4 關」,
@@ -29,7 +30,8 @@ export function SurvivalResult({ streak, previousBest, diedAt, coins, onDone }: 
   return (
     <View style={styles.wrapper}>
       <Text style={styles.title}>生存結束</Text>
-      <View style={styles.card}>
+      <PixelFrame style={styles.card}>
+        <View style={styles.cardInner}>
         <Text style={styles.streak}>連過 {streak} 關</Text>
         <Text style={styles.sub}>倒在 {stageLabel(diedAt)}</Text>
         {streak > previousBest && <Text style={styles.record}>新紀錄!(前一次 {previousBest} 關)</Text>}
@@ -49,7 +51,8 @@ export function SurvivalResult({ streak, previousBest, diedAt, coins, onDone }: 
         ) : (
           <Text style={styles.next}>技能書已經滿級了</Text>
         )}
-      </View>
+        </View>
+      </PixelFrame>
       <Pressable style={styles.button} accessibilityLabel="回主介面" onPress={onDone}>
         <Text style={styles.buttonLabel}>回主介面</Text>
       </Pressable>
@@ -60,16 +63,9 @@ export function SurvivalResult({ streak, previousBest, diedAt, coins, onDone }: 
 const styles = StyleSheet.create({
   wrapper: { width: '100%', maxWidth: 520, flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14 },
   title: { color: '#e05050', fontSize: 22, fontWeight: '700' },
-  card: {
-    width: '100%',
-    backgroundColor: '#2a2a35',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#3a3448',
-    padding: 18,
-    alignItems: 'center',
-    gap: 8,
-  },
+  // 外框走 PixelFrame(既有的 9-slice 像素框),所以這裡不再自己畫圓角與邊框。
+  card: { width: '100%' },
+  cardInner: { alignItems: 'center', gap: 8 },
   streak: { color: '#f2f2f2', fontSize: 28, fontWeight: '700' },
   sub: { color: '#8a8a95', fontSize: 13 },
   record: { color: '#e0a95c', fontSize: 14, fontWeight: '700' },

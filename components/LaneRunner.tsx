@@ -22,6 +22,7 @@ import {
 } from '../game/laneRun';
 import { describeRunSkill, runSkillSpec, ELEMENT_COUNTERS, type RunSkillId } from '../game/laneRunSkills';
 import { HIT_NUMBER_MS, useLaneRun, type HitNumber, type Projectile, type WaveView } from '../hooks/useLaneRun';
+import { PixelFrame } from './PixelFrame';
 import {
   heroBoxHeight, heroForm, squadForms, monsterArt, weaponArt, jobHeroArt,
   elementColor, elementLabel, monsterAnim, jobHeroAnim, animFrameIndex,
@@ -184,7 +185,7 @@ export function LaneRunner({
     state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers,
     lastShotAt, lastShotId, feedback, steer, dragTo,
     runSkills, skillOffers, pendingPicks, chooseRunSkill, lastStrike, upcomingElements,
-    enemyShots, lastHazardAt, enemyThrowAt,
+    enemyShots, lastHazardAt, enemyThrowAt, waveNumber, totalWaves,
   } = run;
   const attack = totalAttack(state);
 
@@ -671,7 +672,7 @@ export function LaneRunner({
             「這一場我缺什麼」才判斷得出來——切到獨立畫面就只剩三個抽象的名詞。 */}
         {skillOffers.length > 0 && state.phase === 'running' && (
           <View style={styles.resultOverlay}>
-            <View style={styles.resultCard}>
+            <PixelFrame style={styles.resultCard}>
               <Text style={styles.skillTitle}>清空一波!挑一個</Text>
               <Text style={styles.resultSummary}>
                 勇者 {compact(state.heroes)} · 戰力 {compact(attack)}
@@ -708,7 +709,7 @@ export function LaneRunner({
                   已帶:{runSkills.map((s) => `${runSkillSpec(s.id).name} ${s.level}`).join('、')}
                 </Text>
               )}
-            </View>
+            </PixelFrame>
           </View>
         )}
 
@@ -717,7 +718,7 @@ export function LaneRunner({
             浮起來之後不管螢幕多矮都一定看得到,跑道也多拿回那一列的高度。 */}
         {state.phase !== 'running' && (
           <View style={styles.resultOverlay}>
-            <View style={styles.resultCard}>
+            <PixelFrame style={styles.resultCard}>
               <Text style={state.phase === 'cleared' ? styles.resultWin : styles.resultLose}>
                 {state.phase === 'cleared' ? '抵達終點' : '倒下了'}
               </Text>
@@ -733,7 +734,7 @@ export function LaneRunner({
               >
                 <Text style={styles.againLabel}>{state.phase === 'cleared' ? '繼續' : '回主介面'}</Text>
               </Pressable>
-            </View>
+            </PixelFrame>
           </View>
         )}
 
@@ -773,7 +774,7 @@ export function LaneRunner({
       <Text style={styles.hint}>
         {stageLabel(stage)} · 共 {wavesForStage(stage)} 波
         {/* 生存模式:連勝數要一直看得到——它是這個模式唯一的分數,藏起來就沒有壓力了。 */}
-        {survivalStreak !== null ? ` · 生存連過 ${survivalStreak} 關(死了就結束)` : ' · 拖著勇者左右移動'}
+        {survivalStreak !== null ? ` · 生存連過 ${survivalStreak} 關(死了就結束)` : ' · 拖著史萊姆左右移動'}
       </Text>
     </View>
   );
@@ -897,18 +898,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#16161cb0',
     zIndex: 50,
   },
-  resultCard: {
-    minWidth: 240,
-    maxWidth: '86%',
-    paddingHorizontal: 20,
-    paddingVertical: 18,
-    borderRadius: 14,
-    backgroundColor: '#2a2a35',
-    borderWidth: 1,
-    borderColor: '#3a3448',
-    alignItems: 'center',
-    gap: 10,
-  },
+  // 外框改用既有的 9-slice 像素框(PixelFrame),所以這裡不再畫圓角與邊框——
+  // 兩個一起畫的話會看到「框裡面又有一圈細線」。
+  resultCard: { minWidth: 240, maxWidth: '86%' },
+  cardInner: { alignItems: 'center', gap: 10 },
   resultSummary: { color: '#8a8a95', fontSize: 12 },
   hint: { color: '#8a8a95', fontSize: 11, textAlign: 'center' },
   resultWin: { color: '#5ec26a', fontSize: 18, fontWeight: '700' },

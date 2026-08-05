@@ -6,6 +6,7 @@ import {
   decodeCollection, hasItem, itemAt, TOTAL_ITEMS,
 } from '../game/collection';
 import { EQUIPMENT_SLOT_LABELS } from './slotLabels';
+import { PixelFrame } from './PixelFrame';
 
 // 裝備圖鑑。**這裡不穿裝備,只看收集進度**——那 5668 件在這款是「內容」不是「數值棒」
 // (為什麼:見 game/collection.ts 的檔頭)。
@@ -51,16 +52,20 @@ export function Codex({ collected, books, onDone }: Props) {
       {/* 圖鑑給的兩樣東西。兩個都刻意不加戰力——加了敵人會跟著長,
           玩家蒐集半天卻感覺不到差別(見 game/collection.ts)。 */}
       <View style={styles.bonusRow}>
-        <View style={styles.bonusBox}>
-          <Text style={styles.bonusValue}>+{Math.round((flavour - 1) * 100)}%</Text>
-          <Text style={styles.bonusLabel}>屬性與主動技能效果</Text>
-          <Text style={styles.bonusMax}>收滿 +{Math.round(COLLECTION_FLAVOUR_BONUS * 100)}%</Text>
-        </View>
-        <View style={styles.bonusBox}>
-          <Text style={styles.bonusValue}>{(bookDropChance(bits) * 100).toFixed(0)}%</Text>
-          <Text style={styles.bonusLabel}>每場通關掉技能書</Text>
-          <Text style={styles.bonusMax}>目前技能書 {books} 級</Text>
-        </View>
+        <PixelFrame style={styles.bonusBox} padding={12}>
+          <View style={styles.bonusInner}>
+            <Text style={styles.bonusValue}>+{Math.round((flavour - 1) * 100)}%</Text>
+            <Text style={styles.bonusLabel}>屬性與主動技能效果</Text>
+            <Text style={styles.bonusMax}>收滿 +{Math.round(COLLECTION_FLAVOUR_BONUS * 100)}%</Text>
+          </View>
+        </PixelFrame>
+        <PixelFrame style={styles.bonusBox} padding={12}>
+          <View style={styles.bonusInner}>
+            <Text style={styles.bonusValue}>{(bookDropChance(bits) * 100).toFixed(0)}%</Text>
+            <Text style={styles.bonusLabel}>每場通關掉技能書</Text>
+            <Text style={styles.bonusMax}>目前技能書 {books} 級</Text>
+          </View>
+        </PixelFrame>
       </View>
 
       <ScrollView style={styles.list} contentContainerStyle={styles.listInner}>
@@ -91,16 +96,8 @@ const styles = StyleSheet.create({
   barFill: { height: '100%', backgroundColor: '#e0a95c' },
 
   bonusRow: { flexDirection: 'row', gap: 8, width: '100%' },
-  bonusBox: {
-    flex: 1,
-    backgroundColor: '#2a2a35',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#3a3448',
-    padding: 10,
-    alignItems: 'center',
-    gap: 2,
-  },
+  bonusBox: { flex: 1 },
+  bonusInner: { alignItems: 'center', gap: 2 },
   bonusValue: { color: '#5ec26a', fontSize: 20, fontWeight: '700' },
   bonusLabel: { color: '#f2f2f2', fontSize: 12, textAlign: 'center' },
   bonusMax: { color: '#8a8a95', fontSize: 11 },

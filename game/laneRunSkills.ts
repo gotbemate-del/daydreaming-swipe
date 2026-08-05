@@ -241,13 +241,13 @@ export function strikeCooldownWaves(level: number): number {
 
 export const RUN_SKILLS: RunSkillSpec[] = [
   { id: 'edge', name: '鋒刃', describe: (l) => `每人攻擊力 +${Math.round(PER_LEVEL.edgeAttack * l * 100)}%` },
-  { id: 'swarm', name: '增殖', describe: (l) => `勇者數量 +${Math.round(PER_LEVEL.swarmHeroes * l * 100)}%` },
+  { id: 'swarm', name: '增殖', describe: (l) => `數量 +${Math.round(PER_LEVEL.swarmHeroes * l * 100)}%` },
   // 八元素。說明一律寫「什麼時候有用」,不是只寫數字——玩家要在 2 秒內判斷該不該拿。
   { id: 'fire', name: '火・燃燒', describe: (l) => `每波多燒掉 ${PER_LEVEL.fireKills * l} 隻` },
   { id: 'metal', name: '金・穿透', describe: (l) => `每波多清掉整波的 ${Math.round(PER_LEVEL.metalRatio * l * 100)}%` },
   { id: 'thunder', name: '雷・連鎖', describe: (l) => `你打倒的每 ${Math.round(1 / (PER_LEVEL.thunderRatio * l))} 隻多帶走 1 隻` },
   { id: 'ice', name: '冰・凍結', describe: (l) => `怪衝得慢,兌換率 +${Math.round(PER_LEVEL.iceTrade * l * 100)}%` },
-  { id: 'wood', name: '木・再生', describe: (l) => `每波補回 ${PER_LEVEL.woodRegen * l} 個失去的勇者` },
+  { id: 'wood', name: '木・再生', describe: (l) => `每波補回 ${PER_LEVEL.woodRegen * l} 個失去的同伴` },
   { id: 'earth', name: '土・護盾', describe: (l) => `每 ${Math.max(2, PER_LEVEL.earthCooldown - l)} 波擋下一整波損失` },
   { id: 'light', name: '光・復活', describe: (l) => `倒下時保住 ${PER_LEVEL.lightRevive * l} 人(一場一次)` },
   { id: 'dark', name: '暗・吸取', describe: (l) => `漏過來的怪有 ${Math.round(PER_LEVEL.darkLeech * l * 100)}% 加入你` },
@@ -264,7 +264,7 @@ export const RUN_SKILLS: RunSkillSpec[] = [
   {
     id: 'rally',
     name: '號令',
-    describe: (l) => `每 ${strikeCooldownWaves(l)} 波補 ${PER_LEVEL.rallyHeroes * l} 個勇者`,
+    describe: (l) => `每 ${strikeCooldownWaves(l)} 波補 ${PER_LEVEL.rallyHeroes * l} 個同伴`,
   },
   {
     id: 'aegis',

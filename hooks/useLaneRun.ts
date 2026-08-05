@@ -21,8 +21,9 @@ import {
   waveKillCount,
   waveMonsters,
   activeThrowers,
+  ENEMY_THROW_INTERVAL_MS,
   HAZARD_WIDTH,
-  HAZARD_LOSS_RATIO,
+  HAZARD_LOSS_HEROES,
   THROWER_ROTATE_MS,
   waveLength,
   DEFAULT_RUN_START,
@@ -58,8 +59,6 @@ const FIRE_RANGE = 260;
 
 /** 敵人擲出的武器飛多快。比玩家的慢一點,才有時間看到它過來並閃開。 */
 const ENEMY_SHOT_SPEED = 260;
-/** 輪到的那幾個人多久丟一次。太密會變成躲不掉,太疏會看起來像沒在攻擊。 */
-const ENEMY_THROW_INTERVAL_MS = 620;
 
 export interface RunFeedback {
   key: number;
@@ -207,6 +206,10 @@ export interface LaneRunView {
   /** 方向鍵:滑順移到隔壁跑道中央 */
   steer: (direction: 'left' | 'right') => void;
   stage: number;
+  /** 現在是第幾波(1 開始)。打完最後一波之後停在總波數,不會變成「第 11 波」。 */
+  waveNumber: number;
+  /** 這一小關共幾波。 */
+  totalWaves: number;
 }
 
 interface WaveRuntime {
@@ -276,11 +279,10 @@ export function useLaneRun(
   const enemyShotIdRef = useRef(0);
   const enemyFireAtRef = useRef(0);
   /**
-   * 這一波已經被砸中過了沒。**一波最多扣一次**——不設上限的話,站錯地方的三秒鐘會被
-   * 連續扣十幾次,那不是「失誤有代價」而是「站錯就直接結束」,而且模擬器那邊算的是一次,
-   * 兩邊的難度會整個岔開。
+   * 這一波已經被打中幾下。**不設上限**(每一下都算),留著只是為了在結算時
+   * 告訴 resolveEnemy「跑圖途中已經扣過了,不要再用期望值扣一次」。
    */
-  const hazardHitRowRef = useRef<number | null>(null);
+  const hazardHitsRef = useRef<{ row: number; hits: number }>({ row: -1, hits: 0 });
   const hitNumbersRef = useRef<HitNumber[]>([]);
   const hitNumberIdRef = useRef(0);
 
@@ -560,12 +562,14 @@ export function useLaneRun(
         if (moved.distance > travelled) { stillFlying.push(moved); continue; }
         // 飛到你身上了:站在這條線上就會被砸中。一波最多扣一次(見 hazardHitRowRef)。
         const inLine = Math.abs(offsetRef.current - shot.offset) <= HAZARD_WIDTH / 2;
-        if (inLine && hazardHitRowRef.current !== current.rowIndex) {
-          hazardHitRowRef.current = current.rowIndex;
+        if (inLine) {
+          // **每一下都算,一波不設上限**:一把武器換一個人。
+          if (hazardHitsRef.current.row !== current.rowIndex) hazardHitsRef.current = { row: current.rowIndex, hits: 0 };
+          hazardHitsRef.current.hits += 1;
           setLastHazardAt(now);
           setState((prev) => {
             if (prev.phase !== 'running') return prev;
-            const hit = Math.max(1, Math.round(prev.heroes * HAZARD_LOSS_RATIO));
+            const hit = HAZARD_LOSS_HEROES;
             const heroes = Math.max(0, prev.heroes - hit);
             lostSoFarRef.current += hit;
             feedbackKeyRef.current += 1;
@@ -653,6 +657,10 @@ export function useLaneRun(
           const units = due.nodes[0].enemy?.units ?? 0;
           // 相剋是**逐元素**的:結算的時候就把這一波的屬性交給 runSkillEffects,
           // 剋中的那個元素放大、被剋的那個削弱,其他元素與主動技能一律不動。
+          // 勇者波:投擲傷害在跑圖途中就逐發扣過了(見上面的 EnemyShot),
+          // **一定要告訴 resolveEnemy 別再用期望值扣一次**——漏掉這一行就是扣兩次,
+          // 而且症狀只是「勇者波特別難」,不會有任何錯誤訊息。
+          if (due.nodes[0].enemy?.heroWave) boost.hazardResolved = true;
           const waveElement = due.nodes[0].enemy?.element;
           const fx = runSkillEffects(runSkills, waveElement, bookLevel, collectionScale);
           if (runSkills.some((s) => s.level > 0 && ELEMENT_COUNTERS[s.id] === waveElement)) fired.push('剋');
@@ -766,6 +774,10 @@ export function useLaneRun(
     dragTo,
     steer,
     stage,
+    // 用「已清完幾波 + 1」算,而不是另外存一份狀態:多一份就會有不同步的機會,
+    // 而這個數字每個 tick 都要正確(它是玩家判斷「還剩多久」的唯一依據)。
+    waveNumber: Math.min(totalWaves, clearedWavesRef.current + 1),
+    totalWaves,
   };
 }
 

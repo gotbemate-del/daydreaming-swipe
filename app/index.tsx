@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
-import { AdSlot } from '../components/AdSlot';
 import { JobChoice } from '../components/JobChoice';
 import { LaneRunner } from '../components/LaneRunner';
 import { MainMenu } from '../components/MainMenu';
@@ -164,7 +163,6 @@ export default function HomeScreen() {
   if (screen === 'codex') {
     return (
       <View style={styles.screen}>
-        <AdSlot />
         <Codex collected={save.collected} books={save.books} onDone={() => setScreen('menu')} />
       </View>
     );
@@ -173,7 +171,6 @@ export default function HomeScreen() {
   if (screen === 'survivalOver') {
     return (
       <View style={styles.screen}>
-        <AdSlot />
         <SurvivalResult
           streak={survivalStreak}
           previousBest={save.bestSurvival}
@@ -188,7 +185,6 @@ export default function HomeScreen() {
   if (offers.length > 0) {
     return (
       <View style={styles.screen}>
-        <AdSlot />
         <SkillChoice
           clearedStage={stage}
           skills={skills}
@@ -202,7 +198,6 @@ export default function HomeScreen() {
   if (promotionTier !== null) {
     return (
       <View style={styles.screen}>
-        <AdSlot />
         <JobChoice
           current={job}
           tier={promotionTier}
@@ -223,8 +218,6 @@ export default function HomeScreen() {
   if (screen === 'menu') {
     return (
       <View style={styles.screen}>
-        {/* 廣告在最上面、跟內容之間留安全距離,見 components/AdSlot.tsx 的說明 */}
-        <AdSlot />
         <MainMenu
           stage={stage}
           job={job}
@@ -256,7 +249,6 @@ export default function HomeScreen() {
 
   return (
     <View style={styles.screen}>
-      <AdSlot />
       <LaneRunner
         key={`${mode}-${mode === 'survival' ? survivalStage : stage}-${runKey}`}
         stage={mode === 'survival' ? survivalStage : stage}

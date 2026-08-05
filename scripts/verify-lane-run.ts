@@ -15,7 +15,7 @@ import {
   applyGate, gateLabel, DOUBLE_GATES_PER_RUN, GEAR_STEP, doubleGatesForStage, LONG_LEVEL_RATIO_SCALE,
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
   TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane, MIN_WAVE_SIZE,
-  HERO_WAVE_ELEMENT_SALT, waveElementsForStage, hazardsFor, hitByHazard, HAZARD_WIDTH, HAZARD_LOSS_RATIO,
+  HERO_WAVE_ELEMENT_SALT, waveElementsForStage, hazardsFor, hitByHazard, HAZARD_WIDTH, HAZARD_LOSS_HEROES, expectedHazardHits, ENEMY_THROW_INTERVAL_MS,
   type Lane, type RunState, type WaveBoost,
 } from '../game/laneRun';
 import {
@@ -131,7 +131,7 @@ check('長關不再額外放寬(閘門數已經跟一般關一樣)',
 const gateRuns = [7, 42, 99].map((seed) => createRun(seed, 10));
 const addGates = gateRuns.flatMap((r) => r.flatMap((row) => row.nodes))
   .filter((n) => n.gate && n.gate.stat === 'heroes' && n.gate.op === 'add' && n.gate.value > 0);
-check('有產生出「勇者 +N」的格子', addGates.length > 0, `${addGates.length} 格`);
+check('有產生出「數量 +N」的格子', addGates.length > 0, `${addGates.length} 格`);
 check('+N 是整數且至少 +1', addGates.every((n) => Number.isInteger(n.gate!.value) && n.gate!.value >= 1),
   [...new Set(addGates.map((n) => n.gate!.value))].sort((a, b) => a - b).join(' '));
 // 同一張跑圖跑兩次、中間吃掉不同的東西,+N 必須完全一樣(它是產生時就決定的)
@@ -144,9 +144,11 @@ const addAfter = fixedRun.flatMap((r) => r.nodes).filter((n) => n.gate?.op === '
   .map((n) => n.gate!.value);
 check('吃過閘門之後,場上其他 +N 的數字完全不變(不會浮濫)',
   JSON.stringify(addBefore) === JSON.stringify(addAfter), addBefore.join(','));
-check('勇者 +N 印出來是具體人數',
-  gateLabel({ stat: 'heroes', op: 'add', value: 6 }) === '勇者 +6');
-check('勇者 +N 不是陷阱格(畫面不會標紅)', !isTrapGate({ stat: 'heroes', op: 'add', value: 6 }));
+// 閘門上寫「數量」不寫「勇者」:玩家那一群是史萊姆,而「勇者」在這款是勇者波的敵人。
+check('人數格印出來是「數量 +N」(不是「勇者」——那是敵人)',
+  gateLabel({ stat: 'heroes', op: 'add', value: 6 }) === '數量 +6'
+  && gateLabel({ stat: 'heroes', op: 'mul', value: 2 }) === '數量 x2');
+check('數量 +N 不是陷阱格(畫面不會標紅)', !isTrapGate({ stat: 'heroes', op: 'add', value: 6 }));
 check('減半與扣血才是陷阱格',
   isTrapGate({ stat: 'heroes', op: 'mul', value: 0.5 })
   && isTrapGate({ stat: 'gear', op: 'add', value: -1 })
@@ -245,9 +247,14 @@ const allSpecies = allEnemies.flatMap((e) => e.species);
 const mobWaves = allEnemies.filter((e) => !e.boss && !e.elite);
 const eliteWaves = allEnemies.filter((e) => e.elite);
 const bossWaves = allEnemies.filter((e) => e.boss);
-check('每一波小怪都混了好幾種(整關不會只看到同一隻)',
-  mobWaves.every((e) => e.species.length === SPECIES_PER_WAVE),
-  `每波 ${SPECIES_PER_WAVE} 種`);
+// 提示列只寫得下一個名字,所以一波就一種——寫哪一隻,衝過來的就是哪一隻。
+check('一波只有一種怪(提示列寫的名字 = 畫面上出現的怪)',
+  mobWaves.every((e) => e.species.length === 1 && e.name === e.species[0].name));
+// 變化改成跨波提供:一小關十波不能全是同一隻。
+check('整關的怪種夠多變(不是十波都同一隻)', (() => {
+  const kinds = new Set(mobWaves.map((e) => e.species[0].id));
+  return kinds.size >= Math.min(4, mobWaves.length);
+})(), `${new Set(mobWaves.map((e) => e.species[0].id)).size} 種 / ${mobWaves.length} 波`);
 check('每個小關中點都有一隻精英', eliteWaves.length > 0
   && eliteWaves.every((e) => e.leakCost === ELITE_MASS && e.hitsPerUnit === ELITE_HITS && e.species.length === 1),
   `${eliteWaves.length} 隻精英,漏掉一隻抵 ${ELITE_MASS} 人`);
@@ -305,8 +312,11 @@ check('小怪不會站成一直線(橫向位置各自偏移)',
 check('偏移不會把小怪推出跑道', wave.every((m) => m.offset >= 0 && m.offset <= 1));
 check('偏移幅度不超過設定值', wave.every((m) =>
   Math.abs(m.offset - laneCenterOffset(m.lane)) <= MONSTER_JITTER + 1e-9));
-check('同一波裡不同隻會用到不同造型',
-  new Set(wave.map((m) => m.speciesIndex)).size >= 2, `用到 ${new Set(wave.map((m) => m.speciesIndex)).size} 種`);
+// 一波只有一種怪(SPECIES_PER_WAVE = 1),所以整波的造型索引都該是 0——
+// 提示列寫哪一隻,衝過來的就是哪一隻。這一項以前是反過來檢查「有沒有混到好幾種」。
+check('同一波所有隻都是同一種造型(提示列的名字才對得上畫面)',
+  new Set(wave.map((m) => m.speciesIndex)).size === 1,
+  `用到 ${new Set(wave.map((m) => m.speciesIndex)).size} 種`);
 check('造型索引不會超出 species 陣列', wave.every((m) => m.speciesIndex >= 0 && m.speciesIndex < SPECIES_PER_WAVE));
 
 // --- 閘門有寬度,沒踩到就漏掉 ---
@@ -600,7 +610,14 @@ const hwSpots = [0, 0.1, 0.25, 0.4, 0.5, 0.6, 0.75, 0.9, 1].map((at) =>
   resolveEnemy(behindState, hwBehind, {}, at).state.heroes);
 check('打不完的時候,站的位置會影響結果(閃得掉就是閃得掉)',
   new Set(hwSpots).size > 1, `各位置剩下 ${hwSpots.join('/')} 人`);
-check('被砸中的幅度沒有大到一次全滅', HAZARD_LOSS_RATIO < 0.25, `${HAZARD_LOSS_RATIO}`);
+// 固定值 + 不設上限:一把武器換一個人,所以「被打到」在整場的意義是一致的
+// (舊版的比例值會讓 137 人時被砸一下掉 27 個,跟 3 人時被砸的是同一把武器)。
+check('被打中一下只扣固定人數(不是比例)', HAZARD_LOSS_HEROES === 1);
+check('一波的期望被打次數是用「戰鬥段秒數 ÷ 投擲間隔」算的,而且不會失控', (() => {
+  const hits = [1, 12, 102, 700, 1500].map(expectedHazardHits);
+  return hits.every((h) => h >= 1 && h <= 6);
+})(), [1, 12, 102, 1500].map((st) => `第${st}關 ${expectedHazardHits(st)} 下`).join(' / '));
+check('投擲間隔夠慢(每一下都扣人,太密就不是難是直接出局)', ENEMY_THROW_INTERVAL_MS >= 1200);
 
 // 勇者波走另一條 salt:關卡前公開的那一串不能洩漏它抽到什麼。
 const salted = Array.from({ length: 400 }, (_, r) => elementForRow(r, HERO_WAVE_ELEMENT_SALT));

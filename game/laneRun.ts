@@ -965,8 +965,16 @@ export function enemyRarityForRow(rowIndex: number): Rarity {
   return 'legendary';
 }
 
-/** 一波混幾種怪。種類只影響外觀,不影響戰力——所以可以放心多抽幾種。 */
-export const SPECIES_PER_WAVE = 3;
+/**
+ * 一波幾種怪。**1 種:提示列寫哪一隻,衝過來的就是哪一隻。**
+ *
+ * 早期版本是 3 種混在一起(想讓整關不要像同一隻複製貼上),但提示列只寫得下一個名字,
+ * 寫的是第一種——於是玩家看到「鋼甲深海魚 x6」,畫面上卻是深海魚 + 蝙蝠 + 哥布林。
+ * 那一行是玩家**唯一**能事先知道這一波是什麼的地方,它跟畫面對不上比「單調」嚴重得多。
+ *
+ * 變化改成跨波提供:每一波各自抽,一小關十波就有十種不同的怪,而且每一波都認得出來。
+ */
+export const SPECIES_PER_WAVE = 1;
 
 /** 這一排是不是大魔王:魔王關的最後一排敵人。 */
 /**
@@ -1018,14 +1026,44 @@ export function waveElementsForStage(stage: number): { element: RunSkillId; hidd
 }
 /** 一發砸多寬(offset 單位)。跑道總寬 1,閘門是 0.34,所以這個要比閘門窄一點才閃得掉。 */
 export const HAZARD_WIDTH = 0.26;
+
 /**
- * 被砸中削掉隊伍的幾成。刻意不是全滅:勇者是一群、散開有寬度,砸在邊緣只掉一部分。
+ * 被武器打中一下扣幾個人。**固定值,而且一波不設上限。**
  *
- * 從 0.25 降到 0.14,是因為**丟的人從固定 1 個變成「所有還沒被打倒的」**(見 hazardsFor):
- * 落點從一條線變成一片,躲的難度整個換了一個量級。幅度不跟著降的話,勇者波會變成
- * 「打不完就等於全滅」——而它每 3 波就來一次,等於把整條準確率曲線往下拉。
+ * 舊版是「一波最多扣一次,扣掉當時人數的兩成」。比例值有一個講不通的地方:
+ * 你滾出 137 人的時候被砸一下要掉 27 個,而那一下跟只有 3 個人時被砸的是同一把武器。
+ * 改成固定 1 個之後,「被打到」在整場的意義是一致的——**一把武器換一個人**。
+ *
+ * 代價是它在前期很重(3 個人的時候被打兩下就掉三分之二),所以投擲頻率要跟著放慢
+ * (見 ENEMY_THROW_INTERVAL_MS)。這兩個數字必須一起看:一個是單次的痛,
+ * 一個是一波會痛幾次。
  */
-export const HAZARD_LOSS_RATIO = 0.2;
+export const HAZARD_LOSS_HEROES = 1;
+
+/**
+ * 輪到的那幾個人多久丟一次(毫秒)。**放在這裡而不是 hook**,因為模擬器也要用它
+ * 換算「一波會被打幾下」——兩邊各寫一份的話,難度曲線量到的就不是玩家經歷的那件事。
+ *
+ * 從 620ms 放慢到這個值,是因為傷害改成「每一下都算、不設上限」:
+ * 戰鬥段有 14~17 秒,620ms 一發代表站著不動會被打二十幾下,那不是難是直接出局。
+ */
+export const ENEMY_THROW_INTERVAL_MS = 1800;
+
+/**
+ * 站在危險線上的人,一波大概會被打中幾下。
+ *
+ * 遊戲裡是逐發判定(武器飛到你身上才算),但**模擬器沒有時間軸**——它一排只結算一次。
+ * 所以模擬器改用這個期望值,而它是用**跟遊戲同一組常數**算出來的:
+ * 戰鬥段幾秒 ÷ 投擲間隔 x「你的位置剛好在危險線上的比例」。
+ *
+ * HAZARD_COLUMN_ODDS 是實測值:同時只有 ACTIVE_THROWERS(2)條線危險,一條寬 0.26,
+ * 而站著不動的人有大約這個比例的時間落在其中一條上。
+ */
+const HAZARD_COLUMN_ODDS = 0.45;
+export function expectedHazardHits(stage: number): number {
+  const throwsPerWave = battleSecondsPerWave(stage) / (ENEMY_THROW_INTERVAL_MS / 1000);
+  return Math.max(1, Math.round(throwsPerWave * HAZARD_COLUMN_ODDS));
+}
 
 /**
  * 幾波來一次勇者波。第三段的旋鈕:到 HERO_WAVE_DENSE_FROM 之後從每 3 波變每 2 波,
@@ -1327,10 +1365,17 @@ export function applyGate(state: RunState, gate: GateEffect): RunState {
  * 「勇者 +N」印的是具體人數(「勇者 +8」)而不是百分比——玩家在 1 秒內要跟隔壁格比大小,
  * 百分比得先在腦子裡換算一次,具體數字才比得動。
  */
+/**
+ * 閘門上的字。
+ *
+ * 人數那一類寫「數量」不寫「勇者」:玩家操作的那一群是**史萊姆**,而「勇者」在這款
+ * 另有所指——勇者波的敵人才是勇者(見 isHeroWaveRow)。同一個詞指兩邊會讓
+ * 「勇者 +1」看起來像在幫敵人加人。
+ */
 export function gateLabel(gate: GateEffect): string {
   if (gate.stat === 'gear') return gate.value >= 0 ? '裝備強化' : '裝備損壞';
-  if (gate.op === 'mul') return `勇者 x${gate.value}`;
-  return `勇者 ${gate.value >= 0 ? '+' : ''}${gate.value}`;
+  if (gate.op === 'mul') return `數量 x${gate.value}`;
+  return `數量 ${gate.value >= 0 ? '+' : ''}${gate.value}`;
 }
 
 /**
@@ -1424,7 +1469,9 @@ export function resolveEnemy(
       })()
     : [];
   if (heroWaveHazards.length > 0 && hitByHazard(at, heroWaveHazards)) {
-    const hit = Math.max(1, Math.round(state.heroes * HAZARD_LOSS_RATIO));
+    // 模擬器路徑:一波扣「期望被打中的次數」x 每下 1 個人。
+    // 遊戲裡是逐發扣的(見 useLaneRun 的 EnemyShot),兩邊用同一組常數換算。
+    const hit = expectedHazardHits(state.stage) * HAZARD_LOSS_HEROES;
     const struck = { ...state, heroes: Math.max(0, state.heroes - hit) };
     if (struck.heroes <= 0) {
       struck.phase = 'dead';
