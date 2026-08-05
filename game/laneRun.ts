@@ -218,10 +218,15 @@ export const BASE_TRADE_RATE = 1;
  *    永遠漏得少、永遠安全;多的那格要有「這一場之內有用」的報酬才會變成真的選擇,
  *    而這款唯一有用的東西就是人(見 docs/DESIGN.md §3.1a)。
  *
- * 幅度不會失控的原因:`waveSize` 封頂 24 隻,所以人數超過 24 之後吸收就變成**固定 +N**,
- * 不再是複利——早期滾雪球(有感),後期只是涓滴(不膨脹)。
+ * 幅度不會失控的原因:`waveSize` 封頂(現在 48 隻),所以人數超過上限之後吸收就變成
+ * **固定 +N**,不再是複利——早期滾雪球(有感),後期只是涓滴(不膨脹)。
+ *
+ * **0.08 → 0.06 是隻數翻倍的連帶調整。** 吸收是照 `units` 算的,隻數一翻倍吸收也翻倍,
+ * 加倍長的小關(20 波)實測把單場放大量從 662 推到 777 倍,越過「壓在 700 倍以內」那條線
+ *(數字要停在看得懂的位數,見 CLAUDE.md「單場的戰力膨脹會吃掉整條養成曲線」)。
+ * 0.06 讓每一波實際吸到的人數回到翻倍前的量級,終場人數也回到 60 幾人。
  */
-export const ABSORB_RATIO = 0.08;
+export const ABSORB_RATIO = 0.06;
 
 /**
  * 打贏這一波會補幾個人。精英一隻抵一群,所以牠的份量也照 leakCost 算。
@@ -624,8 +629,15 @@ export function baseAttackForStage(stage: number): number {
  * 這個值跟閘門幅度是綁在一起的:閘門調小,敵人自動跟著小(因為敵人照最佳路線走),
  * **難度不變,但失誤的相對代價會變**,所以每次動 GEAR_STEP / HERO_ADD_RATIO 都要重掃這個值。
  * 上一次重掃就是因為把單場膨脹從 2700 倍壓到 130 倍。
+ *
+ * **0.48 → 0.51 是刻意把難度往上調的那一刀**(隻數翻倍幾乎不影響難度,見 ENEMY_UNITS_PER_HERO,
+ * 所以想變難就只能轉這裡)。掃出來的對照:
+ *
+ *   0.48 → 90% 準確率過 58%    0.50 → 53%    **0.51 → 50%**    0.55 → 42%
+ *
+ * 現行曲線(一般小關):100% → 100%、95% → 72%、90% → 50%、85% → 30%、80% → 18%。
  */
-export const ENEMY_POWER_RATIO = 0.48;
+export const ENEMY_POWER_RATIO = 0.51;
 
 /**
  * 第一大關刻意放寬。
@@ -832,9 +844,26 @@ export function waveLength(stage: number, units = MAX_WAVE_SIZE): number {
  * 順帶一個好處:這就是人群對撞的畫面——兩邊都是一大群,撞上去少一片。
  */
 export const MIN_WAVE_SIZE = 3;
-export const MAX_WAVE_SIZE = 24;
-/** 一波的隻數是理想人數的幾倍。 */
-export const ENEMY_UNITS_PER_HERO = 1;
+export const MAX_WAVE_SIZE = 48;
+/**
+ * 一波的隻數是理想人數的幾倍。**1 → 2 是為了打擊手感,不是為了難度**(實測過了)。
+ *
+ * 隻數翻倍**幾乎不會讓遊戲變難**:`absorbedFrom(units)` 也跟著翻倍,理想人數長 55%
+ *(終場 62 → 96 人),敵人曲線自動追上去,90% 準確率的過關率只從 61% 掉到 57%。
+ * 想調難度請轉 `ENEMY_POWER_RATIO`,不要轉這裡。
+ *
+ * 它真正買到的是**畫面密度**:第 12 關視野內同時 9 → 18 隻、第 102 關 4.7 → 9.5 隻。
+ * 後期一波只剩四五隻在視野內的時候,火的燃燒擴散與雷的連鎖閃電經常找不到目標
+ *(那兩個都是「找旁邊還站著的那幾隻」),十幾隻的時候才燒得成一片。
+ *
+ * **上限一定要跟著開。** 只改這個值、把 MAX_WAVE_SIZE 留在 24 的話,十波裡有六波直接封頂,
+ * 難度與密度完全沒動——實測 90% 準確率 61% → 59%,等於白改。
+ *
+ * 投擲密度跟得上:終場 96 人的齊射倍率是 x4(volleyRate 封頂),實際 23ms 一發,
+ * 一波丟得出 576 下而只需要 144 下。**注意 `fireIntervalMs` 的 90ms 下限不是真的下限**——
+ * 它後面還要除以 volleyRate,只看那個常數會誤判成「打不完」。
+ */
+export const ENEMY_UNITS_PER_HERO = 2;
 export function waveSize(idealHeroes: number): number {
   const n = Math.round(idealHeroes * ENEMY_UNITS_PER_HERO);
   return Math.min(MAX_WAVE_SIZE, Math.max(MIN_WAVE_SIZE, n));

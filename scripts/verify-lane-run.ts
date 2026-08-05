@@ -11,7 +11,7 @@ import {
   LEVELS_PER_CHAPTER, WAVES_PER_LEVEL, LONG_LEVEL_WAVES, EASY_RATIO, lastEnemyRowIndex, isBossStage,
   GATE_WIDTH, GATE_WIDTH_MIN, gateWidthForStage, trapHalveWeightForStage, heroWaveEveryForStage,
   gateSpan, hitsGate, MONSTER_JITTER, SPECIES_PER_WAVE, START_OFFSET, terrainForStage,
-  ENEMY_POWER_RATIO, goodGateGrowthAt, gatesBeforeRow, isTrapGate, runSeconds, ELITE_MASS, ELITE_HITS, absorbedFrom,
+  ENEMY_POWER_RATIO, ENEMY_UNITS_PER_HERO, goodGateGrowthAt, gatesBeforeRow, isTrapGate, runSeconds, ELITE_MASS, ELITE_HITS, absorbedFrom,
   applyGate, gateLabel, DOUBLE_GATES_PER_RUN, GEAR_STEP, doubleGatesForStage, LONG_LEVEL_RATIO_SCALE,
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
   TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane, MIN_WAVE_SIZE,
@@ -282,8 +282,11 @@ const unitsByRow = run.filter((r) => r.nodes.every((n) => n.kind === 'enemy'))
 check('越後面的波次小怪越多(數量看得出難度)', unitsByRow.every((u, i) => i === 0 || u >= unitsByRow[i - 1]),
   unitsByRow.join(' → '));
 // 一波的隻數跟著理想人數走(人數就是血量,兩群的規模要同一個數量級)。
-check(`一波封頂 ${MAX_WAVE_SIZE} 隻、保底 ${MIN_WAVE_SIZE} 隻`,
-  waveSize(999) === MAX_WAVE_SIZE && waveSize(1) === MIN_WAVE_SIZE && waveSize(12) === 12);
+// 中間那一段用常數推,不要寫死數字:隻數倍率是可以調的旋鈕(打擊手感),
+// 寫死的話調它就會擋在這一項,而這一項要驗的是「線性關係」不是那個特定的數字。
+check(`一波封頂 ${MAX_WAVE_SIZE} 隻、保底 ${MIN_WAVE_SIZE} 隻、中間照 x${ENEMY_UNITS_PER_HERO} 走`,
+  waveSize(999) === MAX_WAVE_SIZE && waveSize(1) === MIN_WAVE_SIZE
+  && waveSize(12) === 12 * ENEMY_UNITS_PER_HERO);
 check('人數越多,面對的那一群也越大', [1, 5, 12, 20].map(waveSize).every((n, i, a) => i === 0 || n >= a[i - 1]));
 
 // --- 一波小怪的排列 ---
@@ -770,8 +773,14 @@ const accByStage = [1, 12, 102, 700, 1500, 2900].map((stage) => {
 check('準確率越高過關率越高(而且是單調的)',
   accByStage.every((s) => s.r.every((v, i) => i === 0 || v <= s.r[i - 1])));
 check('完全選對 -> 一定過關', accByStage.every((s) => s.r[0] >= 0.99));
-check('準確率 95% -> 大致過得去(讀得懂閘門就不該一直死)',
-  accByStage.every((s) => s.r[1] >= 0.7), accByStage.map((s) => (s.r[1] * 100).toFixed(0) + '%').join(' / '));
+// 門檻從 0.7 降到 0.5,因為難度被刻意調上去了(ENEMY_POWER_RATIO 0.48 → 0.51)。
+// **這個數字是跟著設計走的,不是「調到過為止」**:0.7 是舊難度的樣子,
+// 難度整條往下壓 12pp 之後還要求 0.7 等於把那次調整原地撤銷。
+// 真正要守住的是下面那一項——**第一大關(教學區)不能跟著變難**。
+check('準確率 95% -> 一半以上過得去(讀得懂閘門就不該一直死)',
+  accByStage.every((s) => s.r[1] >= 0.5), accByStage.map((s) => (s.r[1] * 100).toFixed(0) + '%').join(' / '));
+check('教學區(第 1 大關)不受難度調整影響,95% 準確率照樣穩過',
+  accByStage[0].r[1] >= 0.9, `第1關 95% 準確率 ${(accByStage[0].r[1] * 100).toFixed(0)}%`);
 // 第 1 關刻意比較寬鬆(它是玩家的第一次接觸),所以「失誤要有代價」只對後面的關卡要求。
 check('準確率 80% -> 明顯會死(失誤要有代價)',
   accByStage.filter((s) => s.stage > 1).every((s) => s.r[4] <= 0.4),
