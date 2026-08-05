@@ -32,7 +32,16 @@
 // 刻意不從 laneRun import 任何東西:laneRun 會 import 這個檔(理想路線要把場內技能算進去),
 // 反向再 import 就是循環相依——實測會炸在「Cannot access 'GEAR_STEP' before initialization」,
 // 而且是在模組載入時才炸,型別檢查完全看不出來。
-export type RunSkillId = 'edge' | 'swarm' | 'bulwark' | 'focus' | 'strike';
+export type RunSkillId =
+  | 'edge' | 'swarm' | 'bulwark' | 'focus'
+  // 主動技能(有冷卻、有特效、造成固定效果)。冷卻一律以**波**為單位。
+  | 'strike' | 'pierce' | 'rally' | 'aegis';
+
+/** 哪些是主動技能。轉職解鎖的就是這一串的前 N 款(見 laneJobs 的 activeSkillsForStage)。 */
+export const ACTIVE_SKILL_IDS: RunSkillId[] = ['strike', 'pierce', 'rally', 'aegis'];
+export function isActiveSkill(id: RunSkillId): boolean {
+  return ACTIVE_SKILL_IDS.includes(id);
+}
 
 export interface RunSkillSpec {
   id: RunSkillId;
@@ -72,8 +81,12 @@ const PER_LEVEL = {
   bulwarkTrade: 0.3,
   /** 專注:暴擊率(純演出,不影響擊殺數,見 laneRun 的 isCritHit) */
   focusCrit: 0.06,
-  /** 爆裂(主動):每次觸發直接清掉幾隻 */
+  /** 爆裂(主動):每次觸發直接清掉幾隻(固定值,前期最有感) */
   strikeKills: 2,
+  /** 貫穿(主動):清掉整波的幾成(比例值,後期大波才有感——跟爆裂互補) */
+  pierceRatio: 0.12,
+  /** 號令(主動):直接補幾個勇者 */
+  rallyHeroes: 1,
 };
 
 /**
@@ -96,6 +109,21 @@ export const RUN_SKILLS: RunSkillSpec[] = [
     id: 'strike',
     name: '爆裂',
     describe: (l) => `每 ${strikeCooldownWaves(l)} 波清掉 ${PER_LEVEL.strikeKills * l} 隻`,
+  },
+  {
+    id: 'pierce',
+    name: '貫穿',
+    describe: (l) => `每 ${strikeCooldownWaves(l)} 波清掉整波的 ${Math.round(PER_LEVEL.pierceRatio * l * 100)}%`,
+  },
+  {
+    id: 'rally',
+    name: '號令',
+    describe: (l) => `每 ${strikeCooldownWaves(l)} 波補 ${PER_LEVEL.rallyHeroes * l} 個勇者`,
+  },
+  {
+    id: 'aegis',
+    name: '壁障',
+    describe: (l) => `每 ${strikeCooldownWaves(l) + 2} 波擋下一整波的損失`,
   },
 ];
 
@@ -200,16 +228,31 @@ export interface RunSkillEffects {
   /** 額外暴擊率(純演出) */
   bonusCrit: number;
   /**
-   * 主動技能「爆裂」每次觸發直接清掉幾隻。0 = 沒點。
+   * 目前帶著的主動技能,每一款各自的冷卻與效果。
    *
-   * **刻意是固定值,不是百分比。** 百分比會被敵人曲線完全吸收(敵人是照最佳路線算的,
-   * 最佳路線包含技能),畫面很炫但難度一點沒動;固定值對已經滾出 80 人的最佳玩家是零頭,
-   * 對剩 12 個人的你是活下來——**越落後越有用**,而且因此不進理想路線(理想玩家全清,
-   * 額外擊殺對他是浪費),不會讓敵人為了一個沒人用得到的東西變強。
+   * **主動技能一律是固定效果,不是百分比戰力。** 百分比會被敵人曲線完全吸收
+   * (敵人照最佳路線算,而最佳路線包含技能),畫面很炫但難度一點沒動;固定效果對已經
+   * 滾出 80 人的最佳玩家是零頭,對剩 12 個人的你是活下來——**越落後越有用**。
+   * 也因為這樣它們**不進理想路線**(理想玩家全清,額外擊殺對他是浪費),
+   * 不會讓敵人為了一個沒人用得到的東西變強(跟兌換率同一個道理)。
    */
-  strikeKills: number;
-  /** 爆裂的冷卻(幾波一次)。沒點就是 Infinity。 */
-  strikeCooldown: number;
+  actives: ActiveTrigger[];
+}
+
+/** 一款主動技能觸發時做什麼。 */
+export interface ActiveTrigger {
+  id: RunSkillId;
+  name: string;
+  /** 幾波觸發一次 */
+  cooldown: number;
+  /** 直接清掉幾隻(固定值) */
+  kills?: number;
+  /** 清掉整波的幾成(比例值) */
+  killRatio?: number;
+  /** 直接補幾個勇者 */
+  heroes?: number;
+  /** 擋下這一波的全部損失 */
+  immune?: boolean;
 }
 
 /**
@@ -221,23 +264,33 @@ export function runSkillEffects(skills: RunSkillState[]): RunSkillEffects {
   let heroes = 0;
   let trade = 0;
   let crit = 0;
-  let strikeKills = 0;
-  let strikeLevel = 0;
+  const actives: ActiveTrigger[] = [];
   for (const s of skills) {
     const level = Math.min(MAX_RUN_SKILL_LEVEL, Math.max(0, s.level));
     if (s.id === 'edge') attack += PER_LEVEL.edgeAttack * level;
     if (s.id === 'swarm') heroes += PER_LEVEL.swarmHeroes * level;
     if (s.id === 'bulwark') trade += PER_LEVEL.bulwarkTrade * level;
     if (s.id === 'focus') crit += PER_LEVEL.focusCrit * level;
-    if (s.id === 'strike') { strikeKills += PER_LEVEL.strikeKills * level; strikeLevel = Math.max(strikeLevel, level); }
+    if (level <= 0) continue;
+    if (s.id === 'strike') {
+      actives.push({ id: s.id, name: '爆裂', cooldown: strikeCooldownWaves(level), kills: PER_LEVEL.strikeKills * level });
+    }
+    if (s.id === 'pierce') {
+      actives.push({ id: s.id, name: '貫穿', cooldown: strikeCooldownWaves(level), killRatio: PER_LEVEL.pierceRatio * level });
+    }
+    if (s.id === 'rally') {
+      actives.push({ id: s.id, name: '號令', cooldown: strikeCooldownWaves(level), heroes: PER_LEVEL.rallyHeroes * level });
+    }
+    if (s.id === 'aegis') {
+      actives.push({ id: s.id, name: '壁障', cooldown: strikeCooldownWaves(level) + 2, immune: true });
+    }
   }
   return {
     attackMultiplier: 1 + attack,
     heroMultiplier: 1 + heroes,
     tradeMultiplier: 1 + trade,
     bonusCrit: crit,
-    strikeKills,
-    strikeCooldown: strikeLevel > 0 ? strikeCooldownWaves(strikeLevel) : Infinity,
+    actives,
   };
 }
 

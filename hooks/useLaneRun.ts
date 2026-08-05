@@ -13,6 +13,7 @@ import {
   resolveRow,
   runLength,
   runSpeed,
+  type WaveBoost,
   START_OFFSET,
   totalAttack,
   VISIBLE_AHEAD,
@@ -138,7 +139,7 @@ export interface LaneRunView {
   /** 正在加速趕路(前方沒東西)。畫面拿它做視覺回饋。 */
   dashing: boolean;
   /** 主動技能剛觸發(時間戳 + 清掉幾隻)。畫面拿它播特效。 */
-  lastStrike: { at: number; kills: number } | null;
+  lastStrike: { at: number; names: string[]; kills: number } | null;
   /** 手指拖曳:直接把角色放到這個位置 */
   dragTo: (offset: number) => void;
   /** 方向鍵:滑順移到隔壁跑道中央 */
@@ -217,8 +218,8 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
    * 主動技能「爆裂」:距離上次觸發過了幾波。冷卻**用波數不用秒**——
    * 綁秒的話跑速一變技能強度就跟著變(第 1 關每 4.5 排、第 40 關每 11 排)。
    */
-  const wavesSinceStrikeRef = useRef(99);
-  const [lastStrike, setLastStrike] = useState<{ at: number; kills: number } | null>(null);
+  const wavesSinceRef = useRef<Record<string, number>>({});
+  const [lastStrike, setLastStrike] = useState<{ at: number; names: string[]; kills: number } | null>(null);
 
   const paused = skillOffers.length > 0;
 
@@ -481,18 +482,24 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         // 踩到哪一格是「通過這一排的當下」才決定的,所以直接讀 ref 換算,不用 prev.lane。
         const landed = { ...prev, lane: laneFromOffset(offsetRef.current) };
         // 帶著連續位置去結算:站對邊還不夠,得真的踩在閘門上(見 laneRun 的 hitsGate)。
-        // 敵人排:先看爆裂的冷卻好了沒,好了就把它的固定擊殺數帶進結算。
-        let bonusKills = 0;
+        // 敵人排:先看每一款主動技能的冷卻好了沒,好了的就把效果併進這一波的結算。
+        const boost: WaveBoost = {};
+        const fired: string[] = [];
         if (due.nodes[0]?.kind === 'enemy') {
-          const fx = runSkillEffects(runSkills);
-          wavesSinceStrikeRef.current += 1;
-          if (fx.strikeKills > 0 && wavesSinceStrikeRef.current >= fx.strikeCooldown) {
-            bonusKills = fx.strikeKills;
-            wavesSinceStrikeRef.current = 0;
-            setLastStrike({ at: Date.now(), kills: bonusKills });
+          const units = due.nodes[0].enemy?.units ?? 0;
+          for (const a of runSkillEffects(runSkills).actives) {
+            const since = (wavesSinceRef.current[a.id] ?? 99) + 1;
+            if (since < a.cooldown) { wavesSinceRef.current[a.id] = since; continue; }
+            wavesSinceRef.current[a.id] = 0;
+            fired.push(a.name);
+            if (a.kills) boost.kills = (boost.kills ?? 0) + a.kills;
+            if (a.killRatio) boost.kills = (boost.kills ?? 0) + Math.ceil(units * a.killRatio);
+            if (a.heroes) boost.heroes = (boost.heroes ?? 0) + a.heroes;
+            if (a.immune) boost.immune = true;
           }
+          if (fired.length > 0) setLastStrike({ at: Date.now(), names: fired, kills: boost.kills ?? 0 });
         }
-        const r = resolveRow(landed, due, offsetRef.current, bonusKills);
+        const r = resolveRow(landed, due, offsetRef.current, boost);
         feedbackKeyRef.current += 1;
         setFeedback({
           key: feedbackKeyRef.current,

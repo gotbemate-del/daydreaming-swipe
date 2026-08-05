@@ -1100,20 +1100,30 @@ export const MISS_MESSAGE = '沒碰到';
  *
  * **人數在這裡可以歸零**(閘門不行,見 applyGate):死亡發生在「最後一個人被換掉」那一刻。
  */
-export function resolveEnemy(state: RunState, enemy: EnemyEffect, bonusKills = 0): RowResolution {
-  // bonusKills = 主動技能這一波清掉的隻數(固定值,見 laneRunSkills 的 strikeKills)。
-  // 加在 kills 上而不是加在戰力上:固定值才有「越落後越有用」的性質,
+/** 主動技能這一波帶來的效果(見 laneRunSkills 的 ActiveTrigger)。 */
+export interface WaveBoost {
+  /** 額外清掉幾隻 */
+  kills?: number;
+  /** 額外補幾個勇者 */
+  heroes?: number;
+  /** 這一波的損失全擋下來 */
+  immune?: boolean;
+}
+
+export function resolveEnemy(state: RunState, enemy: EnemyEffect, boost: WaveBoost = {}): RowResolution {
+  // 主動技能加在 kills 上而不是加在戰力上:固定效果才有「越落後越有用」的性質,
   // 而且理想玩家本來就全清,對他等於零——所以它不進理想路線,也就不會把敵人養大。
   const kills = Math.min(
     enemy.units,
-    waveKillCount(totalAttack(state), enemy.power, enemy.units) + Math.max(0, bonusKills),
+    waveKillCount(totalAttack(state), enemy.power, enemy.units) + Math.max(0, boost.kills ?? 0),
   );
   const leaked = Math.max(0, enemy.units - kills);
   const next = { ...state };
   // 打倒的怪有一部分加入隊伍。放在「漏 0」那條路徑上而不是照 kills 給:
   // 半殘的一波已經在扣人了,再補回來會讓「擋不住」這件事變得模糊。
-  if (leaked === 0) {
-    const joined = absorbedFrom(kills, enemy.leakCost);
+  const rallied = Math.max(0, boost.heroes ?? 0);
+  if (leaked === 0 || boost.immune) {
+    const joined = absorbedFrom(kills, enemy.leakCost) + rallied;
     next.coins += enemy.reward;
     next.heroes += joined;
     return {
@@ -1126,6 +1136,7 @@ export function resolveEnemy(state: RunState, enemy: EnemyEffect, bonusKills = 0
     };
   }
   const cost = Math.max(1, enemy.leakCost ?? 1);
+  next.heroes += rallied;
   const lost = Math.ceil((leaked * cost) / Math.max(BASE_TRADE_RATE, next.tradeRate));
   const before = totalAttack(next);
   next.heroes = next.heroes - lost;
@@ -1145,7 +1156,7 @@ export function resolveEnemy(state: RunState, enemy: EnemyEffect, bonusKills = 0
  * 走過一排:只有玩家所在跑道的節點會生效,而且閘門還要真的踩到(見 hitsGate)。
  * offset 不給的話當作站在該跑道正中央——驗證腳本用跑道模擬時就是這個意思。
  */
-export function resolveRow(state: RunState, row: RunRow, offset?: number, bonusKills = 0): RowResolution {
+export function resolveRow(state: RunState, row: RunRow, offset?: number, boost: WaveBoost = {}): RowResolution {
   const at = offset ?? laneCenterOffset(state.lane);
   const node = row.nodes.find((n) => n.lane === state.lane);
   const advanced = { ...state, rowIndex: row.index + 1 };
@@ -1155,7 +1166,7 @@ export function resolveRow(state: RunState, row: RunRow, offset?: number, bonusK
   }
 
   if (node.kind === 'enemy' && node.enemy) {
-    const r = resolveEnemy(advanced, node.enemy, bonusKills);
+    const r = resolveEnemy(advanced, node.enemy, boost);
     return { ...r, state: { ...r.state, rowIndex: row.index + 1 } };
   }
 

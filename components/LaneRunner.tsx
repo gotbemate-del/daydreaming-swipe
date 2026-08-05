@@ -498,7 +498,9 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
             // 而「爆裂 -N 隻」會跟同一時間跳出來的「擊倒… +N 人」疊在一起,兩行都看不清楚。
             style={[styles.floating, { left: 0, right: 0, top: Math.max(4, headY - 250), alignItems: 'center' }]}
           >
-            <Text style={styles.strikeText}>爆裂 -{lastStrike.kills} 隻</Text>
+            <Text style={styles.strikeText}>
+              {lastStrike.names.join(' + ')}{lastStrike.kills > 0 ? ` -${lastStrike.kills} 隻` : ''}
+            </Text>
             <Image
               source={weaponArt(job?.archetype ?? null, MAX_GEAR)}
               resizeMode="contain"
