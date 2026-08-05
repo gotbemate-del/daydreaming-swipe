@@ -2,6 +2,7 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true,
+    "types": ["node"],
     "paths": {
       "@/*": [
         "./*"
@@ -17,8 +18,8 @@
     ".expo/types/**/*.ts",
     "expo-env.d.ts"
   ],
+  "comment": "scripts/ 一定要被檢查:那裡面是驗證腳本,而 tsx 用 esbuild 只剝型別不檢查,\n所以排除掉的話錯誤要等到執行時才炸(或根本不炸——實測 simRun 有一行讀早就刪掉的 maxHp,\n算出 NaN 塞進一個沒人讀的欄位,靜靜地錯了好幾個 commit)。",
   "exclude": [
-    "node_modules",
-    "scripts/**/*"
+    "node_modules"
   ]
 }

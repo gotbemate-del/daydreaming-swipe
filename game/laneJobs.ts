@@ -18,12 +18,14 @@ import {
   type JobBranch,
   type JobTier,
 } from './combat';
-import { DEFAULT_RUN_START, type RunStart } from './laneRun';
+import { DEFAULT_RUN_START, LEVELS_PER_CHAPTER, PROMOTION_CHAPTERS, type RunStart } from './laneRun';
 
 export type { Archetype, JobBranch, JobTier };
 
 /** 幾關轉一次職。 */
-export const PROMOTION_EVERY = 5;
+// 轉職的時程表與「這一階開幾款主動技能」都放在 laneRun(關卡結構層):
+// laneJobs 會 import laneRun,反過來 import 就是循環相依。
+export { PROMOTION_CHAPTERS, activeSkillCountForStage, tierAtStage } from './laneRun';
 
 export interface JobState {
   archetype: Archetype;
@@ -44,15 +46,21 @@ export const ARCHETYPES: Archetype[] = [
 ];
 
 /** 通過第幾關之後可以轉職。第 5、10、15… 關,對應 1~5 階。 */
+/** 轉職只發生在「某個大關的最後一個小關」通過的時候。 */
 export function isPromotionStage(clearedStage: number): boolean {
-  return clearedStage > 0 && clearedStage % PROMOTION_EVERY === 0 && tierAfter(clearedStage) !== null;
+  return clearedStage > 0
+    && clearedStage % LEVELS_PER_CHAPTER === 0
+    && PROMOTION_CHAPTERS.includes(clearedStage / LEVELS_PER_CHAPTER)
+    && tierAfter(clearedStage) !== null;
 }
 
 /** 通過這一關之後會轉到第幾階。超過 5 階就沒有下一階了(回傳 null)。 */
 export function tierAfter(clearedStage: number): JobTier | null {
-  const tier = Math.floor(clearedStage / PROMOTION_EVERY);
-  return tier >= 1 && tier <= 5 ? (tier as JobTier) : null;
+  if (clearedStage <= 0 || clearedStage % LEVELS_PER_CHAPTER !== 0) return null;
+  const index = PROMOTION_CHAPTERS.indexOf(clearedStage / LEVELS_PER_CHAPTER);
+  return index >= 0 ? ((index + 1) as JobTier) : null;
 }
+
 
 export interface JobChoice {
   job: JobState;

@@ -7,7 +7,7 @@
 
 import {
   bestLane, createRun, initialRunState, isEnemyRowIndex, LANE_COUNT, laneCenterOffset, resolveRow,
-  wavesForStage, worstLane, type Lane, type RunRow, type RunStart, type RunState,
+  wavesForStage, worstLane, activeSkillCountForStage, type Lane, type RunRow, type RunStart, type RunState,
 } from '../game/laneRun';
 import {
   applyRunSkillPick, bestRunSkillChoice, learnRunSkill, runSkillOffersAt, runSkillPicksForWave,
@@ -79,13 +79,13 @@ export function simulateRun(
       waveIndex += 1;
       for (let k = 0; k < picks; k++) {
         // 選項綁 seed:createRun 的理想路線重播的是同一串,兩邊才對得起來。
-        const offers = runSkillOffersAt(skills, seed, skillOrdinal);
+        const offers = runSkillOffersAt(skills, seed, skillOrdinal, activeSkillCountForStage(stage));
         skillOrdinal += 1;
         if (offers.length === 0) break;
         const choice = bestRunSkillChoice(skills, offers);
         const grown = applyRunSkillPick(skills, choice, st);
         skills = learnRunSkill(skills, choice);
-        st = { ...st, ...grown, hp: Math.min(grown.maxHp, st.hp + Math.max(0, grown.maxHp - st.maxHp)) };
+        st = { ...st, ...grown };
       }
     }
   }

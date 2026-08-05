@@ -159,10 +159,16 @@ export function totalRunSkillPicks(totalWaves: number): number {
  * 這次可以挑什麼。已經滿級的不再出現;全部滿級就回傳空陣列(外層看到空的就跳過)。
  * 用傳進來的 rng,驗證腳本才能重現同一組選項。
  */
-export function runSkillOffers(skills: RunSkillState[], rng: () => number = Math.random): RunSkillState[] {
+export function runSkillOffers(
+  skills: RunSkillState[], rng: () => number = Math.random, activeCount = ACTIVE_SKILL_IDS.length,
+): RunSkillState[] {
   // 帶滿 10 格之後只能升級手上的——不然「廣度 vs 深度」那個決策不存在(永遠可以再拿新的)。
   const full = skills.length >= MAX_RUN_SKILL_SLOTS;
+  // 還沒解鎖的主動技能不會出現。activeCount 由 laneRun 的 activeSkillCountForStage 給——
+  // **轉職給的就是這個數字**(學生 1 款 → 5轉 全開),不是給倍率。
+  const unlocked = new Set(ACTIVE_SKILL_IDS.slice(0, Math.max(1, activeCount)));
   const pool = RUN_SKILLS
+    .filter((spec) => !isActiveSkill(spec.id) || unlocked.has(spec.id))
     .filter((spec) => !full || skills.some((s) => s.id === spec.id))
     .map((spec) => ({ id: spec.id, level: runSkillLevel(skills, spec.id) + 1 }))
     .filter((o) => o.level <= MAX_RUN_SKILL_LEVEL);
@@ -183,14 +189,16 @@ export function runSkillOffers(skills: RunSkillState[], rng: () => number = Math
  * 結構保證(每一排都精確等於 1/ENEMY_POWER_RATIO)就沒了。
  * 綁 seed 之後 createRun 可以把同一組選項重播一次,理想路線才是真的「這一場」的上限。
  */
-export function runSkillOffersAt(skills: RunSkillState[], seed: number, ordinal: number): RunSkillState[] {
+export function runSkillOffersAt(
+  skills: RunSkillState[], seed: number, ordinal: number, activeCount?: number,
+): RunSkillState[] {
   // 跟跑圖的閘門用不同的雜湊常數:共用一條的話,多開一次選單就會把後面所有閘門位移。
   let x = (Math.imul(seed ^ 0x5bf03635, 0x27d4eb2f) ^ Math.imul(ordinal + 1, 0x85ebca6b)) >>> 0;
   const rng = () => {
     x = (Math.imul(x ^ (x >>> 15), 0x2c1b3c6d) + 0x9e3779b9) >>> 0;
     return (x >>> 8) / 0x1000000;
   };
-  return runSkillOffers(skills, rng);
+  return runSkillOffers(skills, rng, activeCount);
 }
 
 /**

@@ -24,6 +24,7 @@ import {
   DEFAULT_RUN_START,
   isEnemyRowIndex,
   wavesForStage,
+  activeSkillCountForStage,
   hitDamage,
   isCritHit,
   type Lane,
@@ -461,7 +462,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
       setPendingPicks((left) => {
         const remaining = left - 1;
         if (remaining > 0) {
-          setSkillOffers(runSkillOffersAt(next, seed, skillOrdinalRef.current));
+          setSkillOffers(runSkillOffersAt(next, seed, skillOrdinalRef.current, activeSkillCountForStage(stage)));
           skillOrdinalRef.current += 1;
         } else {
           setSkillOffers([]);
@@ -515,7 +516,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         clearedWavesRef.current += 1;
         const picks = runSkillPicksForWave(waveIndex, totalWaves);
         if (picks > 0) {
-          const offers = runSkillOffersAt(runSkills, seed, skillOrdinalRef.current);
+          const offers = runSkillOffersAt(runSkills, seed, skillOrdinalRef.current, activeSkillCountForStage(stage));
           skillOrdinalRef.current += 1;
           // 全部滿級就沒東西可選,直接跳過,不要卡一個空面板。
           if (offers.length > 0) {

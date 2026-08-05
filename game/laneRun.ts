@@ -18,6 +18,7 @@
 
 import { FINAL_BOSS_MONSTER, getStageBossMonster, pickMonster } from './monsters';
 import {
+  ACTIVE_SKILL_IDS,
   applyRunSkillPick, bestRunSkillChoice, learnRunSkill, runSkillOffersAt, runSkillPicksForWave,
   type RunSkillState,
 } from './laneRunSkills';
@@ -336,6 +337,37 @@ export function bossIndexForStage(stage: number): number {
 export const LEVELS_PER_CHAPTER = 10;
 /** 總共幾個大關。 */
 export const TOTAL_CHAPTERS = 300;
+/**
+ * 每一次轉職發生在**哪一個大關結束**(不是每 N 個小關一次)。
+ *
+ * 舊版是每 5 個**小關**轉一次(5/10/15/20/25),整條養成 25 關就走完了——
+ * 但關卡總長是 300 大關 = 3000 小關,等於 99% 的旅程沒有任何轉職里程碑。
+ *
+ * 間隔逐次放大(5 → 25 → 50 → 80 → 100 個大關),因為越後期玩家的單位時間產出越高,
+ * 里程碑之間拉長才維持得住「還有東西可以追」。
+ *
+ * ⚠ **轉職給的是「招式格」不是「倍率」。** 現在的帳:滿轉職 + 滿永久技能 = 起跑 x2.17,
+ * 而容錯緩衝只有 1/ENEMY_POWER_RATIO ≈ 2.08x——**已經超支了**。曲線拉到 260 個大關之後,
+ * 還想靠倍率給成長感的話平均每次只有 +15%,完全感覺不到。所以每一階解鎖的是
+ * **多一款主動技能**(從 1 招到 4 招同時在轉冷卻,體感天差地遠),戰力倍率幾乎不動。
+ */
+export const PROMOTION_CHAPTERS = [5, 30, 80, 160, 260];
+
+/** 目前是第幾階(通過了幾個轉職大關)。學生 = 0。 */
+export function tierAtStage(stage: number): number {
+  const chapter = chapterOfStage(stage);
+  return PROMOTION_CHAPTERS.filter((c) => chapter > c).length;
+}
+
+/**
+ * 這一關能開出哪幾款主動技能。**這就是轉職給的東西。**
+ *
+ * 學生(第 1~5 大關)只有 1 款,所以那 10 個技能格幾乎只能往深點——新手不用面對
+ * 一整排選項,而「廣度 vs 深度」這個決策留到 1轉之後才登場。
+ */
+export function activeSkillCountForStage(stage: number): number {
+  return Math.min(ACTIVE_SKILL_IDS.length, 1 + tierAtStage(stage));
+}
 /** 一般小關幾波敵人。**每打完一波給一次技能選擇**,所以這個數字就是一場能挑幾次。 */
 export const WAVES_PER_LEVEL = 10;
 /** 加倍長的小關(編號是 5 的倍數)幾波敵人。 */
@@ -1000,7 +1032,7 @@ export function createRun(seed: number, stage: number): RunRow[] {
       // 人數被增殖拉高之後,後面每一格 +N 相對就變小了——合成一個數字會漏掉這層互動。
       const picks = runSkillPicksForWave(waveIndex, totalWaves);
       for (let k = 0; k < picks; k++) {
-        const offers = runSkillOffersAt(idealSkills, seed, skillOrdinal);
+        const offers = runSkillOffersAt(idealSkills, seed, skillOrdinal, activeSkillCountForStage(stage));
         skillOrdinal += 1;
         if (offers.length === 0) break;
         const choice = bestRunSkillChoice(idealSkills, offers);

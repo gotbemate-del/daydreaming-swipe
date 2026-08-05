@@ -4,7 +4,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  ARCHETYPES, isPromotionStage, jobChoices, jobTitle, PROMOTION_EVERY, runStartFor, tierAfter,
+  ARCHETYPES, isPromotionStage, jobChoices, jobTitle, PROMOTION_CHAPTERS, runStartFor, tierAfter,
+  activeSkillCountForStage,
   type JobState, type JobTier,
 } from '../game/laneJobs';
 import {
@@ -20,10 +21,20 @@ const check = (name: string, cond: boolean, extra = '') => {
 };
 
 // --- 什麼時候轉職 ---
-const promotionStages = Array.from({ length: 30 }, (_, i) => i + 1).filter(isPromotionStage);
-check(`每 ${PROMOTION_EVERY} 關轉一次`, promotionStages.join(',') === '5,10,15,20,25', promotionStages.join(','));
-check('第 5 階之後不再轉職', tierAfter(30) === null && tierAfter(25) === 5);
-check('沒通關不會轉職', !isPromotionStage(0) && !isPromotionStage(4) && !isPromotionStage(6));
+// 轉職綁**大關**(第 5/30/80/160/260 大關結束),不是每 5 個小關一次。
+// 舊版 25 個小關就把五階走完,但關卡總長是 3000 小關——99% 的旅程沒有里程碑。
+const promotionStages = Array.from({ length: 2700 }, (_, i) => i + 1).filter(isPromotionStage);
+check('轉職發生在第 5/30/80/160/260 大關結束',
+  promotionStages.join(',') === PROMOTION_CHAPTERS.map((c) => c * 10).join(','),
+  promotionStages.map((s) => `${s / 10}大關`).join(' '));
+check('第 5 階之後不再轉職', tierAfter(2700) === null && tierAfter(2600) === 5);
+check('沒通關、或不是大關結尾都不會轉職',
+  !isPromotionStage(0) && !isPromotionStage(4) && !isPromotionStage(6) && !isPromotionStage(49));
+// 轉職給的是**招式格**不是倍率:學生 1 款主動,每轉一階多一款。
+check('轉職解鎖的是主動技能款數(不是戰力倍率)',
+  activeSkillCountForStage(1) === 1 && activeSkillCountForStage(51) === 2
+  && activeSkillCountForStage(301) === 3 && activeSkillCountForStage(2601) >= 4,
+  [1, 51, 301, 801, 1601, 2601].map((s) => `${s}關:${activeSkillCountForStage(s)}款`).join(' '));
 
 // --- 選項 ---
 const firstChoices = jobChoices(null, 1);
