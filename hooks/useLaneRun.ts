@@ -20,7 +20,6 @@ import {
   volleyRate,
   waveKillCount,
   waveMonsters,
-  throwerIndices,
   waveLength,
   DEFAULT_RUN_START,
   isEnemyRowIndex,
@@ -97,17 +96,17 @@ export interface Projectile {
 }
 
 export interface WaveView {
-  rowIndex: number;
   species: WaveSpecies[];
   boss: boolean;
   /** 精英排:一隻大的。畫面要畫大、要有血條(牠要打好幾下才倒)。 */
   elite: boolean;
   /** 勇者波:敵方是勇者,會投擲武器。畫面要用職業立繪,而且要畫出飛過來的武器。 */
   heroWave: boolean;
-  /** 武器落點(offset 區間)。站在裡面就會被砸中。 */
-  hazards: { from: number; to: number }[];
-  /** 第 i 個落點是誰丟的(monsters 的索引)。畫面要從他身上把武器丟出來。 */
-  throwerIndices: number[];
+  /**
+   * 這是第幾排。勇者波的落點要現算(丟的人是「還沒被打倒的那些」),所以畫面拿它
+   * 加上 down[] 自己算——不存一份固定的落點,存了就會跟「誰還活著」對不起來。
+   */
+  rowIndex: number;
   /**
    * 這一波的屬性。**整波共用一個**,畫面直接把整群染成這個顏色——
    * 屬性長在怪身上,不是只寫在面板上(見 artAssets 的 ELEMENT_COLORS)。
@@ -182,8 +181,6 @@ interface WaveRuntime {
   boss: boolean;
   elite: boolean;
   heroWave: boolean;
-  hazards: { from: number; to: number }[];
-  throwerIndices: number[];
   element?: RunSkillId;
   monsters: WaveMonster[];
   /** 每一隻各自挨了幾下。打不倒的那幾隻也會累加——勇者照樣丟,只是丟不倒。 */
@@ -367,8 +364,6 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         boss: enemy.boss === true,
         elite: enemy.elite === true,
         heroWave: enemy.heroWave === true,
-        hazards: enemy.hazards ?? [],
-        throwerIndices: throwerIndices(enemy.units),
         element: enemy.element,
         monsters: waveMonsters(
           enemyRow.index, enemy.units, enemyRow.distance, enemy.species.length,
@@ -487,8 +482,6 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
             boss: current!.boss,
             elite: current!.elite,
             heroWave: current!.heroWave,
-            hazards: current!.hazards,
-            throwerIndices: current!.throwerIndices,
             element: current!.element,
             hitsOn: [...current!.hitsOn],
             hitsPerUnit: current!.hitsPerUnit,

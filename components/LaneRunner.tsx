@@ -85,13 +85,15 @@ const ELEMENT_TINT_OPACITY = 0.45;
 /** 敵方勇者的武器從投擲者飛到玩家要多久。 */
 const ENEMY_SHOT_MS = 800;
 /**
- * 同一條線上同時掛幾把。
+ * 同一個人同時掛幾把。
  *
- * 危險帶拿掉之後,「哪一條線不能站」全靠這一串武器來說——一兩把會斷成一顆一顆蹦,
- * 玩家要盯著才看得出那是一條連續的線。三把才連得成一道,而且遠近都有,
- * 從畫面上緣到勇者頭頂中間不會出現空窗。
+ * 只有一個投擲者的時候是 3 把(要靠它連成一條看得出來的線)。改成「活著的人都在丟」之後
+ * 線有十幾條,3 把會變成 35 把同時在畫面上——閘門整個被蓋住,而且反而看不出哪裡安全。
+ * 2 把仍然連得成一道,總量卻少三分之一。
  */
-const ENEMY_SHOTS_PER_LANE = 3;
+const ENEMY_SHOTS_PER_LANE = 2;
+/** 敵人的武器畫多大。比玩家丟的小一點:它們數量多,同尺寸會把整個畫面吃掉。 */
+const ENEMY_SHOT_SIZE = 24;
 
 
 /**
@@ -383,41 +385,45 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
   }
 
   /**
-   * 勇者波:敵方勇者**各自擲出武器,直線飛下來**。
+   * 勇者波:**每一個還沒被打倒的敵方勇者都在丟**,而且丟到他自己被打倒為止。
    *
-   * 舊版是在地上畫一條紅色危險帶。問題不是不夠清楚,是它跟「誰在丟」完全脫鉤——
-   * 帶子憑空出現在一個沒有任何人站著的位置,看起來像地形而不是攻擊。現在落點就是投擲者
-   * 站的那一條線(見 laneRun 的 hazardsFor),所以直接畫他丟出來的武器往下飛,
-   * 帶子就不必存在了:**看到武器往哪一條線飛,就知道不能站在那裡。**
+   * 兩版之前是在地上畫一條紅色危險帶。問題不是不夠清楚,是它跟「誰在丟」完全脫鉤——
+   * 帶子憑空出現在一個沒有任何人站著的位置,看起來像地形而不是攻擊。
+   * 上一版改成畫投擲者丟出來的武器,但**只有一個人在丟**:一整波二十個勇者只有一個在動,
+   * 其他人看起來像背景,而且被打倒的那個照樣在丟。
+   *
+   * 現在的規則跟邏輯層完全一致(laneRun 的 hazardsFor):活著的人都在丟,
+   * 每個人丟自己那條線,打倒一個就少一條——**畫面上「還剩幾條線」就是「你還沒打完幾個」。**
    *
    * 只有直線:武器不追人,所以閃避仍然是「位置管理」而不是「反應」——
    * 跟閘門同一套連續位置判定,只是反過來用(閘門要踩上去,這個要離開)。
    */
   function renderEnemyShots(w: WaveView) {
-    if (!w.heroWave || w.hazards.length === 0) return [];
+    if (!w.heroWave) return [];
     const tint = elementColor(w.element);
     // 丟出來的武器也照敵人的職業走,不是照玩家的——敵人拿的是他自己的武器。
     const look = enemyHeroLookForRow(stage, w.rowIndex);
     const shots: React.ReactNode[] = [];
-    w.hazards.forEach((h, i) => {
-      const center = (h.from + h.to) / 2;
-      const thrower = w.monsters[w.throwerIndices[i] ?? 0];
-      if (!thrower || w.down[thrower.index]) return;
-      const fromAhead = thrower.distance - distance;
+    w.monsters.forEach((m, i) => {
+      // 被打倒的人不再丟。這是這一版最重要的一條:打倒他就少一條線,
+      // 玩家的攻擊因此在勇者波上有**看得見的**回饋,而不是只有結算時的數字。
+      if (w.down[m.index]) return;
+      const fromAhead = m.distance - distance;
       if (fromAhead <= 0) return;
-      // 一條線上同時掛兩把、相位差半個週期,武器才會連成一串而不是一顆一顆蹦出來。
+      // 一條線上同時掛幾把、相位錯開,武器才會連成一串而不是一顆一顆蹦出來。
+      // 相位再加上 i,免得所有人同一拍出手——那樣看起來像一整排在齊射。
       for (let k = 0; k < ENEMY_SHOTS_PER_LANE; k++) {
-        const phase = ((Date.now() / ENEMY_SHOT_MS) + k / ENEMY_SHOTS_PER_LANE) % 1;
+        const phase = ((Date.now() / ENEMY_SHOT_MS) + k / ENEMY_SHOTS_PER_LANE + i * 0.29) % 1;
         const ahead = fromAhead * (1 - phase);
         if (ahead > VISIBLE_AHEAD) continue;
-        // 同一條線上三把要是**同一件武器**(variant 只看 i 不看 k)。各丟各的話,
+        // 同一個人丟的每一把都是**同一件武器**(variant 只看 i 不看 k)。各丟各的話,
         // 玩家看到的是一串不相干的東西掉下來,反而讀不出「這是一條線」。
         const art = weaponArt(look.archetype, look.tier, i);
         const box = {
-          left: center * trackWidth - PROJECTILE_SIZE / 2,
-          top: bottomYFor(ahead, headY) - PROJECTILE_SIZE,
-          width: PROJECTILE_SIZE,
-          height: PROJECTILE_SIZE,
+          left: m.offset * trackWidth - ENEMY_SHOT_SIZE / 2,
+          top: bottomYFor(ahead, headY) - ENEMY_SHOT_SIZE,
+          width: ENEMY_SHOT_SIZE,
+          height: ENEMY_SHOT_SIZE,
           transform: [{ rotate: '135deg' }],
         };
         shots.push(

@@ -138,8 +138,11 @@ export interface EnemyEffect {
    * 閘門是「要踩上去」,投擲是「不能站在那裡」。
    */
   heroWave?: boolean;
-  /** 武器的落點(offset 區間)。站在區間裡就會被砸中,砸中削掉一部分隊伍。 */
-  hazards?: { from: number; to: number }[];
+  /**
+   * 這是第幾排。勇者波要用它算落點——**落點不能在產生排的時候就固定**,
+   * 因為丟的人是「還沒被打倒的那些」,而那取決於玩家當下的戰力(見 hazardsFor)。
+   */
+  rowIndex?: number;
   /** 這一波的屬性。帶著剋它的元素,那個元素的效果會放大(見 laneRunSkills 的 ELEMENT_COUNTERS)。 */
   element?: RunSkillId;
   /**
@@ -941,12 +944,16 @@ export function waveElementsForStage(stage: number): { element: RunSkillId; hidd
   }
   return out;
 }
-/** 一次砸幾發。之後可以照大關遞增(1 發 → 2 發分開 → 2 發夾擊只留中間一條縫)。 */
-export const HAZARD_COUNT = 1;
 /** 一發砸多寬(offset 單位)。跑道總寬 1,閘門是 0.34,所以這個要比閘門窄一點才閃得掉。 */
 export const HAZARD_WIDTH = 0.26;
-/** 被砸中削掉隊伍的幾成。刻意不是全滅:勇者是一群、散開有寬度,砸在邊緣只掉一部分。 */
-export const HAZARD_LOSS_RATIO = 0.25;
+/**
+ * 被砸中削掉隊伍的幾成。刻意不是全滅:勇者是一群、散開有寬度,砸在邊緣只掉一部分。
+ *
+ * 從 0.25 降到 0.14,是因為**丟的人從固定 1 個變成「所有還沒被打倒的」**(見 hazardsFor):
+ * 落點從一條線變成一片,躲的難度整個換了一個量級。幅度不跟著降的話,勇者波會變成
+ * 「打不完就等於全滅」——而它每 3 波就來一次,等於把整條準確率曲線往下拉。
+ */
+export const HAZARD_LOSS_RATIO = 0.14;
 
 /** 這一排是不是勇者波(精英與魔王優先,不重疊)。 */
 export function isHeroWaveRow(stage: number, rowIndex: number): boolean {
@@ -956,33 +963,42 @@ export function isHeroWaveRow(stage: number, rowIndex: number): boolean {
 }
 
 /**
- * 這一波由哪幾個勇者投擲。取中段的那幾個:最前面那個離玩家太近,武器還沒飛就到了。
- */
-export function throwerIndices(size: number, count = HAZARD_COUNT): number[] {
-  const n = Math.max(1, Math.min(count, size));
-  return Array.from({ length: n }, (_, i) => Math.min(size - 1, Math.floor((size * (i + 1)) / (n + 1))));
-}
-
-/**
- * 這一波的武器落在哪。
+ * 這一波的武器落在哪。**每一個還沒被打倒的勇者都在丟,落點就是他站的那一條線。**
  *
- * **落點就是投擲者站的那一條線**——不是另外抽一個位置。早期版本是獨立雜湊,畫面因此只能
- * 畫一條紅色危險帶(因為沒有任何一隻怪對得上那個位置),而那條帶子跟「誰在丟」完全脫鉤。
- * 綁到投擲者身上之後,畫面直接畫他丟出來的武器直線飛下來,危險帶就不必存在了。
+ * ## 為什麼是「還沒被打倒的」而不是固定一個人
  *
- * 用 waveMonsters 的同一組 offset,所以邏輯層與畫面層的落點是**同一個算式**算出來的,
+ * 舊版是「排一產生就選好一個投擲者」,於是有兩個講不通的地方:一是一整波二十個勇者
+ * 只有一個在動,看起來像其他人只是背景;二是**被你打倒的人照樣在丟**——你打死他了,
+ * 武器還是從他站的位置掉下來。
+ *
+ * 改成「活著的人都在丟」之後,這一波的威脅剛好等於「你沒打完的部分」:
+ *
+ *   - 全清 ⇒ 一發都沒有 ⇒ **完美玩家完全不受影響**,所以它照樣不進理想路線
+ *   - 漏了 k 個 ⇒ 那 k 條線都危險 ⇒ 越打不動,能站的地方越少
+ *
+ * 這跟「打不完就會被撞」是同一件事的兩種說法,只是勇者波的版本**可以靠位置閃掉**——
+ * 這正是勇者波跟小怪波的差別:小怪波拚戰力,勇者波拚戰力**加上**站對地方。
+ *
+ * ## 還躲得掉嗎
+ *
+ * 躲得掉,但會越來越窄:一條線寬 HAZARD_WIDTH(0.26),survivors 少的時候空隙很大,
+ * 多到一定程度就整條跑道都被蓋住——那時候你本來也已經輸了。
+ * 幅度因此從 0.25 降到 0.14(見 HAZARD_LOSS_RATIO)。
+ *
+ * survivors 用「前 kills 個倒下」這個約定(跟畫面的 isDown 同一條),所以還站著的是
+ * 索引 kills..size-1。offset 直接取 waveMonsters 的同一組,邏輯與畫面是同一個算式,
  * 不會有「看起來閃掉了卻還是被砸中」。
- *
- * **一定留得下閃避空間**:落點寬 HAZARD_WIDTH(0.26),而投擲者站在某一條跑道中心附近,
- * 所以另一條跑道永遠是安全的。
  */
-export function hazardsFor(rowIndex: number, size: number, count = HAZARD_COUNT): { from: number; to: number }[] {
+export function hazardsFor(rowIndex: number, size: number, survivors: number): { from: number; to: number }[] {
+  const total = Math.max(1, size);
+  const alive = Math.max(0, Math.min(total, survivors));
+  if (alive <= 0) return [];
   // 只要 offset,距離與怪種在這裡用不到,所以 rowDistance/spread 給 0。
-  const monsters = waveMonsters(rowIndex, Math.max(1, size), 0, 1, 0);
-  return throwerIndices(Math.max(1, size), count).map((i) => {
-    const center = monsters[i]?.offset ?? 0.5;
-    return { from: center - HAZARD_WIDTH / 2, to: center + HAZARD_WIDTH / 2 };
-  });
+  const monsters = waveMonsters(rowIndex, total, 0, 1, 0);
+  return monsters.slice(total - alive).map((m) => ({
+    from: m.offset - HAZARD_WIDTH / 2,
+    to: m.offset + HAZARD_WIDTH / 2,
+  }));
 }
 
 /** 站在 offset 會不會被砸中。 */
@@ -1063,7 +1079,7 @@ function makeEnemyRow(
     name: species[0].name,
     units,
     ...(elite ? { elite: true, leakCost: ELITE_MASS, hitsPerUnit: ELITE_HITS } : {}),
-    ...(heroWave ? { heroWave: true, hazards: hazardsFor(rowIndex, units) } : {}),
+    ...(heroWave ? { heroWave: true, rowIndex } : {}),
     // 一波怪共用一個屬性(不是一隻一個)——三種造型同一個顏色,一眼就分得出這波是什麼。
     // **勇者波走另一條 salt**:對面是勇者不是怪,屬性另外抽,而且關卡前的提示不公開它,
     // 所以每三波就有一波沒辦法事先押注,只能靠通用技能扛。
@@ -1269,13 +1285,28 @@ export interface WaveBoost {
   immune?: boolean;
 }
 
+/** 這一波額外清掉幾隻(主動技能與元素給的,不含自己的戰力)。 */
+function extraKills(enemy: EnemyEffect, boost: WaveBoost, own: number): number {
+  return Math.max(0, boost.kills ?? 0)
+    + Math.ceil(enemy.units * Math.max(0, boost.killRatio ?? 0))
+    + Math.ceil(own * Math.max(0, boost.chainRatio ?? 0));
+}
+
 export function resolveEnemy(
   state: RunState, enemy: EnemyEffect, boost: WaveBoost = {}, offset?: number,
 ): RowResolution {
-  // 勇者波:先看有沒有被投擲物砸中。閃掉就完全沒事(所以理想玩家不受影響,
-  // 它也就不進理想路線);沒閃掉就削掉一部分隊伍——不是全滅,勇者是一群、散開有寬度。
   const at = offset ?? laneCenterOffset(state.lane);
-  if (enemy.heroWave && !boost.immune && hitByHazard(at, enemy.hazards)) {
+  // 勇者波:**還沒被打倒的人才在丟**,所以要先算出你打倒了幾個,落點才知道有哪幾條。
+  // 全清 ⇒ 一發都沒有 ⇒ 完美玩家完全不受影響,它照樣不進理想路線。
+  // 閃掉也完全沒事;沒閃掉就削掉一部分隊伍——不是全滅,勇者是一群、散開有寬度。
+  const heroWaveHazards = enemy.heroWave && !boost.immune
+    ? (() => {
+        const own = waveKillCount(totalAttack(state), enemy.power, enemy.units);
+        const killed = Math.min(enemy.units, own + Math.floor(extraKills(enemy, boost, own)));
+        return hazardsFor(enemy.rowIndex ?? 0, enemy.units, enemy.units - killed);
+      })()
+    : [];
+  if (heroWaveHazards.length > 0 && hitByHazard(at, heroWaveHazards)) {
     const hit = Math.max(1, Math.round(state.heroes * HAZARD_LOSS_RATIO));
     const struck = { ...state, heroes: Math.max(0, state.heroes - hit) };
     if (struck.heroes <= 0) {
@@ -1294,10 +1325,7 @@ export function resolveEnemy(
   // 而且理想玩家本來就全清,對他等於零——所以它不進理想路線,也就不會把敵人養大。
   // 相剋已經在 runSkillEffects 那一層逐元素結算過了,這裡拿到的就是最終值。
   const own = waveKillCount(totalAttack(state), enemy.power, enemy.units);
-  const extra = Math.max(0, boost.kills ?? 0)
-    + Math.ceil(enemy.units * Math.max(0, boost.killRatio ?? 0))
-    + Math.ceil(own * Math.max(0, boost.chainRatio ?? 0));
-  const kills = Math.min(enemy.units, own + Math.floor(extra));
+  const kills = Math.min(enemy.units, own + Math.floor(extraKills(enemy, boost, own)));
   const leaked = Math.max(0, enemy.units - kills);
   const next = { ...state };
   // 打倒的怪有一部分加入隊伍。放在「漏 0」那條路徑上而不是照 kills 給:

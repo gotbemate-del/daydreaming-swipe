@@ -14,7 +14,7 @@ import {
   applyGate, gateLabel, DOUBLE_GATES_PER_RUN, GEAR_STEP, doubleGatesForStage, LONG_LEVEL_RATIO_SCALE,
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
   TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane, MIN_WAVE_SIZE,
-  HERO_WAVE_ELEMENT_SALT, waveElementsForStage, throwerIndices, hazardsFor, HAZARD_WIDTH,
+  HERO_WAVE_ELEMENT_SALT, waveElementsForStage, hazardsFor, hitByHazard, HAZARD_WIDTH, HAZARD_LOSS_RATIO,
   type Lane, type RunState, type WaveBoost,
 } from '../game/laneRun';
 import {
@@ -558,6 +558,49 @@ check('八種屬性長期分佈平均(不會有元素整場都碰不到)',
   [...elemTally.values()].every((n) => n > 4000 / ELEMENTS.length * 0.75 && n < 4000 / ELEMENTS.length * 1.25)
   && elemTally.size === ELEMENTS.length,
   [...elemTally.values()].join('/'));
+// --- 勇者波:活著的人才在丟 ---
+// 這一組盯的是「威脅 = 你沒打完的部分」這條規則有沒有真的成立。
+const HW_ROW = 11;
+const HW_UNITS = 12;
+check('全清 -> 一發都沒有(所以完美玩家完全不受影響)',
+  hazardsFor(HW_ROW, HW_UNITS, 0).length === 0);
+check('漏幾個就有幾條線(打倒一個就少一條)',
+  [1, 3, 7, HW_UNITS].every((alive) => hazardsFor(HW_ROW, HW_UNITS, alive).length === alive));
+// 落點必須就是那些人站的位置——邏輯與畫面同一個算式,不然會有「看起來閃掉了卻還是被砸中」。
+const hwMonsters = waveMonsters(HW_ROW, HW_UNITS, 0, 1, 0);
+check('落點就是還站著的那幾個人的位置(邏輯與畫面同一個算式)',
+  hazardsFor(HW_ROW, HW_UNITS, 3).every((h, i) => {
+    const m = hwMonsters[HW_UNITS - 3 + i];
+    return Math.abs((h.from + h.to) / 2 - m.offset) < 1e-9
+      && Math.abs((h.to - h.from) - HAZARD_WIDTH) < 1e-9;
+  }));
+check('打倒越多,危險的範圍越小(單調)', (() => {
+  const covered = (alive: number) => {
+    const hz = hazardsFor(HW_ROW, HW_UNITS, alive);
+    let n = 0;
+    for (let x = 0; x <= 1.0001; x += 0.002) if (hitByHazard(x, hz)) n++;
+    return n;
+  };
+  const series = [HW_UNITS, 8, 5, 3, 1, 0].map(covered);
+  return series.every((v, i) => i === 0 || v <= series[i - 1]);
+})());
+// 全清的時候勇者波跟一般波結算結果一模一樣 —— 這是「不進理想路線」的直接證據。
+const hwPerfect = {
+  power: 1, reward: 0, species: [{ id: 'blob-1', name: '史' }], name: '史', units: 6,
+  heroWave: true, rowIndex: HW_ROW,
+};
+check('完美玩家打勇者波跟打一般波一模一樣(勇者波沒有進理想路線)',
+  [0, 0.25, 0.5, 0.75, 1].every((at) =>
+    resolveEnemy(perfectState, hwPerfect, {}, at).state.heroes
+    === resolveEnemy(perfectState, { ...hwPerfect, heroWave: false }, {}, at).state.heroes));
+// 反過來:打不完的時候,站對地方仍然閃得掉一部分(這是勇者波跟小怪波唯一的差別)。
+const hwBehind = { ...hwPerfect, power: 400, units: 12 };
+const hwSpots = [0, 0.1, 0.25, 0.4, 0.5, 0.6, 0.75, 0.9, 1].map((at) =>
+  resolveEnemy(behindState, hwBehind, {}, at).state.heroes);
+check('打不完的時候,站的位置會影響結果(閃得掉就是閃得掉)',
+  new Set(hwSpots).size > 1, `各位置剩下 ${hwSpots.join('/')} 人`);
+check('被砸中的幅度沒有大到一次全滅', HAZARD_LOSS_RATIO < 0.25, `${HAZARD_LOSS_RATIO}`);
+
 // 勇者波走另一條 salt:關卡前公開的那一串不能洩漏它抽到什麼。
 const salted = Array.from({ length: 400 }, (_, r) => elementForRow(r, HERO_WAVE_ELEMENT_SALT));
 const plain = Array.from({ length: 400 }, (_, r) => elementForRow(r));
