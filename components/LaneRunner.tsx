@@ -94,6 +94,8 @@ const ENEMY_SHOT_MS = 800;
 const ENEMY_SHOTS_PER_LANE = 2;
 /** 敵人的武器畫多大。比玩家丟的小一點:它們數量多,同尺寸會把整個畫面吃掉。 */
 const ENEMY_SHOT_SIZE = 24;
+/** 被砸中之後整片跑道閃紅的時間。夠長才看得到,但不能長到蓋住下一波。 */
+const HAZARD_FLASH_MS = 420;
 
 
 /**
@@ -169,6 +171,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
     state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers,
     lastShotAt, lastShotId, feedback, steer, dragTo,
     runSkills, skillOffers, pendingPicks, chooseRunSkill, lastStrike, upcomingElements,
+    enemyShots, lastHazardAt,
   } = run;
   const attack = totalAttack(state);
 
@@ -385,64 +388,47 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
   }
 
   /**
-   * 勇者波:**每一個還沒被打倒的敵方勇者都在丟**,而且丟到他自己被打倒為止。
+   * 勇者波:畫出敵方勇者擲過來的武器。
    *
-   * 兩版之前是在地上畫一條紅色危險帶。問題不是不夠清楚,是它跟「誰在丟」完全脫鉤——
-   * 帶子憑空出現在一個沒有任何人站著的位置,看起來像地形而不是攻擊。
-   * 上一版改成畫投擲者丟出來的武器,但**只有一個人在丟**:一整波二十個勇者只有一個在動,
-   * 其他人看起來像背景,而且被打倒的那個照樣在丟。
-   *
-   * 現在的規則跟邏輯層完全一致(laneRun 的 hazardsFor):活著的人都在丟,
-   * 每個人丟自己那條線,打倒一個就少一條——**畫面上「還剩幾條線」就是「你還沒打完幾個」。**
+   * **位置由 hook 給,不是畫面自己算的。** 先前這一段是用 Date.now() 推出來的動畫,
+   * 於是它永遠打不到人——傷害只在這一排結算的那一瞬間算,玩家看著武器穿過身體卻
+   * 什麼都沒發生。現在每一把都是 hook 裡真的在飛的物件(見 useLaneRun 的 EnemyShot),
+   * 飛到你身上就扣人,畫面只負責把它畫出來。
    *
    * 只有直線:武器不追人,所以閃避仍然是「位置管理」而不是「反應」——
    * 跟閘門同一套連續位置判定,只是反過來用(閘門要踩上去,這個要離開)。
    */
   function renderEnemyShots(w: WaveView) {
-    if (!w.heroWave) return [];
+    if (!ready || !w.heroWave) return [];
     const tint = elementColor(w.element);
     // 丟出來的武器也照敵人的職業走,不是照玩家的——敵人拿的是他自己的武器。
     const look = enemyHeroLookForRow(stage, w.rowIndex);
-    const shots: React.ReactNode[] = [];
-    w.monsters.forEach((m, i) => {
-      // 被打倒的人不再丟。這是這一版最重要的一條:打倒他就少一條線,
-      // 玩家的攻擊因此在勇者波上有**看得見的**回饋,而不是只有結算時的數字。
-      if (w.down[m.index]) return;
-      const fromAhead = m.distance - distance;
-      if (fromAhead <= 0) return;
-      // 一條線上同時掛幾把、相位錯開,武器才會連成一串而不是一顆一顆蹦出來。
-      // 相位再加上 i,免得所有人同一拍出手——那樣看起來像一整排在齊射。
-      for (let k = 0; k < ENEMY_SHOTS_PER_LANE; k++) {
-        const phase = ((Date.now() / ENEMY_SHOT_MS) + k / ENEMY_SHOTS_PER_LANE + i * 0.29) % 1;
-        const ahead = fromAhead * (1 - phase);
-        if (ahead > VISIBLE_AHEAD) continue;
-        // 同一個人丟的每一把都是**同一件武器**(variant 只看 i 不看 k)。各丟各的話,
-        // 玩家看到的是一串不相干的東西掉下來,反而讀不出「這是一條線」。
-        const art = weaponArt(look.archetype, look.tier, i);
-        const box = {
-          left: m.offset * trackWidth - ENEMY_SHOT_SIZE / 2,
-          top: bottomYFor(ahead, headY) - ENEMY_SHOT_SIZE,
-          width: ENEMY_SHOT_SIZE,
-          height: ENEMY_SHOT_SIZE,
-          transform: [{ rotate: '135deg' }],
-        };
-        shots.push(
-          <View key={`shot-${i}-${k}`} pointerEvents="none">
-            <Image source={art} resizeMode="contain" style={[styles.pixelArt, styles.floating, box]} />
-            {/* 染成這一波的屬性色:一來跟怪物同色,二來這條線在地面上更跳得出來
-                ——危險帶拿掉之後,顏色是「不能站這裡」剩下的唯一提示。 */}
-            {tint && (
-              <Image
-                source={art}
-                resizeMode="contain"
-                style={[styles.pixelArt, styles.floating, box, { tintColor: tint, opacity: 0.75 }]}
-              />
-            )}
-          </View>,
-        );
-      }
+    return enemyShots.map((shot) => {
+      const ahead = shot.distance - distance;
+      if (ahead > VISIBLE_AHEAD) return null;
+      const art = weaponArt(look.archetype, look.tier, shot.variant);
+      const box = {
+        left: shot.offset * trackWidth - ENEMY_SHOT_SIZE / 2,
+        top: bottomYFor(Math.max(0, ahead), headY) - ENEMY_SHOT_SIZE,
+        width: ENEMY_SHOT_SIZE,
+        height: ENEMY_SHOT_SIZE,
+        transform: [{ rotate: '135deg' }],
+      };
+      return (
+        <View key={`shot-${shot.id}`} pointerEvents="none">
+          <Image source={art} resizeMode="contain" style={[styles.pixelArt, styles.floating, box]} />
+          {/* 染成這一波的屬性色:一來跟怪物同色,二來這條線在地面上更跳得出來
+              ——危險帶拿掉之後,顏色是「不能站這裡」剩下的唯一提示。 */}
+          {tint && (
+            <Image
+              source={art}
+              resizeMode="contain"
+              style={[styles.pixelArt, styles.floating, box, { tintColor: tint, opacity: 0.75 }]}
+            />
+          )}
+        </View>
+      );
     });
-    return shots;
   }
 
   /**
@@ -601,6 +587,20 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
         {upcoming.map(renderGateRow)}
         {wave && renderWave(wave)}
         {projectiles.map(renderProjectile)}
+        {/*
+          被武器砸中:整片跑道閃一下紅色。
+          扣人本身只在 HUD 的數字上動一格,而玩家的視線在跑道上——不閃這一下的話,
+          使用者的感受就是「被打到沒有任何負面效果」(實際上扣了人,只是看不見)。
+        */}
+        {Date.now() - lastHazardAt < HAZARD_FLASH_MS && (
+          <View
+            pointerEvents="none"
+            style={[
+              styles.hazardFlash,
+              { opacity: 0.45 * (1 - (Date.now() - lastHazardAt) / HAZARD_FLASH_MS) },
+            ]}
+          />
+        )}
         {/* 傷害數字畫在武器與怪物之上,不然會被怪物的圖蓋掉 */}
         {hitNumbers.map(renderHitNumber)}
 
@@ -915,6 +915,13 @@ const styles = StyleSheet.create({
   // 這裡曾經有一個 hazardBand(勇者波的紅色危險帶)。拿掉了,不要加回來:
   // 它畫在一個沒有任何人站著的位置,看起來像地形而不是攻擊。現在落點就是投擲者站的線,
   // 畫面直接畫他丟出來的武器往下飛(見 renderEnemyShots)。
+  /** 被武器砸中的紅閃。整片蓋在跑道上,是「我被打到了」唯一一眼看得到的訊號。 */
+  hazardFlash: {
+    position: 'absolute',
+    left: 0, right: 0, top: 0, bottom: 0,
+    backgroundColor: '#e05050',
+    zIndex: 9,
+  },
   strikeText: {
     color: '#e0a95c', fontSize: 20, fontWeight: '700',
     textShadowColor: '#16161c', textShadowRadius: 4, textShadowOffset: { width: 0, height: 1 },

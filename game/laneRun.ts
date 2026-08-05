@@ -953,13 +953,38 @@ export const HAZARD_WIDTH = 0.26;
  * 落點從一條線變成一片,躲的難度整個換了一個量級。幅度不跟著降的話,勇者波會變成
  * 「打不完就等於全滅」——而它每 3 波就來一次,等於把整條準確率曲線往下拉。
  */
-export const HAZARD_LOSS_RATIO = 0.14;
+export const HAZARD_LOSS_RATIO = 0.2;
 
 /** 這一排是不是勇者波(精英與魔王優先,不重疊)。 */
 export function isHeroWaveRow(stage: number, rowIndex: number): boolean {
   if (!isEnemyRowIndex(rowIndex, stage) || isEliteRow(stage, rowIndex) || isBossRow(stage, rowIndex)) return false;
   const waveIndex = Math.floor(rowIndex / enemyEveryForStage(stage));
   return waveIndex > 0 && waveIndex % HERO_WAVE_EVERY === 0;
+}
+
+/**
+ * 同一個瞬間最多幾個人在丟。
+ *
+ * **這個上限就是「還閃得掉」的保證。** 每個人的落點寬 HAZARD_WIDTH(0.26),
+ * 兩個人最多蓋掉 0.52,跑道永遠留得下一段空的;放開讓十幾個人同時丟的話,
+ * 整條跑道會被蓋滿,閃避就從「看得懂就躲得掉」變成「站哪都會被打」——
+ * 那不只是難,而是**理想玩家也躲不掉**,敵人曲線的結構保證會跟著失效。
+ *
+ * 「每個人都要丟」靠的是**輪流**(見 activeThrowers):活著的人輪著上場,
+ * 所以一波打下來每個人都丟過,但任何一個瞬間都只有兩條線是危險的。
+ */
+export const ACTIVE_THROWERS = 2;
+/** 輪到下一組投擲者要多久(毫秒)。太短會像亂數閃爍,太長會變成只有固定那兩個人在丟。 */
+export const THROWER_ROTATE_MS = 1400;
+
+/**
+ * 這個瞬間輪到誰丟。`alive` 是還站著的人的索引(由呼叫端給,因為「誰還活著」是即時的)。
+ * 用輪替而不是抽籤:抽籤會出現同一個人連續被抽中,而其他人整波都沒動過。
+ */
+export function activeThrowers(alive: number[], slot: number): number[] {
+  if (alive.length === 0) return [];
+  const n = Math.min(ACTIVE_THROWERS, alive.length);
+  return Array.from({ length: n }, (_, j) => alive[(slot * n + j) % alive.length]);
 }
 
 /**
@@ -1283,6 +1308,18 @@ export interface WaveBoost {
   revive?: number;
   /** 這一波的損失全擋下來(土・護盾 + 壁障) */
   immune?: boolean;
+  /**
+   * 勇者波的投擲傷害「已經在跑圖途中結算過了」。
+   *
+   * 遊戲裡武器是一路飛過來的,打到你的那一刻就該扣人——不能等到這一排結算才扣,
+   * 不然玩家看著武器穿過身體卻什麼都沒發生(使用者回報的「被攻擊到沒有任何負面效果」)。
+   * 所以 hook 在命中的當下就自己套用一次,並帶著這個旗標告訴 resolveEnemy 別再算一次。
+   *
+   * **模擬器不設這個旗標**,它沒有時間軸,照舊在結算的那一刻算——兩邊的規則與幅度
+   * 完全一樣(同一個 HAZARD_LOSS_RATIO、同一組 hazardsFor),一波最多扣一次,
+   * 所以難度曲線量到的東西跟玩家實際經歷的是同一件事。
+   */
+  hazardResolved?: boolean;
 }
 
 /** 這一波額外清掉幾隻(主動技能與元素給的,不含自己的戰力)。 */
@@ -1299,7 +1336,7 @@ export function resolveEnemy(
   // 勇者波:**還沒被打倒的人才在丟**,所以要先算出你打倒了幾個,落點才知道有哪幾條。
   // 全清 ⇒ 一發都沒有 ⇒ 完美玩家完全不受影響,它照樣不進理想路線。
   // 閃掉也完全沒事;沒閃掉就削掉一部分隊伍——不是全滅,勇者是一群、散開有寬度。
-  const heroWaveHazards = enemy.heroWave && !boost.immune
+  const heroWaveHazards = enemy.heroWave && !boost.immune && !boost.hazardResolved
     ? (() => {
         const own = waveKillCount(totalAttack(state), enemy.power, enemy.units);
         const killed = Math.min(enemy.units, own + Math.floor(extraKills(enemy, boost, own)));

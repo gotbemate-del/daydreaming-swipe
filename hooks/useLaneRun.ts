@@ -20,6 +20,10 @@ import {
   volleyRate,
   waveKillCount,
   waveMonsters,
+  activeThrowers,
+  HAZARD_WIDTH,
+  HAZARD_LOSS_RATIO,
+  THROWER_ROTATE_MS,
   waveLength,
   DEFAULT_RUN_START,
   isEnemyRowIndex,
@@ -51,6 +55,11 @@ const SNAP_EPSILON = 0.002;
 const PROJECTILE_SPEED = 420;
 /** 進到這個距離內才開始丟。太遠就開丟的話,武器會在畫面外飛很久,看起來像亂丟。 */
 const FIRE_RANGE = 260;
+
+/** 敵人擲出的武器飛多快。比玩家的慢一點,才有時間看到它過來並閃開。 */
+const ENEMY_SHOT_SPEED = 260;
+/** 輪到的那幾個人多久丟一次。太密會變成躲不掉,太疏會看起來像沒在攻擊。 */
+const ENEMY_THROW_INTERVAL_MS = 620;
 
 export interface RunFeedback {
   key: number;
@@ -95,6 +104,23 @@ export interface Projectile {
   element?: RunSkillId;
 }
 
+/**
+ * 敵方勇者擲出來的武器。**跟玩家的 Projectile 一樣是真的物件,不是畫面自己算的動畫。**
+ *
+ * 先前它只存在於畫面層(用 Date.now() 推出來的位置),所以它永遠打不到人——
+ * 傷害只在「這一排結算」的那一瞬間算,玩家看著武器穿過身體卻什麼都沒發生。
+ * 搬進 hook 之後,飛到你身上的那一刻就會扣人,而且看得到是哪一把打中的。
+ */
+export interface EnemyShot {
+  id: number;
+  /** 絕對距離(跟排、跟小怪同一個座標系)。往玩家的方向遞減。 */
+  distance: number;
+  /** 橫向位置:就是丟他的人站的那條線。 */
+  offset: number;
+  /** 畫面拿它挑武器造型,同一個人丟的每一把都一樣。 */
+  variant: number;
+}
+
 export interface WaveView {
   species: WaveSpecies[];
   boss: boolean;
@@ -136,6 +162,10 @@ export interface LaneRunView {
   /** 正在衝過來的那一波小怪(沒有就是 null) */
   wave: WaveView | null;
   projectiles: Projectile[];
+  /** 敵方勇者擲出來的武器。飛到你身上就會扣人(見 EnemyShot)。 */
+  enemyShots: EnemyShot[];
+  /** 剛被武器砸中的時間戳。畫面拿它閃一下紅色,不然扣了人玩家也不知道發生什麼事。 */
+  lastHazardAt: number;
   /** 命中瞬間跳出來的傷害數字(含暴擊)。純演出,不影響擊殺數。 */
   hitNumbers: HitNumber[];
   /**
@@ -201,6 +231,8 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
   const [feedback, setFeedback] = useState<RunFeedback | null>(null);
   const [wave, setWave] = useState<WaveView | null>(null);
   const [projectiles, setProjectiles] = useState<Projectile[]>([]);
+  const [enemyShots, setEnemyShots] = useState<EnemyShot[]>([]);
+  const [lastHazardAt, setLastHazardAt] = useState(0);
   const [hitNumbers, setHitNumbers] = useState<HitNumber[]>([]);
   const [lastShotAt, setLastShotAt] = useState(0);
   const [lastShotId, setLastShotId] = useState(0);
@@ -225,6 +257,15 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
   const waveRef = useRef<WaveRuntime | null>(null);
   const projectilesRef = useRef<Projectile[]>([]);
   const projectileIdRef = useRef(0);
+  const enemyShotsRef = useRef<EnemyShot[]>([]);
+  const enemyShotIdRef = useRef(0);
+  const enemyFireAtRef = useRef(0);
+  /**
+   * 這一波已經被砸中過了沒。**一波最多扣一次**——不設上限的話,站錯地方的三秒鐘會被
+   * 連續扣十幾次,那不是「失誤有代價」而是「站錯就直接結束」,而且模擬器那邊算的是一次,
+   * 兩邊的難度會整個岔開。
+   */
+  const hazardHitRowRef = useRef<number | null>(null);
   const hitNumbersRef = useRef<HitNumber[]>([]);
   const hitNumberIdRef = useRef(0);
 
@@ -346,9 +387,11 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         waveRef.current = null;
         projectilesRef.current = [];
         hitNumbersRef.current = [];
+        enemyShotsRef.current = [];
         setWave(null);
         setProjectiles([]);
         setHitNumbers([]);
+        setEnemyShots([]);
       }
       return;
     }
@@ -374,6 +417,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
       };
       waveRef.current = current;
       projectilesRef.current = [];
+      enemyShotsRef.current = [];
     }
 
     // 打得掉幾隻每個 tick 重算:波次中途吃到閘門,攻擊力一變,能清掉的隻數就跟著變。
@@ -459,6 +503,64 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
       }
       projectilesRef.current = flying;
       setProjectiles(flying);
+    }
+
+    // --- 勇者波:敵人擲出的武器 ---
+    //
+    // 兩件事都在這裡:**丟**(輪到的人才丟,而且要先出現在畫面上)與**打中**(飛到你身上就扣人)。
+    // 先前這一整段只存在於畫面層,所以武器永遠打不到人——傷害只在這一排結算的那一瞬間算,
+    // 玩家看著武器穿過身體卻什麼都沒發生。
+    if (current.heroWave) {
+      // 還站著、而且**已經進入視野**的人才會丟。沒有這個條件的話,武器會從畫面外
+      // 憑空出現在半空中——玩家看到的是「東西自己冒出來」,不是「那個人丟過來的」。
+      const alive = current.monsters
+        .filter((m) => !isDown(m.index) && m.distance > travelled && m.distance - travelled <= VISIBLE_AHEAD)
+        .map((m) => m.index);
+      const slot = Math.floor(now / THROWER_ROTATE_MS);
+      const throwers = activeThrowers(alive, slot);
+      if (throwers.length > 0 && now - enemyFireAtRef.current >= ENEMY_THROW_INTERVAL_MS) {
+        enemyFireAtRef.current = now;
+        for (const index of throwers) {
+          const m = current.monsters[index];
+          if (!m) continue;
+          enemyShotIdRef.current += 1;
+          enemyShotsRef.current = [
+            ...enemyShotsRef.current,
+            { id: enemyShotIdRef.current, distance: m.distance, offset: m.offset, variant: index },
+          ];
+        }
+      }
+    }
+    if (enemyShotsRef.current.length > 0) {
+      // 武器往玩家的方向飛(絕對距離遞減),而玩家同時往前跑,所以接近速度是兩者相加。
+      const step = ((speed + ENEMY_SHOT_SPEED) * TICK_MS) / 1000;
+      const stillFlying: EnemyShot[] = [];
+      for (const shot of enemyShotsRef.current) {
+        const moved = { ...shot, distance: shot.distance - step };
+        if (moved.distance > travelled) { stillFlying.push(moved); continue; }
+        // 飛到你身上了:站在這條線上就會被砸中。一波最多扣一次(見 hazardHitRowRef)。
+        const inLine = Math.abs(offsetRef.current - shot.offset) <= HAZARD_WIDTH / 2;
+        if (inLine && hazardHitRowRef.current !== current.rowIndex) {
+          hazardHitRowRef.current = current.rowIndex;
+          setLastHazardAt(now);
+          setState((prev) => {
+            if (prev.phase !== 'running') return prev;
+            const hit = Math.max(1, Math.round(prev.heroes * HAZARD_LOSS_RATIO));
+            const heroes = Math.max(0, prev.heroes - hit);
+            lostSoFarRef.current += hit;
+            feedbackKeyRef.current += 1;
+            setFeedback({
+              key: feedbackKeyRef.current,
+              message: `被武器砸中 -${hit} 人`,
+              heroDelta: -hit,
+              attackDelta: 0,
+            });
+            return heroes <= 0 ? { ...prev, heroes: 0, phase: 'dead' } : { ...prev, heroes };
+          });
+        }
+      }
+      enemyShotsRef.current = stillFlying;
+      setEnemyShots(stillFlying);
     }
 
     // 過期的數字丟掉。沒有新命中而且也沒有要過期的就不要 setState——這個迴圈每 33ms 跑一次,
@@ -622,6 +724,8 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
     upcoming,
     wave,
     projectiles,
+    enemyShots,
+    lastHazardAt,
     hitNumbers,
     lastShotAt,
     lastShotId,
