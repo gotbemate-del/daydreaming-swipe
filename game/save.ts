@@ -201,6 +201,19 @@ export function readSave(text: string | null | undefined): { save: SaveData; mig
 }
 
 /** 存檔轉成要寫進去的字串。 */
+/**
+ * 生存模式撐過幾關換到幾級技能書。
+ *
+ * 門檻刻意用「連續過幾關」而不是「累積打了幾關」:生存模式的壓力就在**不能失手**,
+ * 用累積的話它會退化成「多打幾次就有」,跟一般模式沒兩樣。
+ */
+export const SURVIVAL_BOOK_THRESHOLDS = [3, 6, 10, 15, 21];
+
+/** 撐過 streak 關對應到的技能書等級(取歷史最好的那次,不是這一次)。 */
+export function booksForSurvival(bestStreak: number): number {
+  return SURVIVAL_BOOK_THRESHOLDS.filter((t) => bestStreak >= t).length;
+}
+
 export function writeSave(save: SaveData): string {
   return JSON.stringify({ ...save, version: SAVE_VERSION });
 }

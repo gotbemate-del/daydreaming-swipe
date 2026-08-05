@@ -9,7 +9,8 @@ import { SkillChoice } from '../components/SkillChoice';
 import { isPromotionStage, runStartFor, tierAfter, type JobTier, type LaneJob } from '../game/laneJobs';
 import { applySkills, learnSkill, skillOffers, type SkillState } from '../game/laneSkills';
 import { useSave } from '../hooks/useSave';
-import { TOTAL_STAGES, type SavedJob } from '../game/save';
+import { booksForSurvival, TOTAL_STAGES, type SavedJob } from '../game/save';
+import { SurvivalResult } from '../components/SurvivalResult';
 
 // 一輪的流程:
 //   主介面 →(按開始闖關)→ 跑圖 →(通關)→ 學技能 → 每 5 關再多一次轉職 → 回主介面(關卡 +1)
@@ -29,7 +30,19 @@ import { TOTAL_STAGES, type SavedJob } from '../game/save';
 // 一場跑圖 = 一個 LaneRunner 實例,每次開始都換 key 重新掛載。跑圖裡有一整套跑到一半的
 // 狀態(波次、飛行中的武器、已結算的排、計時起點),在原地 reset 很容易漏掉其中一項,
 // 症狀是「上一場的怪出現在這一場」——重新掛載沒有這個問題。
-type Screen = 'menu' | 'run';
+type Screen = 'menu' | 'run' | 'survivalOver';
+
+/**
+ * 生存模式:**連續闖關,死了就結束。**
+ *
+ * 一般模式死掉只是重打同一關,所以「失手」幾乎沒有代價;生存模式把同一套關卡拿來
+ * 反過來用——每一關照常從頭起跑(數值完全沒有另一套),但**中途不能重試**,
+ * 撐過幾關就是分數。壓力來自「不能失手」,不是來自另一條敵人曲線。
+ *
+ * 這樣做的另一個好處是它完全不必動 createRun:難度用的就是既有的關卡曲線,
+ * 不會出現「兩條各走各的指數」那類問題(CLAUDE.md 記過好幾次)。
+ */
+type Mode = 'normal' | 'survival';
 
 /**
  * 存檔裡的職業 → 遊戲用的 LaneJob。兩邊刻意分開:存檔格式是對外的邊界,
@@ -47,6 +60,11 @@ export default function HomeScreen() {
 
   const [screen, setScreen] = useState<Screen>('menu');
   const [runKey, setRunKey] = useState(0);
+  const [mode, setMode] = useState<Mode>('normal');
+  /** 生存模式:這一輪從第幾關開始、已經連過幾關。 */
+  const [survivalFrom, setSurvivalFrom] = useState(1);
+  const [survivalStreak, setSurvivalStreak] = useState(0);
+  const [survivalStage, setSurvivalStage] = useState(1);
   const [promotionTier, setPromotionTier] = useState<JobTier | null>(null);
   const [offers, setOffers] = useState<SkillState[]>([]);
   const [lastResult, setLastResult] = useState<'cleared' | 'dead' | null>(null);
@@ -68,8 +86,30 @@ export default function HomeScreen() {
     setScreen('menu');
   }
 
+  /** 生存模式:一輪的累計金幣(死了才一次結算給玩家看)。 */
+  const [survivalCoins, setSurvivalCoins] = useState(0);
+
   function onRunFinish(result: 'cleared' | 'dead', earned: number) {
     update((prev) => ({ ...prev, coins: prev.coins + earned }));
+    if (mode === 'survival') {
+      setSurvivalCoins((c) => c + earned);
+      if (result === 'dead') {
+        // 生存模式**不給重試**,死了就結算——壓力就在這裡。
+        // 技能書照「歷史最好的那一次」給,不是這一次:不然玩家可以刷短輪湊次數。
+        update((prev) => {
+          const best = Math.max(prev.bestSurvival, survivalStreak);
+          return { ...prev, bestSurvival: best, books: Math.max(prev.books, booksForSurvival(best)) };
+        });
+        setScreen('survivalOver');
+        return;
+      }
+      // 過關就直接接下一關,中間不回主介面、不選永久技能、不轉職——
+      // 那三件事都是「整備」,而生存模式的核心就是沒有整備的機會。
+      setSurvivalStreak((n) => n + 1);
+      setSurvivalStage((st) => Math.min(TOTAL_STAGES, st + 1));
+      setRunKey((k) => k + 1);
+      return;
+    }
     if (result === 'dead') {
       backToMenu(false);
       return;
@@ -86,6 +126,21 @@ export default function HomeScreen() {
     return (
       <View style={styles.screen}>
         <Text style={styles.loading}>載入存檔…</Text>
+      </View>
+    );
+  }
+
+  if (screen === 'survivalOver') {
+    return (
+      <View style={styles.screen}>
+        <AdSlot />
+        <SurvivalResult
+          streak={survivalStreak}
+          previousBest={save.bestSurvival}
+          diedAt={survivalStage}
+          coins={survivalCoins}
+          onDone={() => { setMode('normal'); setScreen('menu'); }}
+        />
       </View>
     );
   }
@@ -135,7 +190,20 @@ export default function HomeScreen() {
           job={job}
           coins={coins}
           lastResult={lastResult}
+          books={save.books}
+          bestSurvival={save.bestSurvival}
           onStart={() => {
+            setMode('normal');
+            setRunKey((k) => k + 1);
+            setScreen('run');
+          }}
+          onSurvival={() => {
+            // 從目前進度的關卡開始:生存模式不是另一條難度曲線,是同一條的「不能失手」版本。
+            setMode('survival');
+            setSurvivalFrom(stage);
+            setSurvivalStage(stage);
+            setSurvivalStreak(0);
+            setSurvivalCoins(0);
             setRunKey((k) => k + 1);
             setScreen('run');
           }}
@@ -148,10 +216,12 @@ export default function HomeScreen() {
     <View style={styles.screen}>
       <AdSlot />
       <LaneRunner
-        key={`${stage}-${runKey}`}
-        stage={stage}
+        key={`${mode}-${mode === 'survival' ? survivalStage : stage}-${runKey}`}
+        stage={mode === 'survival' ? survivalStage : stage}
         job={job}
         start={applySkills(runStartFor(job), skills)}
+        bookLevel={save.books}
+        survivalStreak={mode === 'survival' ? survivalStreak : null}
         onFinish={onRunFinish}
       />
     </View>

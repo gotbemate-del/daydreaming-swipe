@@ -37,10 +37,15 @@ interface Props {
   coins: number;
   /** 上一場的結果。第一次進來是 null,之後回到主介面時顯示「通關了/倒下了」。 */
   lastResult: 'cleared' | 'dead' | null;
+  /** 技能書等級。生存模式掉的,顯示在狀態列讓玩家看得到自己的第三層養成。 */
+  books: number;
+  /** 生存模式最好撐過幾關。 */
+  bestSurvival: number;
   onStart: () => void;
+  onSurvival: () => void;
 }
 
-export function MainMenu({ stage, job, coins, lastResult, onStart }: Props) {
+export function MainMenu({ stage, job, coins, lastResult, books, bestSurvival, onStart, onSurvival }: Props) {
   const [heroStep, setHeroStep] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
   // 主角永遠是史萊姆,轉職不換造型。職業立繪只留在轉職選擇畫面(那裡是在介紹職業)。
@@ -68,7 +73,11 @@ export function MainMenu({ stage, job, coins, lastResult, onStart }: Props) {
         </View>
       </View>
 
-      <Text style={styles.jobLine}>第 {chapterOfStage(stage)} 大關 · {jobTitle(job)}</Text>
+      <Text style={styles.jobLine}>
+        第 {chapterOfStage(stage)} 大關 · {jobTitle(job)}
+        {books > 0 ? ` · 技能書 ${books}` : ''}
+        {bestSurvival > 0 ? ` · 生存 ${bestSurvival} 關` : ''}
+      </Text>
 
       {/* 中間:勇者站在正中央。這裡刻意什麼都不做——沒有跑道、沒有敵人,
           就是一個站著的角色 + 一顆開始闖關。戰鬥全部發生在跑道畫面裡。 */}
@@ -139,20 +148,24 @@ export function MainMenu({ stage, job, coins, lastResult, onStart }: Props) {
         style={styles.tabBarScroll}
         contentContainerStyle={styles.tabBar}
       >
-        {TAB_ICONS.map((tab) => (
-          <Pressable
-            key={tab.id}
-            style={styles.tab}
-            accessibilityLabel={`${tab.label}(未開放)`}
-            onPress={() => setNotice(`${tab.label}尚未開放`)}
-          >
-            <View style={styles.tabIconBox}>
-              <Image source={tab.art} resizeMode="contain" style={styles.tabIcon} />
-              <Image source={LOCK_ICON} resizeMode="contain" style={styles.tabLock} />
-            </View>
-            <Text style={styles.tabLabel}>{tab.label}</Text>
-          </Pressable>
-        ))}
+        {TAB_ICONS.map((tab) => {
+          // 「副本」是第一個開放的分頁:生存模式。其餘九個維持鎖著(見檔頭的說明)。
+          const open = tab.id === 'dungeon';
+          return (
+            <Pressable
+              key={tab.id}
+              style={styles.tab}
+              accessibilityLabel={open ? `${tab.label}(生存模式)` : `${tab.label}(未開放)`}
+              onPress={() => (open ? onSurvival() : setNotice(`${tab.label}尚未開放`))}
+            >
+              <View style={styles.tabIconBox}>
+                <Image source={tab.art} resizeMode="contain" style={styles.tabIcon} />
+                {!open && <Image source={LOCK_ICON} resizeMode="contain" style={styles.tabLock} />}
+              </View>
+              <Text style={[styles.tabLabel, open && styles.tabLabelOpen]}>{tab.label}</Text>
+            </Pressable>
+          );
+        })}
       </ScrollView>
     </View>
   );
@@ -241,5 +254,6 @@ const styles = StyleSheet.create({
   tabIcon: { width: TAB_SIZE, height: TAB_SIZE },
   // 鎖頭壓在圖示右下角。不用 opacity 壓掉,鎖頭本身要看得清楚才讀得出「這是鎖住的」。
   tabLock: { position: 'absolute', right: -2, bottom: -2, width: 15, height: 15, opacity: 1 },
+  tabLabelOpen: { color: '#e0a95c' },
   tabLabel: { color: '#8a8a95', fontSize: 10 },
 });

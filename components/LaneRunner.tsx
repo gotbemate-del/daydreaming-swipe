@@ -160,12 +160,16 @@ interface Props {
   job: LaneJob;
   /** 起跑數值(轉職 + 技能算完的結果)。畫面不自己算養成,由 app 層算好傳進來。 */
   start: RunStart;
+  /** 技能書等級。只放大元素與主動的效果(見 laneRunSkills 的 MAX_SKILL_BOOK_LEVEL)。 */
+  bookLevel?: number;
+  /** 生存模式:已經連過幾關(不是生存模式就是 null)。畫面拿它顯示連勝數。 */
+  survivalStreak?: number | null;
   /** 這一場結束(通關或陣亡)。coins 是這一場賺到的,由 app 層累加起來帶回主介面。 */
   onFinish: (result: 'cleared' | 'dead', coins: number) => void;
 }
 
-export function LaneRunner({ stage, job, start, onFinish }: Props) {
-  const run = useLaneRun(stage, start);
+export function LaneRunner({ stage, job, start, onFinish, bookLevel = 0, survivalStreak = null }: Props) {
+  const run = useLaneRun(stage, start, bookLevel);
   const {
     state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers,
     lastShotAt, lastShotId, feedback, steer, dragTo,
@@ -750,7 +754,11 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
         )}
       </View>
 
-      <Text style={styles.hint}>{stageLabel(stage)} · 共 {wavesForStage(stage)} 波 · 拖著勇者左右移動</Text>
+      <Text style={styles.hint}>
+        {stageLabel(stage)} · 共 {wavesForStage(stage)} 波
+        {/* 生存模式:連勝數要一直看得到——它是這個模式唯一的分數,藏起來就沒有壓力了。 */}
+        {survivalStreak !== null ? ` · 生存連過 ${survivalStreak} 關(死了就結束)` : ' · 拖著勇者左右移動'}
+      </Text>
     </View>
   );
 }
