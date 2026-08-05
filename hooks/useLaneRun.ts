@@ -32,6 +32,8 @@ import {
   activeSkillCountForStage,
   hitDamage,
   isCritHit,
+  procRoll,
+  extraKills,
   type Lane,
   type RunRow,
   type RunStart,
@@ -41,7 +43,8 @@ import {
 } from '../game/laneRun';
 import {
   applyRunSkillPick, ELEMENT_COUNTERS, isElement, learnRunSkill, runSkillEffects, runSkillOffersAt, runSkillPicksForWave,
-  type RunSkillState, type RunSkillId,
+  runSkillSpec, hasCooldown, skillCooldownSeconds, FREEZE_MS,
+  type RunSkillState, type RunSkillId, type RunSkillEffects, type ActiveTrigger,
 } from '../game/laneRunSkills';
 
 const TICK_MS = 33; // ~30fps
@@ -120,6 +123,37 @@ export interface EnemyShot {
   variant: number;
 }
 
+/**
+ * 命中那一刻的元素演出:火焰燒到旁邊、連鎖閃電、凍結。
+ *
+ * **這是「把已經發生的事畫出來」,不是另一套戰鬥判定。** 觸發的當下就已經把傷害加進
+ * `hitsOn`,這個物件只是告訴畫面「在誰身上畫什麼、從哪連到哪」——它消失了也不影響結果,
+ * 這是這個專案一貫的分法(見 laneRun 的 extraKills:數字只有一份)。
+ */
+export interface ElementEvent {
+  id: number;
+  kind: 'burn' | 'chain' | 'freeze';
+  /** 效果落在哪一隻(waveMonsters 的索引) */
+  target: number;
+  /** 連鎖:電從哪一隻跳過來 */
+  from?: number;
+  bornAt: number;
+}
+
+/** 元素演出畫多久。連鎖是一條線(短),燃燒與凍結是身上的光(長一點才看得到)。 */
+export const ELEMENT_FX_MS: Record<ElementEvent['kind'], number> = { burn: 420, chain: 220, freeze: FREEZE_MS };
+
+/** 技能列上的一格。被動沒有冷卻(cooldown = 0),只顯示名字與等級。 */
+export interface CarriedSkill {
+  id: RunSkillId;
+  name: string;
+  level: number;
+  /** 幾秒觸發一次(0 = 被動,沒有冷卻) */
+  cooldown: number;
+  /** 還要幾秒才好(0 = 現在就緒) */
+  ready: number;
+}
+
 export interface WaveView {
   species: WaveSpecies[];
   boss: boolean;
@@ -143,6 +177,12 @@ export interface WaveView {
   monsters: WaveMonster[];
   /** 每一隻倒了沒。倒下的不再畫,活著的會一路衝到勇者頭上。 */
   down: boolean[];
+  /**
+   * 每一隻現在有沒有被凍住。凍住的那一隻**停在畫面上原地不動**(其他人照樣衝過來),
+   * 那就是「凍在原地」在這款的座標系裡唯一說得通的畫法:怪的世界座標是固定的、
+   * 是玩家在往前跑,所以要讓牠「不再逼近」就得讓牠跟著玩家一起前進。
+   */
+  frozen: boolean[];
 }
 
 function sameFlags(a: boolean[], b: boolean[]): boolean {
@@ -201,6 +241,13 @@ export interface LaneRunView {
   dashing: boolean;
   /** 主動技能剛觸發(時間戳 + 清掉幾隻)。畫面拿它播特效。 */
   lastStrike: { at: number; names: string[]; kills: number } | null;
+  /** 命中那一刻的元素演出(燃燒擴散 / 連鎖閃電 / 凍結)。 */
+  elementEvents: ElementEvent[];
+  /**
+   * 這一場帶著的技能與冷卻。**畫面最下方那一列就是這個**——
+   * 主動技能改成秒冷卻之後,玩家一定要看得到「還有幾秒」,不然它就只是偶爾自己跳出來的特效。
+   */
+  carriedSkills: CarriedSkill[];
   /** 手指拖曳:直接把角色放到這個位置 */
   dragTo: (offset: number) => void;
   /** 方向鍵:滑順移到隔壁跑道中央 */
@@ -226,6 +273,18 @@ interface WaveRuntime {
   /** 每一隻各自挨了幾下。打不倒的那幾隻也會累加——勇者照樣丟,只是丟不倒。 */
   hitsOn: number[];
   lastFireAt: number;
+  /** 每一隻被凍到什麼時候(0 = 沒凍)。 */
+  frozenUntil: number[];
+  /** 這一波總共命中幾下。雷・連鎖是「每 N 下觸發一次」,靠的就是它。 */
+  hitCount: number;
+  /**
+   * 這一波之內,主動技能已經觸發出來的效果。
+   *
+   * **一定要跟著波走、不能跟著冷卻走**:冷卻是連續的時鐘(跨波不重置),
+   * 但「這一波多清掉幾隻」只對這一波有意義——不隨波清空的話,前面幾波累積的擊殺數
+   * 會在最後一波一次結算掉,玩家看到的是「魔王莫名其妙被秒了」。
+   */
+  fired: { kills: number; killRatio: number; immune: boolean };
 }
 
 // 一場跑圖就是一個 hook 實例:重跑、下一關都由外層換 key 重新掛載,不在 hook 裡自己 reset。
@@ -254,6 +313,7 @@ export function useLaneRun(
   const [hitNumbers, setHitNumbers] = useState<HitNumber[]>([]);
   const [lastShotAt, setLastShotAt] = useState(0);
   const [lastShotId, setLastShotId] = useState(0);
+  const [elementEvents, setElementEvents] = useState<ElementEvent[]>([]);
   const [runSkills, setRunSkills] = useState<RunSkillState[]>([]);
   const [skillOffers, setSkillOffers] = useState<RunSkillState[]>([]);
   const [pendingPicks, setPendingPicks] = useState(0);
@@ -285,6 +345,8 @@ export function useLaneRun(
   const hazardHitsRef = useRef<{ row: number; hits: number }>({ row: -1, hits: 0 });
   const hitNumbersRef = useRef<HitNumber[]>([]);
   const hitNumberIdRef = useRef(0);
+  const elementEventsRef = useRef<ElementEvent[]>([]);
+  const elementEventIdRef = useRef(0);
 
   // 角色位置同時放在 ref 與 state:ref 給結算用(要拿到「這一瞬間」的位置,不能慢一拍,
   // 慢一拍就會發生「明明已經拉到隔壁格了卻吃到原本那格」),state 只是拿來觸發重畫。
@@ -300,10 +362,17 @@ export function useLaneRun(
   // createRun 算敵人的時候重播的就是這一串(見 laneRunSkills 的 runSkillOffersAt)。
   const skillOrdinalRef = useRef(0);
   /**
-   * 主動技能「爆裂」:距離上次觸發過了幾波。冷卻**用波數不用秒**——
-   * 綁秒的話跑速一變技能強度就跟著變(第 1 關每 4.5 排、第 40 關每 11 排)。
+   * 每一款有冷卻的技能「什麼時候會好」(時間戳)。冷卻**用秒不用波**。
+   *
+   * 這條推翻了原本的「冷卻要綁波不綁秒」:那條規則成立的前提是「一波 = 一排」,
+   * 一排的時間隨跑速變(第 1 關 4.5 排 vs 第 40 關 11 排)。關卡結構改成
+   * 「戰鬥段是時間」之後,一波的長度反而幾乎是常數(13.6~17.1 秒,見 laneRunSkills
+   * 的 COOLDOWN_SPEC),綁秒現在比綁波穩,而且玩家看得懂倒數。
+   *
+   * **時鐘是連續的,不隨波重置**——重置的話「打完一波」就變成免費的冷卻縮短,
+   * 清得快的人會拿到更多次觸發,那是把技能的強度綁在跑速上,又繞回同一個坑。
    */
-  const wavesSinceRef = useRef<Record<string, number>>({});
+  const readyAtRef = useRef<Record<string, number>>({});
   /** 這一場到目前為止總共失去幾個人。木・再生只補得回這個數字以內。 */
   const lostSoFarRef = useRef(0);
   /** 光・復活用過沒。一場只有一次。 */
@@ -368,7 +437,8 @@ export function useLaneRun(
       const dash = idle && idleSinceRef.current > 0 && now - idleSinceRef.current >= DASH_DELAY_MS;
       if (dash !== dashingRef.current) { dashingRef.current = dash; setDashing(dash); }
 
-      travelledRef.current += (speed * (dash ? DASH_MULTIPLIER : 1) * dt) / 1000;
+      const movedBy = (speed * (dash ? DASH_MULTIPLIER : 1) * dt) / 1000;
+      travelledRef.current += movedBy;
       const travelled = travelledRef.current;
       setDistance(travelled);
 
@@ -379,13 +449,129 @@ export function useLaneRun(
         setHeroOffset(next);
       }
 
-      stepWave(now, travelled);
+      stepWave(now, travelled, movedBy);
     }, TICK_MS);
     return () => clearInterval(id);
   }, [state.phase, speed, rows, paused, stage]);
 
+  /**
+   * 這一波目前的加成。**跑圖途中的演出與這一排的結算共用同一份**——
+   * 各算各的話,畫面上倒了 9 隻、結算卻只算 8 隻,玩家會看到「明明打完了還是漏一隻」。
+   */
+  function boostFor(heroWave: boolean, fired: WaveRuntime['fired'], fx: RunSkillEffects): WaveBoost {
+    const boost: WaveBoost = {};
+    // 勇者波:投擲傷害在跑圖途中就逐發扣過了(見 EnemyShot),一定要告訴 resolveEnemy
+    // 別再用期望值扣一次——漏掉這一行的症狀只是「勇者波特別難」,不會有任何錯誤訊息。
+    if (heroWave) boost.hazardResolved = true;
+    const kills = fx.burnKills + fired.kills;
+    if (kills > 0) boost.kills = kills;
+    const ratio = fx.pierceRatio + fired.killRatio;
+    if (ratio > 0) boost.killRatio = ratio;
+    if (fx.chainRatio > 0) boost.chainRatio = fx.chainRatio;
+    if (fx.leech > 0) boost.leech = fx.leech;
+    if (fx.regen > 0) { boost.regen = fx.regen; boost.lostSoFar = lostSoFarRef.current; }
+    if (fx.revive > 0 && !revivedRef.current) boost.revive = fx.revive;
+    if (fired.immune) boost.immune = true;
+    return boost;
+  }
+
+  /** 波次還沒建起來就跑到結算點時用的空加成(理論上不會發生,視野判定比結算早很多)。 */
+  const NO_FIRED: WaveRuntime['fired'] = { kills: 0, killRatio: 0, immune: false };
+
+  /**
+   * 冷卻好了的主動技能就地觸發。
+   *
+   * **號令補的人直接進 RunState,其他三款走 boost。** 分開的理由:補人是狀態改變,
+   * 當場就要看得到(玩家剩 3 個人的時候等到結算才補等於沒補);清怪則會影響
+   * 「漏了幾隻」的結算,所以必須留在 boost 裡讓 resolveEnemy 一起算,
+   * 兩邊都算一次就會變成雙倍。
+   */
+  function fireActives(current: WaveRuntime, fx: RunSkillEffects, now: number) {
+    const fired: string[] = [];
+    let killsNow = 0;
+    let heroesNow = 0;
+    const ready = (id: string, cooldownSeconds: number) => {
+      const at = readyAtRef.current[id];
+      if (at !== undefined && now < at) return false;
+      readyAtRef.current[id] = now + cooldownSeconds * 1000;
+      return true;
+    };
+    // 土・護盾:唯一有冷卻的元素,跟主動技能同一套時鐘。
+    if (Number.isFinite(fx.shieldCooldownSeconds) && ready('earth', fx.shieldCooldownSeconds)) {
+      current.fired.immune = true;
+      fired.push('土・護盾');
+    }
+    for (const a of fx.actives as ActiveTrigger[]) {
+      if (!ready(a.id, a.cooldown)) continue;
+      fired.push(a.name);
+      if (a.kills) { current.fired.kills += a.kills; killsNow += a.kills; }
+      if (a.killRatio) current.fired.killRatio += a.killRatio;
+      if (a.heroes) heroesNow += Math.round(a.heroes);
+      if (a.immune) current.fired.immune = true;
+    }
+    if (fired.length === 0) return;
+    setLastStrike({ at: now, names: fired, kills: Math.floor(killsNow) });
+    if (heroesNow > 0) {
+      setState((prev) => (prev.phase === 'running' ? { ...prev, heroes: prev.heroes + heroesNow } : prev));
+    }
+  }
+
+  /**
+   * 命中的那一刻,火/雷/冰各自做的事。
+   *
+   * 使用者要的規則,一字不差地照做:
+   *   火 命中後火焰擴散到旁邊的魔物扣血量
+   *   雷 每攻擊多少下觸發連鎖閃電
+   *   冰 被攻擊的怪物有機率被凍在原地不能移動
+   *   交互 連鎖電到的怪,再各自吃一次燃燒擴散 / 凍結判定(depth 1 就是這一層)
+   *
+   * **這裡只加 hitsOn(讓怪掉血),不加「能打倒幾隻」的上限。** 上限仍然是
+   * 戰力 + burnKills/chainRatio/pierceRatio,由 laneRun 的 extraKills 統一算。
+   * 兩件事分開才不會「火燒得更漂亮 = 難度悄悄降了」。
+   */
+  function applyOnHit(current: WaveRuntime, i: number, now: number, fx: RunSkillEffects, depth = 0) {
+    // 冰・凍結:凍住的那一隻停在畫面上原地(見 WaveView.frozen)。
+    if (fx.freezeChance > 0 && procRoll(current.rowIndex, i, current.hitCount + depth) < fx.freezeChance) {
+      current.frozenUntil[i] = now + FREEZE_MS;
+      pushElementEvent('freeze', i, now);
+    }
+    // 火・燃燒:火焰跳到後面還站著的那幾隻身上。
+    if (fx.burnSpread > 0) {
+      let spread = 0;
+      for (let j = i + 1; j < current.monsters.length && spread < fx.burnSpread; j++) {
+        if (current.hitsOn[j] >= current.hitsPerUnit) continue;
+        current.hitsOn[j] += 1;
+        pushElementEvent('burn', j, now, i);
+        spread += 1;
+      }
+    }
+    // 雷・連鎖:每 N 下一次。**只有第一層會觸發**——連鎖電到的目標再觸發連鎖的話,
+    // 一下命中可以連到整波,那不是「連鎖」是「全屏」。
+    if (depth === 0 && fx.chainEvery > 0 && current.hitCount % fx.chainEvery === 0) {
+      let hit = 0;
+      let from = i;
+      for (let j = i + 1; j < current.monsters.length && hit < fx.chainTargets; j++) {
+        if (current.hitsOn[j] >= current.hitsPerUnit) continue;
+        current.hitsOn[j] += 1;
+        pushElementEvent('chain', j, now, from);
+        // 交互:電到的那一隻再吃一次燃燒擴散與凍結判定。
+        applyOnHit(current, j, now, fx, depth + 1);
+        from = j;
+        hit += 1;
+      }
+    }
+  }
+
+  function pushElementEvent(kind: ElementEvent['kind'], target: number, now: number, from?: number) {
+    elementEventIdRef.current += 1;
+    elementEventsRef.current = [
+      ...elementEventsRef.current,
+      { id: elementEventIdRef.current, kind, target, from, bornAt: now },
+    ];
+  }
+
   /** 一波小怪的演出:該冒出來的冒出來、該丟的武器丟出去、打中的就消失。 */
-  function stepWave(now: number, travelled: number) {
+  function stepWave(now: number, travelled: number, movedBy: number) {
     // 找出「正在逼近」的那一排敵人。
     //
     // 判斷的是**最前面那一隻怪**進沒進視野,不是那一排的結算點——小怪是從結算點往前
@@ -405,11 +591,13 @@ export function useLaneRun(
         projectilesRef.current = [];
         hitNumbersRef.current = [];
         enemyShotsRef.current = [];
+        elementEventsRef.current = [];
         setEnemyThrowAt({});
         setWave(null);
         setProjectiles([]);
         setHitNumbers([]);
         setEnemyShots([]);
+        setElementEvents([]);
       }
       return;
     }
@@ -432,15 +620,39 @@ export function useLaneRun(
         ),
         hitsOn: new Array(enemy.units).fill(0),
         lastFireAt: 0,
+        frozenUntil: new Array(enemy.units).fill(0),
+        hitCount: 0,
+        fired: { kills: 0, killRatio: 0, immune: false },
       };
       waveRef.current = current;
       projectilesRef.current = [];
       enemyShotsRef.current = [];
+      elementEventsRef.current = [];
+    }
+
+    // 這一波的技能效果。**每個 tick 重算**:波次中途選了新技能、或是吃到閘門讓戰力變了,
+    // 畫面上能打倒幾隻就要立刻跟著變(相剋也在這一層逐元素結算完)。
+    const fx = runSkillEffects(runSkillsRef.current, current.element, bookLevel, collectionScale);
+    fireActives(current, fx, now);
+
+    // 凍住的那幾隻跟著玩家一起前進 = 畫面上停在原地不再逼近。
+    // 怪的世界座標是固定的、往前跑的是玩家,所以「不動」只能用這個方式表達。
+    if (movedBy > 0) {
+      for (let i = 0; i < current.monsters.length; i++) {
+        if (current.frozenUntil[i] > now) current.monsters[i].distance += movedBy;
+      }
     }
 
     // 打得掉幾隻每個 tick 重算:波次中途吃到閘門,攻擊力一變,能清掉的隻數就跟著變。
     // 前 kills 隻是「打得倒的」,後面那幾隻挨再多下也不會倒——那就是戰力壓不過的部分。
-    const kills = waveKillCount(totalAttack(stateRef.current), current.power, current.monsters.length);
+    // **額外擊殺走 laneRun 的 extraKills**,跟這一排結算用的是同一支函式:
+    // 各寫一份的話畫面與結算會慢慢岔開,而兩邊分開看都完全合理,最難查。
+    const ownKills = waveKillCount(totalAttack(stateRef.current), current.power, current.monsters.length);
+    const enemyEffect = enemyRow.nodes[0].enemy!;
+    const kills = Math.min(
+      current.monsters.length,
+      ownKills + Math.floor(extraKills(enemyEffect, boostFor(current.heroWave, current.fired, fx), ownKills)),
+    );
     const isDown = (i: number) => i < kills && current!.hitsOn[i] >= current!.hitsPerUnit;
 
     // --- 丟武器 ---
@@ -502,6 +714,9 @@ export function useLaneRun(
         const target = current.monsters[p.targetIndex];
         if (target && moved.distance >= target.distance) {
           current.hitsOn[p.targetIndex] += 1;
+          current.hitCount += 1;
+          // 火/雷/冰:命中的那一刻就發生(燒到旁邊、連鎖、凍住)。
+          applyOnHit(current, p.targetIndex, now, fx);
           // 命中就跳一個傷害數字。是不是暴擊由「第幾排/第幾隻/第幾下」的雜湊決定,不是亂數——
           // 這個 tick 迴圈每 33ms 跑一次,用亂數的話同一下會一直重抽,數字會閃爍。
           const ordinal = current.hitsOn[p.targetIndex];
@@ -595,11 +810,18 @@ export function useLaneRun(
       setHitNumbers(hitNumbersRef.current);
     }
 
+    // 過期的元素演出丟掉。跟傷害數字同一個道理:每個 tick 都換一個新陣列的話畫面每格都重畫。
+    const liveFx = elementEventsRef.current.filter((e) => now - e.bornAt < ELEMENT_FX_MS[e.kind]);
+    if (liveFx.length !== elementEventsRef.current.length) elementEventsRef.current = liveFx;
+    if (elementEvents !== elementEventsRef.current) setElementEvents(elementEventsRef.current);
+
     const down = current.monsters.map((m) => isDown(m.index));
+    const frozen = current.monsters.map((m) => current!.frozenUntil[m.index] > now);
     setWave((prev) =>
       prev !== null
       && prev.rowIndex === current!.rowIndex
       && sameFlags(prev.down, down)
+      && sameFlags(prev.frozen, frozen)
       && prev.hitsOn.every((h, i) => h === current!.hitsOn[i])
         ? prev
         : {
@@ -613,6 +835,7 @@ export function useLaneRun(
             hitsPerUnit: current!.hitsPerUnit,
             monsters: current!.monsters,
             down,
+            frozen,
           },
     );
   }
@@ -651,44 +874,25 @@ export function useLaneRun(
         const landed = { ...prev, lane: laneFromOffset(offsetRef.current) };
         // 帶著連續位置去結算:站對邊還不夠,得真的踩在閘門上(見 laneRun 的 hitsGate)。
         // 敵人排:先看每一款主動技能的冷卻好了沒,好了的就把效果併進這一波的結算。
-        const boost: WaveBoost = {};
-        const fired: string[] = [];
+        // 敵人排:把跑圖途中累積出來的那一份加成交給結算。
+        //
+        // **主動技能已經在跑圖途中(fireActives)觸發過了,這裡不再跑一次冷卻。**
+        // 冷卻改成秒之後,「觸發」發生在時間軸上而不是排的邊界上;這裡只是把
+        // 「這一波實際發生了什麼」帶進結算,跟畫面上小怪倒下的那個數字是同一份
+        // (兩邊都走 boostFor,見上面的說明)。
+        let boost: WaveBoost = {};
         if (due.nodes[0]?.kind === 'enemy') {
-          const units = due.nodes[0].enemy?.units ?? 0;
+          const waveElement = due.nodes[0].enemy?.element;
           // 相剋是**逐元素**的:結算的時候就把這一波的屬性交給 runSkillEffects,
           // 剋中的那個元素放大、被剋的那個削弱,其他元素與主動技能一律不動。
-          // 勇者波:投擲傷害在跑圖途中就逐發扣過了(見上面的 EnemyShot),
-          // **一定要告訴 resolveEnemy 別再用期望值扣一次**——漏掉這一行就是扣兩次,
-          // 而且症狀只是「勇者波特別難」,不會有任何錯誤訊息。
-          if (due.nodes[0].enemy?.heroWave) boost.hazardResolved = true;
-          const waveElement = due.nodes[0].enemy?.element;
           const fx = runSkillEffects(runSkills, waveElement, bookLevel, collectionScale);
-          if (runSkills.some((s) => s.level > 0 && ELEMENT_COUNTERS[s.id] === waveElement)) fired.push('剋');
-          // 八元素:常駐,不用冷卻(除了土)。全部只在「已經失誤了」的路徑上生效,
-          // 所以完美玩家一個都碰不到——它們因此不進理想路線(見 laneRun 的 WaveBoost)。
-          if (fx.burnKills > 0) boost.kills = (boost.kills ?? 0) + fx.burnKills;
-          if (fx.pierceRatio > 0) boost.killRatio = (boost.killRatio ?? 0) + fx.pierceRatio;
-          if (fx.chainRatio > 0) boost.chainRatio = fx.chainRatio;
-          if (fx.leech > 0) boost.leech = fx.leech;
-          if (fx.regen > 0) { boost.regen = fx.regen; boost.lostSoFar = lostSoFarRef.current; }
-          if (fx.revive > 0 && !revivedRef.current) boost.revive = fx.revive;
-          // 土・護盾:唯一有冷卻的元素。
-          if (Number.isFinite(fx.shieldCooldown)) {
-            const since = (wavesSinceRef.current.earth ?? 99) + 1;
-            if (since >= fx.shieldCooldown) { wavesSinceRef.current.earth = 0; boost.immune = true; fired.push('土・護盾'); }
-            else wavesSinceRef.current.earth = since;
+          const current = waveRef.current;
+          boost = current !== null && current.rowIndex === due.index
+            ? boostFor(current.heroWave, current.fired, fx)
+            : boostFor(due.nodes[0].enemy?.heroWave === true, NO_FIRED, fx);
+          if (runSkills.some((s) => s.level > 0 && ELEMENT_COUNTERS[s.id] === waveElement)) {
+            setLastStrike({ at: Date.now(), names: ['剋'], kills: 0 });
           }
-          for (const a of fx.actives) {
-            const since = (wavesSinceRef.current[a.id] ?? 99) + 1;
-            if (since < a.cooldown) { wavesSinceRef.current[a.id] = since; continue; }
-            wavesSinceRef.current[a.id] = 0;
-            fired.push(a.name);
-            if (a.kills) boost.kills = (boost.kills ?? 0) + a.kills;
-            if (a.killRatio) boost.killRatio = (boost.killRatio ?? 0) + a.killRatio;
-            if (a.heroes) boost.heroes = (boost.heroes ?? 0) + a.heroes;
-            if (a.immune) boost.immune = true;
-          }
-          if (fired.length > 0) setLastStrike({ at: Date.now(), names: fired, kills: boost.kills ?? 0 });
         }
         const r = resolveRow(landed, due, offsetRef.current, boost);
         // 記帳:失去的人累加起來給木・再生當上限;復活用掉就記起來(一場一次)。
@@ -771,6 +975,20 @@ export function useLaneRun(
     speed,
     dashing,
     lastStrike,
+    elementEvents,
+    // 冷卻的倒數在**畫的時候**才算(readyAt 是 ref,不觸發重畫)。
+    // 跑圖每個 tick 都會因為 distance 變動而重畫,所以倒數自然會走,不必再開一個計時器。
+    carriedSkills: runSkills.map((s) => {
+      const cooldown = hasCooldown(s.id) ? skillCooldownSeconds(s.id, s.level) : 0;
+      const at = readyAtRef.current[s.id] ?? 0;
+      return {
+        id: s.id,
+        name: runSkillSpec(s.id).name,
+        level: s.level,
+        cooldown,
+        ready: cooldown > 0 ? Math.max(0, (at - Date.now()) / 1000) : 0,
+      };
+    }),
     dragTo,
     steer,
     stage,

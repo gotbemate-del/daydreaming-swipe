@@ -948,6 +948,16 @@ export function isCritHit(rowIndex: number, targetIndex: number, hitOrdinal: num
 }
 
 /**
+ * 元素在「命中的那一刻」要不要觸發(冰・凍結用的骰子)。
+ *
+ * 跟暴擊同一個理由走雜湊不走 Math.random:這個判定在每 33ms 的 tick 迴圈裡,
+ * 用亂數的話同一下會一直重抽,凍結會一格閃一格。
+ */
+export function procRoll(rowIndex: number, targetIndex: number, ordinal: number): number {
+  return hashFor(rowIndex * 89 + targetIndex, ordinal, 23);
+}
+
+/**
  * 命中時跳出來的數字。一隻要挨 hitsPerUnit 下才倒,所以一下的傷害就是總戰力攤到每一下上。
  * 這個數字是給玩家看「我這一下有多痛」的,不是結算用的數字。
  */
@@ -1447,8 +1457,15 @@ export interface WaveBoost {
   hazardResolved?: boolean;
 }
 
-/** 這一波額外清掉幾隻(主動技能與元素給的,不含自己的戰力)。 */
-function extraKills(enemy: EnemyEffect, boost: WaveBoost, own: number): number {
+/**
+ * 這一波額外清掉幾隻(主動技能與元素給的,不含自己的戰力)。
+ *
+ * **匯出給畫面用,不要在別的地方再寫一份。** 跑圖途中的演出(小怪一隻一隻倒下)
+ * 跟這一排的結算必須是同一個數字:各寫一份的話,畫面上倒了 9 隻、結算卻算 8 隻,
+ * 玩家會看到「明明都打完了還是漏了一隻」——而那是最難查的一種不一致,
+ * 因為兩邊分開看都完全合理。
+ */
+export function extraKills(enemy: EnemyEffect, boost: WaveBoost, own: number): number {
   return Math.max(0, boost.kills ?? 0)
     + Math.ceil(enemy.units * Math.max(0, boost.killRatio ?? 0))
     + Math.ceil(own * Math.max(0, boost.chainRatio ?? 0));

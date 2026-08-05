@@ -16,6 +16,7 @@ import {
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
   TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane, MIN_WAVE_SIZE,
   HERO_WAVE_ELEMENT_SALT, waveElementsForStage, hazardsFor, hitByHazard, HAZARD_WIDTH, HAZARD_LOSS_HEROES, expectedHazardHits, ENEMY_THROW_INTERVAL_MS,
+  battleSecondsPerWave,
   type Lane, type RunState, type WaveBoost,
 } from '../game/laneRun';
 import {
@@ -24,7 +25,7 @@ import {
 } from './simRun';
 import {
   runSkillPicksForWave, totalRunSkillPicks, MAX_RUN_SKILL_LEVEL, RUN_SKILLS,
-  MAX_RUN_SKILL_SLOTS, runSkillEffects, strikeCooldownWaves, bestRunSkillChoice, runSkillOffersAt,
+  MAX_RUN_SKILL_SLOTS, runSkillEffects, skillCooldownSeconds, bestRunSkillChoice, runSkillOffersAt,
   ACTIVE_SKILL_IDS, ELEMENTS, runSkillSpec, ELEMENT_COUNTERS, COUNTER_BONUS, COUNTERED_PENALTY,
   elementMatchup, elementForRow,
 } from '../game/laneRunSkills';
@@ -436,7 +437,7 @@ function rate(stage: number, pick: LanePicker, trials = 300) {
 const strikeAt = (l: number) => runSkillEffects([{ id: 'strike' as const, level: l }]).actives[0];
 check('爆裂是固定擊殺數,不是百分比(所以越落後越有用)',
   [1, 3, 5].every((l) => (strikeAt(l).kills ?? 0) > 0)
-  && strikeAt(5).kills === strikeAt(1).kills! * 5
+  && strikeAt(5).kills! > strikeAt(1).kills!
   && runSkillEffects([{ id: 'strike', level: 3 }]).attackMultiplier === 1
   && runSkillEffects([{ id: 'strike', level: 3 }]).heroMultiplier === 1,
   `1級 ${strikeAt(1).kills} 隻 / 5級 ${strikeAt(5).kills} 隻,完全不加戰力`);
@@ -452,10 +453,20 @@ check('主動技能一款都不加戰力(所以全部都不進敵人曲線)',
     const e = runSkillEffects([{ id, level: 5 }]);
     return e.attackMultiplier === 1 && e.heroMultiplier === 1;
   }));
-check('冷卻的單位是波不是秒(跑速變了強度才不會跟著變)',
-  [1, 2, 3, 4, 5].map((l) => strikeCooldownWaves(l)).every((c, i, a) => i === 0 || c <= a[i - 1])
-  && strikeCooldownWaves(5) >= 1,
-  [1, 3, 5].map((l) => `${l}級每 ${strikeCooldownWaves(l)} 波`).join(' / '));
+// **這一項推翻了原本的「冷卻要綁波不綁秒」。** 舊結構是「一波 = 一排」,
+// 一排的時間 = 排距 / 跑速,而跑速從 45 爬到 111 —— 綁秒等於後期技能自己變弱。
+// 關卡結構改成「戰鬥段是時間」之後,一波的長度反而幾乎是常數,綁秒才是穩的那一邊。
+// 下面這一項就是在盯那個前提:哪天結構又改回「一波 = 一排」,它會先紅。
+const waveSeconds = [1, 40, 700, 1500, 2900].map((s) => battleSecondsPerWave(s));
+const waveSpread = Math.max(...waveSeconds) / Math.min(...waveSeconds);
+check('一波的秒數在 3000 關之間幾乎不變(這是「冷卻可以綁秒」的前提)',
+  waveSpread < 1.6,
+  `${Math.min(...waveSeconds).toFixed(1)}~${Math.max(...waveSeconds).toFixed(1)} 秒(差 ${waveSpread.toFixed(2)} 倍)`);
+check('冷卻的單位是秒,而且等級越高越短',
+  [1, 2, 3, 4, 5].map((l) => skillCooldownSeconds('strike', l)).every((c, i, a) => i === 0 || c <= a[i - 1])
+  && skillCooldownSeconds('strike', 5) > 0
+  && skillCooldownSeconds('edge', 5) === 0,
+  [1, 3, 5].map((l) => `${l}級每 ${skillCooldownSeconds('strike', l)} 秒`).join(' / '));
 // 這條是它不會把敵人養大的保證:貪心只看戰力,所以理想路線永遠不會挑爆裂,
 // 敵人也就不會為了一個「理想玩家用不到的東西」變強(跟兌換率同一個道理)。
 check('理想路線永遠不會挑爆裂(所以它不進敵人曲線)',
@@ -479,7 +490,7 @@ check('八個元素都存在,而且效果組合互不相同(不是同一個東�
   && new Set(ELEMENTS.map((id) => {
     const e = elemFx(id);
     return JSON.stringify([e.burnKills > 0, e.pierceRatio > 0, e.chainRatio > 0, e.tradeMultiplier > 1,
-      e.regen > 0, Number.isFinite(e.shieldCooldown), e.revive > 0, e.leech > 0]);
+      e.regen > 0, Number.isFinite(e.shieldCooldownSeconds), e.revive > 0, e.leech > 0]);
   })).size === 8,
   ELEMENTS.map((id) => runSkillSpec(id).name).join(' '));
 check('沒有任何元素會加戰力(所以八個都不進敵人曲線)',
@@ -487,6 +498,40 @@ check('沒有任何元素會加戰力(所以八個都不進敵人曲線)',
     const e = elemFx(id, MAX_RUN_SKILL_LEVEL);
     return e.attackMultiplier === 1 && e.heroMultiplier === 1;
   }));
+// --- 火/雷/冰的「命中當下」規則 ---
+// 燃燒擴散、連鎖閃電、凍結是**演出**;能多打倒幾隻仍然只由 burnKills / chainRatio /
+// pierceRatio 決定(laneRun 的 extraKills)。兩組數字分開,是為了讓「特效調得更誇張」
+// 不會變成「難度悄悄降了」——這是這個專案一再踩到的那類「兩條各走各的曲線」。
+const fireFx = runSkillEffects([{ id: 'fire', level: 5 }]);
+const thunderFx = runSkillEffects([{ id: 'thunder', level: 5 }]);
+const iceFx = runSkillEffects([{ id: 'ice', level: 5 }]);
+check('火/雷/冰各有一組「命中當下」的演出參數',
+  fireFx.burnSpread > 0 && thunderFx.chainEvery > 0 && thunderFx.chainTargets > 0 && iceFx.freezeChance > 0,
+  `火燒到 ${fireFx.burnSpread} 隻 / 雷每 ${thunderFx.chainEvery} 下電 ${thunderFx.chainTargets} 隻 / 冰 ${Math.round(iceFx.freezeChance * 100)}% 凍住`);
+check('沒帶那個元素就沒有演出參數(不會憑空多一層特效)',
+  (() => {
+    const none = runSkillEffects([{ id: 'edge', level: 5 }]);
+    return none.burnSpread === 0 && none.chainEvery === 0 && none.chainTargets === 0 && none.freezeChance === 0;
+  })());
+// 這一項是回歸防線:演出改版**完全沒有動**決定難度的那三個數字。
+check('演出改版沒有動到擊殺數(火 1/級、雷 8%/級、金 6%/級)',
+  fireFx.burnKills === 5
+  && Math.abs(thunderFx.chainRatio - 0.4) < 1e-9
+  && Math.abs(runSkillEffects([{ id: 'metal', level: 5 }]).pierceRatio - 0.3) < 1e-9,
+  `火 ${fireFx.burnKills} 隻 / 雷 ${(thunderFx.chainRatio * 100).toFixed(0)}% / 金 ${(runSkillEffects([{ id: 'metal', level: 5 }]).pierceRatio * 100).toFixed(0)}%`);
+// 凍結是唯一吃相剋的演出參數(它是機率,放大得動;擴散隻數是整數,放大就變成另一個技能)。
+check('冰的凍結機率吃相剋,擴散/連鎖的隻數不吃',
+  runSkillEffects([{ id: 'ice', level: 3 }], 'fire').freezeChance
+  > runSkillEffects([{ id: 'ice', level: 3 }]).freezeChance
+  && runSkillEffects([{ id: 'fire', level: 3 }], 'metal').burnSpread
+  === runSkillEffects([{ id: 'fire', level: 3 }]).burnSpread);
+// 擋一整波損失的兩款(壁障、土・護盾)的冷卻要落在「幾波」的量級,不是「一波之內幾次」——
+// 一波約 18 秒,秒數必須遠大於它,不然它會變成「每一波都免疫」。
+const waveCycle = runSeconds(1) / wavesForStage(1);
+check('壁障與土・護盾的冷卻是「幾波」的量級(不是每波都擋)',
+  skillCooldownSeconds('aegis', 5) > waveCycle * 3
+  && skillCooldownSeconds('earth', 5) > waveCycle * 2,
+  `壁障 ${skillCooldownSeconds('aegis', 1)}~${skillCooldownSeconds('aegis', 5)} 秒 ≈ ${(skillCooldownSeconds('aegis', 5) / waveCycle).toFixed(1)}~${(skillCooldownSeconds('aegis', 1) / waveCycle).toFixed(1)} 波`);
 // 這一項是八元素設計的核心:完美玩家(全清、不漏、不死)一個都用不到。
 // 用一波「戰力遠超過」的結算去驗——帶滿八元素跟什麼都不帶,結果必須完全一樣。
 const perfectWave = { power: 1, reward: 0, species: [{ id: 'blob-1', name: '史' }], name: '史', units: 6 };

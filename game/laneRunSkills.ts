@@ -38,7 +38,7 @@ export type RunSkillId =
   // 八元素:**全部只在你失誤的時候才生效**,所以完美玩家一個都用不到,
   // 也因此全部不進理想路線——敵人不會為了它們變強,幅度可以放心給(見下方 ELEMENTS)
   | 'fire' | 'metal' | 'thunder' | 'ice' | 'wood' | 'earth' | 'light' | 'dark'
-  // 主動技能(有冷卻、有特效、造成固定效果)。冷卻一律以**波**為單位。
+  // 主動技能(有冷卻、有特效、造成固定效果)。冷卻以**秒**為單位(理由見 COOLDOWN_SPEC)。
   | 'strike' | 'pierce' | 'rally' | 'aegis';
 
 /**
@@ -210,68 +210,157 @@ const PER_LEVEL = {
   metalRatio: 0.06,
   /** 雷・連鎖:額外清掉「你自己打倒的隻數」的幾成(你越強放大越多) */
   thunderRatio: 0.08,
-  /** 水・減速:怪衝得慢 = 撞上來的損失小,也就是兌換率 */
+  /** 冰・凍結:怪被凍住 = 撞上來的損失小,也就是兌換率 */
   iceTrade: 0.25,
   /** 木・再生:每一波把這一場**已經失去的人**補回來幾個(沒失去就沒得補) */
   woodRegen: 1,
-  /** 土・護盾:每幾波擋下一整波的損失(冷卻以波計) */
-  earthCooldown: 6,
   /** 光・復活:人數歸零時保住幾個人。一場只有一次。 */
   lightRevive: 3,
   /** 暗・吸取:漏過來的怪有幾成反而加入你(只有漏接時才有東西可吸) */
   darkLeech: 0.2,
   /** 爆裂(主動):每次觸發直接清掉幾隻(固定值,前期最有感) */
-  strikeKills: 2,
+  strikeKills: 0.8,
   /** 貫穿(主動):清掉整波的幾成(比例值,後期大波才有感——跟爆裂互補) */
-  pierceRatio: 0.12,
+  pierceRatio: 0.06,
   /** 號令(主動):直接補幾個勇者 */
-  rallyHeroes: 1,
+  rallyHeroes: 0.4,
 };
 
 /**
- * 主動技能的冷卻,單位是**波**不是秒。
+ * 有冷卻的技能各自的基準冷卻(秒)與每級縮短多少。
  *
- * 綁秒會壞:跑速隨關卡從 45 爬到 111,「每 10 秒一次」在第 1 關是每 4.5 排、
- * 第 40 關是每 11 排——**越後面的關卡技能越弱**,而那不是設計決定的,
- * 純粹是兩個時鐘沒對齊(CLAUDE.md 的「兩條各走各的曲線」在新系統上的翻版)。
+ * ## 為什麼現在可以綁秒了(這條推翻了 CLAUDE.md 原本的「冷卻要綁波不綁秒」)
+ *
+ * 舊結構是「一波 = 一排」,一排的時間 = 排距 / 跑速,而跑速隨關卡從 45 爬到 111——
+ * 所以「每 10 秒一次」在第 1 關是每 4.5 排、第 40 關是每 11 排,**越後面技能越弱**。
+ * 那是兩個時鐘沒對齊,不是設計決定的。
+ *
+ * 關卡結構改成「戰鬥段是時間不是排數」之後(見 laneRun 的 battleSecondsPerWave),
+ * 這件事反過來了:一波的長度現在是**用秒回推距離**算出來的,所以它幾乎是常數——
+ * 實測第 1 關 13.6 秒、第 40 關之後一路到第 3000 關都是 17.1 秒(1.26 倍差距,
+ * 而且第 40 關就封頂了)。整個波週期更平:18.5 → 18.1 秒。
+ * 綁秒現在反而比綁波穩定,而且**玩家看得到冷卻在走**——綁波的話畫面上只能寫
+ *「還要 2 波」,那是一個玩家無法換算成時間的單位。
+ *
+ * `verify-lane-run.ts` 有一項在盯「一波的秒數在 3000 關之間的離散程度」,
+ * 哪天結構又改回去,那一項會先紅。
  */
-export function strikeCooldownWaves(level: number): number {
-  return Math.max(1, 4 - Math.floor(Math.max(0, level) / 2));
+const COOLDOWN_SPEC: Partial<Record<RunSkillId, { base: number; perLevel: number; min: number }>> = {
+  strike: { base: 18, perLevel: 2, min: 8 },
+  pierce: { base: 20, perLevel: 2, min: 10 },
+  rally: { base: 22, perLevel: 2, min: 12 },
+  // 壁障與土・護盾擋的是「一整波的損失」,所以冷卻的量級是**波**不是「一波之內幾次」:
+  // 一個波週期約 18 秒,110 秒 ≈ 6 波、70 秒 ≈ 4 波,跟改版前完全一樣。
+  aegis: { base: 120, perLevel: 10, min: 70 },
+  earth: { base: 100, perLevel: 12, min: 40 },
+};
+
+/** 這一款技能幾秒觸發一次。沒有冷卻的(被動)回傳 0。 */
+export function skillCooldownSeconds(id: RunSkillId, level: number): number {
+  const spec = COOLDOWN_SPEC[id];
+  if (!spec) return 0;
+  const l = Math.max(0, Math.min(MAX_RUN_SKILL_LEVEL, Math.floor(level)));
+  if (l <= 0) return 0;
+  return Math.max(spec.min, spec.base - spec.perLevel * l);
 }
+
+/** 這一款技能有沒有冷卻。沒有的就是純被動,技能列上不畫倒數。 */
+export function hasCooldown(id: RunSkillId): boolean {
+  return COOLDOWN_SPEC[id] !== undefined;
+}
+
+// ---- 三個「命中當下」的元素規則 ----
+//
+// 火/雷/冰改成**打中的那一刻就發生**,不再只是結算時多一個數字:
+//   火・燃燒  命中後火焰燒到旁邊幾隻(那幾隻也跟著掉血)
+//   雷・連鎖  每攻擊幾下觸發一次連鎖閃電,電到附近幾隻
+//   冰・凍結  命中有機率把那一隻凍在原地(畫面上牠停住不再逼近)
+//   交互      連鎖電到的目標**再各自吃一次**燃燒擴散與凍結判定
+//
+// **這三個函式只決定「演出長什麼樣」,不決定「總共多打倒幾隻」。**
+// 能多打倒幾隻仍然是 burnKills / chainRatio / pierceRatio 那三個數字(完全沒動),
+// 由 laneRun 的 extraKills 統一結算。分開的理由:擊殺數是難度,演出是體感,
+// 混在一起的話「火燒得更漂亮」就會變成「難度悄悄降了」,而那不是設計決定的。
+
+/** 火・燃燒:一次命中把火燒到後面幾隻身上。 */
+export function burnSpreadTargets(level: number): number {
+  return level > 0 ? 1 + Math.floor((Math.min(MAX_RUN_SKILL_LEVEL, level) - 1) / 2) : 0;
+}
+/** 雷・連鎖:每幾下攻擊觸發一次連鎖閃電(0 = 沒點)。 */
+export function chainEveryHits(level: number): number {
+  return level > 0 ? Math.max(3, 9 - Math.min(MAX_RUN_SKILL_LEVEL, level)) : 0;
+}
+/** 雷・連鎖:一次電到幾隻。 */
+export function chainTargetCount(level: number): number {
+  return level > 0 ? 1 + Math.floor((Math.min(MAX_RUN_SKILL_LEVEL, level) - 1) / 2) : 0;
+}
+/** 冰・凍結:一次命中把那一隻凍住的機率(吃相剋,所以剋中時凍得住的機會明顯變高)。 */
+export function freezeChanceAt(level: number, matchup = 1): number {
+  return level > 0 ? Math.min(0.6, 0.1 * Math.min(MAX_RUN_SKILL_LEVEL, level) * matchup) : 0;
+}
+/** 凍住多久(毫秒)。畫面與邏輯共用,不要各寫一份。 */
+export const FREEZE_MS = 900;
 
 export const RUN_SKILLS: RunSkillSpec[] = [
   { id: 'edge', name: '鋒刃', describe: (l) => `每人攻擊力 +${Math.round(PER_LEVEL.edgeAttack * l * 100)}%` },
   { id: 'swarm', name: '增殖', describe: (l) => `數量 +${Math.round(PER_LEVEL.swarmHeroes * l * 100)}%` },
   // 八元素。說明一律寫「什麼時候有用」,不是只寫數字——玩家要在 2 秒內判斷該不該拿。
-  { id: 'fire', name: '火・燃燒', describe: (l) => `每波多燒掉 ${PER_LEVEL.fireKills * l} 隻` },
+  {
+    id: 'fire',
+    name: '火・燃燒',
+    describe: (l) => `命中後火焰燒到旁邊 ${burnSpreadTargets(l)} 隻,每波多帶走 ${PER_LEVEL.fireKills * l} 隻`,
+  },
   { id: 'metal', name: '金・穿透', describe: (l) => `每波多清掉整波的 ${Math.round(PER_LEVEL.metalRatio * l * 100)}%` },
-  { id: 'thunder', name: '雷・連鎖', describe: (l) => `你打倒的每 ${Math.round(1 / (PER_LEVEL.thunderRatio * l))} 隻多帶走 1 隻` },
-  { id: 'ice', name: '冰・凍結', describe: (l) => `怪衝得慢,兌換率 +${Math.round(PER_LEVEL.iceTrade * l * 100)}%` },
+  {
+    id: 'thunder',
+    name: '雷・連鎖',
+    describe: (l) => `每攻擊 ${chainEveryHits(l)} 下觸發連鎖閃電(電 ${chainTargetCount(l)} 隻)`,
+  },
+  {
+    id: 'ice',
+    name: '冰・凍結',
+    describe: (l) => `命中有 ${Math.round(freezeChanceAt(l) * 100)}% 機率凍住,兌換率 +${Math.round(PER_LEVEL.iceTrade * l * 100)}%`,
+  },
   { id: 'wood', name: '木・再生', describe: (l) => `每波補回 ${PER_LEVEL.woodRegen * l} 個失去的同伴` },
-  { id: 'earth', name: '土・護盾', describe: (l) => `每 ${Math.max(2, PER_LEVEL.earthCooldown - l)} 波擋下一整波損失` },
+  { id: 'earth', name: '土・護盾', describe: (l) => `每 ${skillCooldownSeconds('earth', l)} 秒擋下一整波損失` },
   { id: 'light', name: '光・復活', describe: (l) => `倒下時保住 ${PER_LEVEL.lightRevive * l} 人(一場一次)` },
   { id: 'dark', name: '暗・吸取', describe: (l) => `漏過來的怪有 ${Math.round(PER_LEVEL.darkLeech * l * 100)}% 加入你` },
   {
     id: 'strike',
     name: '爆裂',
-    describe: (l) => `每 ${strikeCooldownWaves(l)} 波清掉 ${PER_LEVEL.strikeKills * l} 隻`,
+    describe: (l) => `每 ${skillCooldownSeconds('strike', l)} 秒清掉 ${activeKillCount(l)} 隻`,
   },
   {
     id: 'pierce',
     name: '貫穿',
-    describe: (l) => `每 ${strikeCooldownWaves(l)} 波清掉整波的 ${Math.round(PER_LEVEL.pierceRatio * l * 100)}%`,
+    describe: (l) => `每 ${skillCooldownSeconds('pierce', l)} 秒清掉整波的 ${Math.round(PER_LEVEL.pierceRatio * l * 100)}%`,
   },
   {
     id: 'rally',
     name: '號令',
-    describe: (l) => `每 ${strikeCooldownWaves(l)} 波補 ${PER_LEVEL.rallyHeroes * l} 個同伴`,
+    describe: (l) => `每 ${skillCooldownSeconds('rally', l)} 秒補 ${activeHeroCount(l)} 個同伴`,
   },
   {
     id: 'aegis',
     name: '壁障',
-    describe: (l) => `每 ${strikeCooldownWaves(l) + 2} 波擋下一整波的損失`,
+    describe: (l) => `每 ${skillCooldownSeconds('aegis', l)} 秒擋下一整波的損失`,
   },
 ];
+
+/**
+ * 爆裂/號令一次觸發的**整數**效果。
+ *
+ * 冷卻改成秒之後一波會觸發 1~2 次(舊制是 2~4 波才一次),所以每次的量要跟著縮小,
+ * 一波下來的總量才跟改版前同一個量級(實測爆裂:舊 0.5~5 隻/波 → 新 0.9~7.5 隻/波)。
+ * **至少 1**:算出 0 的話玩家會看到技能觸發了卻什麼都沒發生,直接認定它是壞的
+ *(跟增殖「保證至少 +1 人」同一個理由)。
+ */
+export function activeKillCount(level: number, bookScale = 1): number {
+  return Math.max(1, Math.round(PER_LEVEL.strikeKills * Math.max(0, level) * bookScale));
+}
+export function activeHeroCount(level: number, bookScale = 1): number {
+  return Math.max(1, Math.round(PER_LEVEL.rallyHeroes * Math.max(0, level) * bookScale));
+}
 
 export function runSkillSpec(id: RunSkillId): RunSkillSpec {
   const found = RUN_SKILLS.find((s) => s.id === id);
@@ -389,8 +478,19 @@ export interface RunSkillEffects {
   chainRatio: number;
   /** 木・再生:每波補回幾個「這一場已經失去的人」 */
   regen: number;
-  /** 土・護盾:幾波擋一次(Infinity = 沒點) */
-  shieldCooldown: number;
+  /** 土・護盾:幾**秒**擋一次(Infinity = 沒點) */
+  shieldCooldownSeconds: number;
+  // ---- 以下四個只決定「命中的那一刻演出什麼」,不決定總共多打倒幾隻 ----
+  // 擊殺數一律由 burnKills / pierceRatio / chainRatio 決定(見 laneRun 的 extraKills)。
+  // 分開的理由寫在上面 burnSpreadTargets 那一段:演出變好看不該等於難度悄悄降低。
+  /** 火・燃燒:一次命中把火燒到後面幾隻 */
+  burnSpread: number;
+  /** 冰・凍結:一次命中把目標凍住的機率(已含相剋) */
+  freezeChance: number;
+  /** 雷・連鎖:每幾下觸發一次連鎖閃電(0 = 沒點) */
+  chainEvery: number;
+  /** 雷・連鎖:一次電到幾隻 */
+  chainTargets: number;
   /** 光・復活:倒下時保住幾個人(一場一次;0 = 沒點) */
   revive: number;
   /** 暗・吸取:漏過來的怪有幾成加入你 */
@@ -411,7 +511,7 @@ export interface RunSkillEffects {
 export interface ActiveTrigger {
   id: RunSkillId;
   name: string;
-  /** 幾波觸發一次 */
+  /** 幾**秒**觸發一次(見 skillCooldownSeconds) */
   cooldown: number;
   /** 直接清掉幾隻(固定值) */
   kills?: number;
@@ -453,6 +553,10 @@ export function runSkillEffects(
   let shieldShift = 0;
   let revive = 0;
   let leech = 0;
+  let burnSpread = 0;
+  let freezeChance = 0;
+  let chainEvery = 0;
+  let chainTargets = 0;
   const actives: ActiveTrigger[] = [];
   for (const s of skills) {
     const level = Math.min(MAX_RUN_SKILL_LEVEL, Math.max(0, s.level));
@@ -462,12 +566,16 @@ export function runSkillEffects(
     // mx 是這一個元素對上這一波屬性的倍率(剋中放大、被剋削弱),逐元素各算各的。
     // 相剋(逐元素)乘上技能書的放大。兩者都只碰元素/主動,所以都不進理想路線。
     const mx = elementMatchup(s.id, waveElement) * bookPowerScale(s.id, bookLevel, collectionScale);
-    if (s.id === 'fire') burnKills += PER_LEVEL.fireKills * level * mx;
+    if (s.id === 'fire') { burnKills += PER_LEVEL.fireKills * level * mx; burnSpread += burnSpreadTargets(level); }
     if (s.id === 'metal') pierceRatio += PER_LEVEL.metalRatio * level * mx;
-    if (s.id === 'thunder') chainRatio += PER_LEVEL.thunderRatio * level * mx;
-    if (s.id === 'ice') trade += PER_LEVEL.iceTrade * level * mx;
+    if (s.id === 'thunder') {
+      chainRatio += PER_LEVEL.thunderRatio * level * mx;
+      chainEvery = chainEveryHits(level);
+      chainTargets += chainTargetCount(level);
+    }
+    if (s.id === 'ice') { trade += PER_LEVEL.iceTrade * level * mx; freezeChance += freezeChanceAt(level, mx); }
     if (s.id === 'wood') regen += PER_LEVEL.woodRegen * level * mx;
-    // 土是冷卻不是數值:剋中少等一波,被剋多等一波。
+    // 土是冷卻不是數值:剋中少等一段冷卻,被剋多等一段。
     if (s.id === 'earth') shieldLevel = Math.max(shieldLevel, level);
     if (s.id === 'earth') shieldShift = mx > 1 ? -1 : mx < 1 ? 1 : 0;
     if (s.id === 'light') revive += PER_LEVEL.lightRevive * level * mx;
@@ -475,17 +583,18 @@ export function runSkillEffects(
     if (level <= 0) continue;
     // 主動技能吃技能書的放大,但**不吃相剋**(相剋只放大元素,見 elementMatchup)。
     const bk = bookPowerScale(s.id, bookLevel, collectionScale);
+    const cd = skillCooldownSeconds(s.id, level);
     if (s.id === 'strike') {
-      actives.push({ id: s.id, name: '爆裂', cooldown: strikeCooldownWaves(level), kills: PER_LEVEL.strikeKills * level * bk });
+      actives.push({ id: s.id, name: '爆裂', cooldown: cd, kills: activeKillCount(level, bk) });
     }
     if (s.id === 'pierce') {
-      actives.push({ id: s.id, name: '貫穿', cooldown: strikeCooldownWaves(level), killRatio: PER_LEVEL.pierceRatio * level * bk });
+      actives.push({ id: s.id, name: '貫穿', cooldown: cd, killRatio: PER_LEVEL.pierceRatio * level * bk });
     }
     if (s.id === 'rally') {
-      actives.push({ id: s.id, name: '號令', cooldown: strikeCooldownWaves(level), heroes: PER_LEVEL.rallyHeroes * level * bk });
+      actives.push({ id: s.id, name: '號令', cooldown: cd, heroes: activeHeroCount(level, bk) });
     }
     if (s.id === 'aegis') {
-      actives.push({ id: s.id, name: '壁障', cooldown: strikeCooldownWaves(level) + 2, immune: true });
+      actives.push({ id: s.id, name: '壁障', cooldown: cd, immune: true });
     }
   }
   return {
@@ -496,11 +605,16 @@ export function runSkillEffects(
     pierceRatio,
     chainRatio,
     regen,
-    shieldCooldown: shieldLevel > 0
-      ? Math.max(1, Math.max(2, PER_LEVEL.earthCooldown - shieldLevel) + shieldShift)
+    // 剋中少等一段冷卻、被剋多等一段。一段 = 一級的幅度(12 秒),跟等級同一個尺度。
+    shieldCooldownSeconds: shieldLevel > 0
+      ? Math.max(20, skillCooldownSeconds('earth', shieldLevel) + shieldShift * 12)
       : Infinity,
     revive,
     leech,
+    burnSpread,
+    freezeChance: Math.min(0.6, freezeChance),
+    chainEvery,
+    chainTargets,
     actives,
   };
 }
