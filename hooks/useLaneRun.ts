@@ -166,6 +166,13 @@ export interface LaneRunView {
   enemyShots: EnemyShot[];
   /** 剛被武器砸中的時間戳。畫面拿它閃一下紅色,不然扣了人玩家也不知道發生什麼事。 */
   lastHazardAt: number;
+  /**
+   * 敵方勇者最近一次出手的時間戳(monsters 的索引 → 時間)。
+   * 畫面拿它把那一隻換成投擲的那一格——**動作要跟真的飛出去的那一把對上**,
+   * 照固定週期播的話會變成「他在做動作,但武器是另一個時間點飛出來的」
+   * (玩家自己的噴刺踩過同一個坑,見 lastShotAt / lastShotId)。
+   */
+  enemyThrowAt: Record<number, number>;
   /** 命中瞬間跳出來的傷害數字(含暴擊)。純演出,不影響擊殺數。 */
   hitNumbers: HitNumber[];
   /**
@@ -239,6 +246,7 @@ export function useLaneRun(
   const [wave, setWave] = useState<WaveView | null>(null);
   const [projectiles, setProjectiles] = useState<Projectile[]>([]);
   const [enemyShots, setEnemyShots] = useState<EnemyShot[]>([]);
+  const [enemyThrowAt, setEnemyThrowAt] = useState<Record<number, number>>({});
   const [lastHazardAt, setLastHazardAt] = useState(0);
   const [hitNumbers, setHitNumbers] = useState<HitNumber[]>([]);
   const [lastShotAt, setLastShotAt] = useState(0);
@@ -395,6 +403,7 @@ export function useLaneRun(
         projectilesRef.current = [];
         hitNumbersRef.current = [];
         enemyShotsRef.current = [];
+        setEnemyThrowAt({});
         setWave(null);
         setProjectiles([]);
         setHitNumbers([]);
@@ -527,6 +536,7 @@ export function useLaneRun(
       const throwers = activeThrowers(alive, slot);
       if (throwers.length > 0 && now - enemyFireAtRef.current >= ENEMY_THROW_INTERVAL_MS) {
         enemyFireAtRef.current = now;
+        const threw: Record<number, number> = {};
         for (const index of throwers) {
           const m = current.monsters[index];
           if (!m) continue;
@@ -535,7 +545,10 @@ export function useLaneRun(
             ...enemyShotsRef.current,
             { id: enemyShotIdRef.current, distance: m.distance, offset: m.offset, variant: index },
           ];
+          threw[index] = now;
         }
+        // 換成投擲那一格。只記剛出手的那幾隻,其他人維持待機/走路的兩格循環。
+        if (Object.keys(threw).length > 0) setEnemyThrowAt((prev) => ({ ...prev, ...threw }));
       }
     }
     if (enemyShotsRef.current.length > 0) {
@@ -733,6 +746,7 @@ export function useLaneRun(
     projectiles,
     enemyShots,
     lastHazardAt,
+    enemyThrowAt,
     hitNumbers,
     lastShotAt,
     lastShotId,

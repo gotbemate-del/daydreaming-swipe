@@ -132,13 +132,15 @@ def build_pair(frames: list[Path], out_prefix: Path, max_edge: int) -> dict:
         'wRatio': canvas_w / base_fit,
         'hRatio': canvas_h / base_fit,
         'anchor': anchor_x / canvas_w,
+        'frames': len(images),
     }
 
 
 def ts_entry(key: str, rel: str, geom: dict) -> str:
+    frames = ', '.join(f"require('../{rel}_{i}.png')" for i in range(geom['frames']))
     return (
         f"  '{key}': {{\n"
-        f"    frames: [require('../{rel}_0.png'), require('../{rel}_1.png')],\n"
+        f"    frames: [{frames}],\n"
         f"    wRatio: {geom['wRatio']:.4f}, hRatio: {geom['hRatio']:.4f}, anchor: {geom['anchor']:.4f},\n"
         f"  }},\n"
     )
@@ -161,7 +163,9 @@ def main() -> None:
         monsters_ts.append(ts_entry(name, f'assets/sprites/anim/monsters/{name}', geom))
         print(f'monsters/{name}')
 
-    # 職業立繪:四個資料夾三種命名(jobs 沒有分支、jobs2 是 _A/_B、jobs3/4 多了 _open)
+    # 職業立繪:四個資料夾三種命名(jobs 沒有分支、jobs2 是 _A/_B、jobs3/4 多了 _open)。
+    # **職業比怪物多一格**:`_click` 當投擲動作(勇者波的敵人丟武器時要換成它),
+    # 三格共用同一張畫布,所以畫面端只要換 source,位置與大小完全不會跳。
     hero = ROOT / 'assets' / 'sprites' / 'hero'
     for folder in ['jobs', 'jobs2', 'jobs3', 'jobs4']:
         d = hero / folder
@@ -174,8 +178,12 @@ def main() -> None:
                 first = d / f'{stem}.png'
             if not first.exists():
                 continue
+            frames = [first, middle]
+            click = d / f'{stem}_click.png'
+            if click.exists():
+                frames.append(click)
             prefix = OUT / folder / stem
-            geom = build_pair([first, middle], prefix, MAX_EDGE['jobs'])
+            geom = build_pair(frames, prefix, MAX_EDGE['jobs'])
             jobs_ts.append(ts_entry(f'{folder}/{stem}', f'assets/sprites/anim/{folder}/{stem}', geom))
             print(f'{folder}/{stem}')
 

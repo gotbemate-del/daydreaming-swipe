@@ -95,6 +95,12 @@ const ENEMY_SHOTS_PER_LANE = 2;
 const ENEMY_SHOT_SIZE = 24;
 /** 被砸中之後整片跑道閃紅的時間。夠長才看得到,但不能長到蓋住下一波。 */
 const HAZARD_FLASH_MS = 420;
+/**
+ * 敵方勇者的投擲動作維持多久。
+ * 出手間隔是 620ms(ENEMY_THROW_INTERVAL_MS),所以這個值要明顯短於它,
+ * 不然輪到的那個人會一直卡在投擲的姿勢,看起來像定格而不是「丟了一下」。
+ */
+const THROW_POSE_MS = 260;
 
 
 /**
@@ -178,7 +184,7 @@ export function LaneRunner({
     state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers,
     lastShotAt, lastShotId, feedback, steer, dragTo,
     runSkills, skillOffers, pendingPicks, chooseRunSkill, lastStrike, upcomingElements,
-    enemyShots, lastHazardAt,
+    enemyShots, lastHazardAt, enemyThrowAt,
   } = run;
   const attack = totalAttack(state);
 
@@ -355,8 +361,14 @@ export function LaneRunner({
       const anim = w.heroWave
         ? jobHeroAnim(enemyLook.archetype, enemyLook.branch, enemyLook.tier)
         : monsterAnim(species.id);
+      // 勇者波:剛出手的那一隻換成投擲那一格(第 2 格,只有職業立繪有)。
+      // 三格共用同一張畫布,所以換 source 不會讓位置或大小跳一下。
+      const throwing = w.heroWave
+        && anim !== null
+        && anim.frames.length > 2
+        && now - (enemyThrowAt[m.index] ?? 0) < THROW_POSE_MS;
       const art = anim
-        ? anim.frames[animFrameIndex(now, m.index * 0.37)]
+        ? anim.frames[throwing ? 2 : animFrameIndex(now, m.index * 0.37)]
         : w.heroWave
           ? jobHeroArt(enemyLook.archetype, enemyLook.branch, enemyLook.tier)
           : monsterArt(species.id);
