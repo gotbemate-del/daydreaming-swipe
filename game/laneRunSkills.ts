@@ -172,14 +172,23 @@ export const MAX_SKILL_BOOK_LEVEL = 5;
 const BOOK_POWER_PER_LEVEL = 0.15;
 
 /**
- * 技能書把元素/主動的效果放大多少。**只乘在元素與主動上**——
+ * 圖鑑給的放大倍率:**技能 id → 倍率**。
+ *
+ * 從單一數字改成查表,是因為圖鑑改成「一個條目綁一個屬性」之後,八元素各自累積
+ *(收滿雷的那幾件就是雷變強),而不再是「收集率一條線把八個一起拉」。
+ * 查不到的 id 一律 1——鋒刃/增殖 永遠不在表裡,見下面。
+ */
+export type CollectionScales = Partial<Record<RunSkillId, number>>;
+
+/**
+ * 技能書 x 圖鑑把元素/主動的效果放大多少。**只乘在元素與主動上**——
  * 鋒刃/增殖 是唯二進理想路線的,碰了敵人就會跟著變強。
  */
-export function bookPowerScale(id: RunSkillId, bookLevel = 0, collectionScale = 1): number {
+export function bookPowerScale(id: RunSkillId, bookLevel = 0, collection: CollectionScales = {}): number {
   // 鋒刃/增殖 一律 1:它們是唯二進理想路線的,碰了敵人就會跟著變強。
   if (!isElement(id) && !isActiveSkill(id)) return 1;
   const book = 1 + BOOK_POWER_PER_LEVEL * Math.min(MAX_SKILL_BOOK_LEVEL, Math.max(0, Math.floor(bookLevel)));
-  return book * Math.max(1, collectionScale);
+  return book * Math.max(1, collection[id] ?? 1);
 }
 
 /**
@@ -576,11 +585,11 @@ export interface ActiveTrigger {
  */
 /**
  * @param bookLevel 技能書等級(生存模式掉的)
- * @param collectionScale 裝備圖鑑給的放大倍率(1 = 沒有)。跟技能書同一條軸——
+ * @param collection 裝備圖鑑給的放大倍率(技能 id → 倍率,查不到就是 1)。跟技能書同一條軸——
  *   兩者都只乘在元素與主動上,所以都不進理想路線(見 game/collection.ts 的說明)。
  */
 export function runSkillEffects(
-  skills: RunSkillState[], waveElement?: RunSkillId, bookLevel = 0, collectionScale = 1,
+  skills: RunSkillState[], waveElement?: RunSkillId, bookLevel = 0, collection: CollectionScales = {},
 ): RunSkillEffects {
   let attack = 0;
   let heroes = 0;
@@ -606,7 +615,7 @@ export function runSkillEffects(
     // 八元素:每一款的規則都不一樣,而且全部只在「失誤了」才生效。
     // mx 是這一個元素對上這一波屬性的倍率(剋中放大、被剋削弱),逐元素各算各的。
     // 相剋(逐元素)乘上技能書的放大。兩者都只碰元素/主動,所以都不進理想路線。
-    const mx = elementMatchup(s.id, waveElement) * bookPowerScale(s.id, bookLevel, collectionScale);
+    const mx = elementMatchup(s.id, waveElement) * bookPowerScale(s.id, bookLevel, collection);
     if (s.id === 'fire') { burnKills += PER_LEVEL.fireKills * level * mx; burnSpread += burnSpreadTargets(level); }
     if (s.id === 'metal') pierceRatio += PER_LEVEL.metalRatio * level * mx;
     if (s.id === 'thunder') {
@@ -624,7 +633,7 @@ export function runSkillEffects(
     if (s.id === 'dark') leech += PER_LEVEL.darkLeech * level * mx;
     if (level <= 0) continue;
     // 主動技能吃技能書的放大,但**不吃相剋**(相剋只放大元素,見 elementMatchup)。
-    const bk = bookPowerScale(s.id, bookLevel, collectionScale);
+    const bk = bookPowerScale(s.id, bookLevel, collection);
     const cd = skillCooldownSeconds(s.id, level);
     if (s.id === 'strike') {
       actives.push({ id: s.id, name: '爆裂', cooldown: cd, kills: activeKillCount(level, bk) });

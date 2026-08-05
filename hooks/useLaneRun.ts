@@ -44,6 +44,7 @@ import {
 import {
   applyRunSkillPick, ELEMENT_COUNTERS, isElement, learnRunSkill, runSkillEffects, runSkillOffersAt, runSkillPicksForWave,
   runSkillSpec, hasCooldown, skillCooldownSeconds, FREEZE_MS,
+  type CollectionScales,
   type RunSkillState, type RunSkillId, type RunSkillEffects, type ActiveTrigger,
 } from '../game/laneRunSkills';
 
@@ -306,7 +307,7 @@ interface WaveRuntime {
  *   MAX_SKILL_BOOK_LEVEL)。傳進理想路線就會變成「數字在動、體感沒動」。
  */
 export function useLaneRun(
-  stage: number, start: RunStart = DEFAULT_RUN_START, bookLevel = 0, collectionScale = 1,
+  stage: number, start: RunStart = DEFAULT_RUN_START, bookLevel = 0, collection: CollectionScales = {},
 ): LaneRunView {
   // 這一場的 seed。閘門與技能選項都由它決定,敵人戰力也是照同一顆 seed 的最佳路線算的,
   // 所以 seed 必須留著——技能選項另外抽的話,玩家看到的選單就不是 createRun 假設的那一組。
@@ -648,7 +649,7 @@ export function useLaneRun(
       elementEventsRef.current = [];
       // 光・護盾:每一波開始時擲一次骰。用雜湊不用亂數,理由跟凍結一樣——
       // 這一段每 33ms 會重跑,亂數的話同一波會一直重抽。
-      const lightFx = runSkillEffects(runSkillsRef.current, current.element, bookLevel, collectionScale);
+      const lightFx = runSkillEffects(runSkillsRef.current, current.element, bookLevel, collection);
       if (lightFx.shieldChance > 0 && shieldsRef.current < lightFx.shieldCap
           && procRoll(current.rowIndex, 0, 977) < lightFx.shieldChance) {
         shieldsRef.current += 1;
@@ -658,7 +659,7 @@ export function useLaneRun(
 
     // 這一波的技能效果。**每個 tick 重算**:波次中途選了新技能、或是吃到閘門讓戰力變了,
     // 畫面上能打倒幾隻就要立刻跟著變(相剋也在這一層逐元素結算完)。
-    const fx = runSkillEffects(runSkillsRef.current, current.element, bookLevel, collectionScale);
+    const fx = runSkillEffects(runSkillsRef.current, current.element, bookLevel, collection);
     fireActives(current, fx, now);
 
     // 凍住的那幾隻跟著玩家一起前進 = 畫面上停在原地不再逼近。
@@ -920,7 +921,7 @@ export function useLaneRun(
           const waveElement = due.nodes[0].enemy?.element;
           // 相剋是**逐元素**的:結算的時候就把這一波的屬性交給 runSkillEffects,
           // 剋中的那個元素放大、被剋的那個削弱,其他元素與主動技能一律不動。
-          const fx = runSkillEffects(runSkills, waveElement, bookLevel, collectionScale);
+          const fx = runSkillEffects(runSkills, waveElement, bookLevel, collection);
           const current = waveRef.current;
           boost = current !== null && current.rowIndex === due.index
             ? boostFor(current.heroWave, current.fired, fx)

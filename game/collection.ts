@@ -24,6 +24,10 @@
 // 玩家蒐集了半天卻感覺不到差別(CLAUDE.md 記過三次同一個錯)。
 
 import { EQUIPMENT_ITEMS } from './equipment';
+import {
+  CODEX_ENTRIES, ENTRY_BONUS_PER_LEVEL, entryLevel, MAX_ELEMENT_BONUS, type CodexEntry,
+} from './codexEntries';
+import { ACTIVE_SKILL_IDS, type RunSkillId } from './laneRunSkills';
 
 /** 圖鑑總共幾件。 */
 export const TOTAL_ITEMS = EQUIPMENT_ITEMS.length;
@@ -115,14 +119,57 @@ export function decodeCollection(text: unknown): Uint8Array {
 
 // ---- 圖鑑給的兩樣東西 ----
 
-/** 圖鑑收滿時,元素與主動的效果最多放大幾成。 */
+/** 圖鑑收滿時,**主動技能**的效果最多放大幾成(元素改走逐屬性,見下面)。 */
 export const COLLECTION_FLAVOUR_BONUS = 0.5;
 /**
- * 收集率 → 元素/主動的放大倍率(1 = 沒有加成)。
+ * 收集率 → 主動技能的放大倍率(1 = 沒有加成)。
  * 線性:蒐集是長期的事,前段就要看得到數字在動,不然沒有人會開始收。
  */
 export function collectionFlavourScale(bits: Uint8Array): number {
   return 1 + COLLECTION_FLAVOUR_BONUS * collectionRatio(bits);
+}
+
+/** 一個圖鑑條目現在的進度。畫面與加成計算共用,不要各寫一份。 */
+export interface EntryProgress {
+  entry: CodexEntry;
+  /** 湊到幾片 */
+  own: number;
+  /** 總共幾片 */
+  total: number;
+  /** 第幾級(0 = 還沒收到) */
+  level: number;
+  /** 這一件現在給那個屬性加幾成 */
+  bonus: number;
+}
+
+export function entryProgress(bits: Uint8Array, entry: CodexEntry): EntryProgress {
+  let own = 0;
+  for (const index of entry.fragments) if (hasItem(bits, index)) own += 1;
+  const level = entryLevel(own, entry.fragments.length);
+  return { entry, own, total: entry.fragments.length, level, bonus: level * ENTRY_BONUS_PER_LEVEL };
+}
+
+/**
+ * 圖鑑現在給每一個技能的放大倍率。
+ *
+ * **八元素各自累積**(綁在條目上的那個屬性),主動技能則吃整體收集率——
+ * 主動只有四款,綁單一條目的話會出現「這四件特別重要」,而圖鑑不該有必收的單品。
+ *
+ * 回傳的是「技能 id → 倍率」,`runSkillEffects` 直接查表。
+ * **鋒刃/增殖 不在表裡**(查不到就是 1):它們是唯二進理想路線的,
+ * 碰了敵人就會跟著變強,玩家蒐集半天卻感覺不到差別(CLAUDE.md 記過三次同一個錯)。
+ */
+export function collectionScales(bits: Uint8Array): Partial<Record<RunSkillId, number>> {
+  const perElement = new Map<RunSkillId, number>();
+  for (const entry of CODEX_ENTRIES) {
+    const { bonus } = entryProgress(bits, entry);
+    if (bonus > 0) perElement.set(entry.element, (perElement.get(entry.element) ?? 0) + bonus);
+  }
+  const out: Partial<Record<RunSkillId, number>> = {};
+  for (const [element, bonus] of perElement) out[element] = 1 + Math.min(MAX_ELEMENT_BONUS, bonus);
+  const active = collectionFlavourScale(bits);
+  for (const id of ACTIVE_SKILL_IDS) out[id] = active;
+  return out;
 }
 
 /** 沒有圖鑑時,一場跑圖掉到技能書的機率。 */

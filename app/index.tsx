@@ -10,7 +10,7 @@ import { applySkills, learnSkill, skillOffers, type SkillState } from '../game/l
 import { useSave } from '../hooks/useSave';
 import { booksForSurvival, TOTAL_STAGES, type SavedJob } from '../game/save';
 import {
-  addItem, bookDropChance, collectionFlavourScale, decodeCollection, dropCountForRun,
+  addItem, bookDropChance, collectionScales, decodeCollection, dropCountForRun,
   encodeCollection, rollDrops,
 } from '../game/collection';
 import { MAX_SKILL_BOOK_LEVEL } from '../game/laneRunSkills';
@@ -255,7 +255,7 @@ export default function HomeScreen() {
         job={job}
         start={applySkills(runStartFor(job), skills)}
         bookLevel={save.books}
-        collectionScale={collectionFlavourScale(decodeCollection(save.collected))}
+        collection={collectionScales(decodeCollection(save.collected))}
         survivalStreak={mode === 'survival' ? survivalStreak : null}
         onFinish={onRunFinish}
       />
