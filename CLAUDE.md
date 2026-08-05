@@ -79,6 +79,8 @@ x-10 同時是魔王關。第一大關的容錯係數由鬆到緊,是新手教�
 - [x] 部署到 GitHub Pages(https://gotbemate-del.github.io/daydreaming-swipe/)
 - [x] 主介面:勇者站中間 + 開始闖關,每場結束都回到這裡(過關才前進、失敗重打同一關)
 - [x] 打擊演出:命中跳傷害數字、22% 機率暴擊(金色、2 倍數字)——純演出,不影響擊殺數
+- [x] 敵人兩格動畫(小怪/精英/魔王/勇者波):`_open` + `_middle`,建置時對齊重心與底邊
+- [x] 存檔:關卡、職業、永久技能、金幣寫進 AsyncStorage;壞掉/改過/舊版存檔都進得去
 - [ ] 下方分頁列的十個功能目前**全部未開放**(只畫出來並鎖住,見下方「裝備為什麼還沒接」)
 - [ ] 接上 `game/equipment.ts` 的裝備(目前「裝備」只是 1~5 階的抽象等級)
 
@@ -99,7 +101,7 @@ x-10 同時是魔王關。第一大關的容錯係數由鬆到緊,是新手教�
 - [x] 關卡結構:大關 x 10 小關,5 的倍數加倍長,x-10 是魔王關;第一大關放寬當教學區
 - [ ] 經驗曲線重新校準(原本是為掛機設計的)——**目前不做,但保留這個可能性**。
       現階段跑圖沒有經驗值,養成只有技能與轉職;未來要加回來的話,姊妹作那條曲線不能直接用。
-- [ ] 存檔 schema(全新,不沿用姊妹作的 v36)
+- [x] 存檔 schema v1(`game/save.ts` + `hooks/useSave.ts`,全新,不沿用姊妹作的 v36)
 
 ## 專案結構
 
@@ -112,17 +114,22 @@ components/   UI 元件
   SkillChoice.tsx 技能選擇畫面
   AdSlot.tsx      廣告版位(先佔高度,之後接 AdSense/AdMob 只改這個檔)
   artAssets.ts    既有素材(PNG)的 require 對應表 ← game/ 不能碰圖片資源,所以放這層
+  animFrames.ts   **產生檔**(scripts/align-frames.py),敵人的兩格動畫 + 畫框比例,不要手改
 game/         遊戲核心邏輯(純函式,禁止 import React)
   laneRun.ts      跑道/閘門/敵人結算 ← 本作的心臟
   laneJobs.ts     轉職:選項、起跑數值
   laneSkills.ts   永久技能:選項、等級、起跑加成(每關一次,幅度比轉職更小)
   laneRunSkills.ts 場內技能:選項、等級、當場加成(每波一次,跑完歸零)
+  save.ts         存檔格式、驗證、遷移(**只有格式,讀寫在 hooks/useSave.ts**)
   equipment.ts    3000 件裝備(自姊妹作搬入,未改)
   monsters.ts     120 種怪物(自姊妹作搬入,未改)
 hooks/        自訂 hooks
+  useSave.ts      存檔讀寫(AsyncStorage;web 上就是 localStorage)
 assets/       圖片、音效
 scripts/      驗證腳本
   simRun.ts       跑一場的模擬器 ← 三份 verify 共用,不要各自複製一份迴圈
+  verify-save.ts  存檔驗證(壞掉的存檔、改過的存檔、舊存檔遷移)
+  align-frames.py 把 _open/_middle 對齊成兩格動畫,並產生 components/animFrames.ts
 ```
 
 **分層鐵律**:`game/` 是純邏輯層,必須能在 Node 單獨跑。任何 React/RN/Expo 的 import
@@ -134,7 +141,8 @@ scripts/      驗證腳本
 2. 改動 `game/` 內任何檔案 → 跑對應的驗證腳本
    (`verify-lane-run.ts`、`verify-lane-jobs.ts`、`verify-lane-skills.ts`,必須全部 PASS)
 3. 改動畫面 → Playwright 實機測試 + 截圖,並用 Read 工具實際看過截圖
-4. 改動存檔結構 → 附遷移邏輯,並模擬一次「舊存檔載入」
+4. 改動存檔結構 → 附遷移邏輯(`game/save.ts` 的 `MIGRATIONS`),並跑 `verify-save.ts`
+   (裡面有一項就是模擬「舊存檔載入」)
 
 ## 回報問題時的處理方式(重要)
 
@@ -156,6 +164,18 @@ scripts/      驗證腳本
 - 立繪共用同一個框 + `resizeMode contain`,框比圖窄的話寬的那幾張會被縮矮
   (職業圖 458 寬、學生 353 寬)。框一律取最寬的那張。
 
+**存檔**
+- **讀存檔是非同步的,讀完之前一個字都不能畫遊戲。** 沒有 `loaded` 旗標的話,玩家會先看到
+  1-1 的主介面閃一下才跳回真正的進度——而如果他剛好在那一瞬間按下「開始闖關」,
+  這一場結束時就會把 stage 1 寫回去,**300 關的進度被一個 loading 閃爍蓋掉**。
+- **存檔內容一律當成來路不明的 JSON。** 它在 web 上就是 localStorage,玩家改得動。
+  每個欄位各自驗證、各自夾回合法範圍,**壞掉的欄位只丟那一個**——整份丟掉的話,
+  一個手滑的 coins 會讓玩家失去整條進度。而且驗證失敗絕對不能丟例外:
+  症狀要是「回到預設值」,不是白畫面(白畫面等於玩家再也進不去,連清存檔的入口都沒有)。
+- **只存跨場留下來的東西。** 跑到一半的那一場、正在挑的技能、正在轉職的畫面都不存——
+  存了就會有「復原到一半的一場」這種永遠測不完的狀態。代價是挑技能時關掉分頁要重打那一關,
+  但金幣已經進帳(`onRunFinish` 先加),不是整場白跑。
+
 **素材轉檔**
 - **`img.convert('RGBA')` 會把 GIF 的 `transparency` 索引一起套用。** GIF frame 的 `info` 帶著
   `transparency: 76`,`convert('RGB')` 會把那個欄位**複製過去**,接著 `convert('RGBA')` 就拿它
@@ -165,7 +185,15 @@ scripts/      驗證腳本
 - 去背用「從邊界連通填充近黑」,不能整片去黑——眼睛就是黑的。**閾值要壓在 10**,
   16 會沿著身體邊緣的暗像素漏進眼睛。改閾值一定要重驗眼睛區域的透明像素數是 0。
 - 兩格動畫要對齊**身體重心**,不能用整張圖的 bbox:噴刺與飄浮的小點不對稱,會把中心帶偏
-  (國王實測兩格差 103px,直接播會左右跳)。
+  (國王實測兩格差 103px,直接播會左右跳)。敵人那 60 組是 `scripts/align-frames.py`
+  在建置時對齊的(重心 + 底邊,同一張畫布),畫面端只換 source。
+- **對齊用的畫布要長大,不能沿用待機格的。** 裁到待機格的大小,巨蟒會掉 20.5% 的不透明像素
+  (牠的動作格是立起來的,比待機高一截)、魔王四型掉 16.2%——那是把頭切掉。
+  畫布長大之後角色會被 `contain` 縮小,所以 align-frames 同時輸出 `wRatio/hRatio/anchor`,
+  畫面照那組比例畫框(底邊踩地面線、重心對中心),大小才跟長大之前一致。
+- **對齊後的動畫格要縮圖再打包。** 來源是 400~750px,而畫面上小怪只畫 42px、魔王 132px;
+  直接打包是 39MB(為了 42px 的東西載 300KB)。照用途各自設上限(留 3x DPR 餘裕)之後是 5.7MB。
+  **只縮動畫格,原圖不動**——轉職畫面的立繪還是要大張的。
 
 **自動化測試(這些坑讓我以為測過了,其實根本沒測到)**
 - Playwright 的 `boundingBox()` **只有 x/y/width/height,沒有 bottom/right**。
@@ -326,6 +354,8 @@ scripts/      驗證腳本
 - `npx tsx scripts/verify-lane-run.ts` — 跑道數值驗證
 - `npx tsx scripts/verify-lane-jobs.ts` — 轉職驗證(含「養成買不到勝利」的過關率對照)
 - `npx tsx scripts/verify-lane-skills.ts` — 永久技能驗證(3 組 x 5 級上限、疊加倍率天花板)
+- `npx tsx scripts/verify-save.ts` — 存檔驗證(壞掉/改過/舊版存檔都要進得去)
+- `python3 scripts/align-frames.py` — 重新產生敵人的兩格動畫(換素材才要跑)
 
 ## 部署
 

@@ -25,7 +25,7 @@ import { describeRunSkill, runSkillSpec, ELEMENT_COUNTERS, type RunSkillId } fro
 import { HIT_NUMBER_MS, useLaneRun, type HitNumber, type Projectile, type WaveView } from '../hooks/useLaneRun';
 import {
   heroBoxHeight, heroForm, squadForms, monsterArt, weaponArt, jobHeroArt,
-  elementColor, elementLabel,
+  elementColor, elementLabel, monsterAnim, jobHeroAnim, animFrameIndex,
 } from './artAssets';
 
 // 跑道畫面。角色固定在跑道底部、物件由上往下逼近——這是「角色在跑」最省效能的表現方式:
@@ -324,23 +324,39 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
     // 不必再靠面板文字去對照(見 artAssets 的 ELEMENT_COLORS)。
     const tint = elementColor(w.element);
     const enemyLook = enemyHeroLookForRow(stage, w.rowIndex);
+    const now = Date.now();
     return [...renderEnemyShots(w), ...w.monsters.map((m) => {
       if (w.down[m.index]) return null;
       const ahead = m.distance - distance;
       if (ahead > VISIBLE_AHEAD || ahead < 0) return null;
       const species = w.species[m.speciesIndex] ?? w.species[0];
       // 魔王固定站在跑道正中央:牠佔滿兩條跑道,躲不掉,也不該讓玩家以為躲得掉。
-      const left = (w.boss ? 0.5 : m.offset) * trackWidth - size / 2;
-      const top = bottomYFor(ahead, headY) - size;
+      const centerX = (w.boss ? 0.5 : m.offset) * trackWidth;
+      const groundY = bottomYFor(ahead, headY);
+      const left = centerX - size / 2;
+      const top = groundY - size;
       const hpLeft = Math.max(0, 1 - w.hitsOn[m.index] / w.hitsPerUnit);
       // 勇者波的敵人**照關卡輪替職業立繪**,不是照玩家的職業:玩家自己就是學生那隻,
       // 拿同一張圖當敵人的話,整波看起來像自己在打自己(第 1 關還沒轉職時就是這樣)。
-      const art = w.heroWave
-        ? jobHeroArt(enemyLook.archetype, enemyLook.branch, enemyLook.tier)
-        : monsterArt(species.id);
+      // 兩格動畫:待機 / 動作交替。**每一隻各自錯開相位**(用牠的 index),
+      // 不然十幾隻同時換格,整群看起來像同一個貼圖在閃而不是一群各走各的怪。
+      const anim = w.heroWave
+        ? jobHeroAnim(enemyLook.archetype, enemyLook.branch, enemyLook.tier)
+        : monsterAnim(species.id);
+      const art = anim
+        ? anim.frames[animFrameIndex(now, m.index * 0.37)]
+        : w.heroWave
+          ? jobHeroArt(enemyLook.archetype, enemyLook.branch, enemyLook.tier)
+          : monsterArt(species.id);
+      // 動畫版的畫布比單張大(要容得下動作那一格伸出去的部分),所以框照 animFrames 的比例算,
+      // 而且是**底邊踩在地面線、重心對齊中心**——照舊的正方形 contain 會把角色縮小一圈。
+      const boxW = anim ? size * anim.wRatio : size;
+      const boxH = anim ? size * anim.hRatio : size;
+      const boxLeft = anim ? centerX - boxW * anim.anchor : left;
+      const boxTop = anim ? groundY - boxH : top;
       return (
-        <View key={m.index} style={[styles.floating, { left, top, width: size }]} pointerEvents="none">
-          <Image source={art} resizeMode="contain" style={[styles.pixelArt, { width: size, height: size }]} />
+        <View key={m.index} style={[styles.floating, { left: boxLeft, top: boxTop, width: boxW }]} pointerEvents="none">
+          <Image source={art} resizeMode="contain" style={[styles.pixelArt, { width: boxW, height: boxH }]} />
           {/*
             屬性染色:同一張圖再疊一層 tintColor 的複本。tintColor 會把整張圖壓成單色剪影,
             單獨用會看不出造型,所以壓到 ELEMENT_TINT_OPACITY 疊在原圖上——造型還在,
@@ -352,7 +368,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
               resizeMode="contain"
               style={[
                 styles.pixelArt, styles.floating,
-                { width: size, height: size, tintColor: tint, opacity: ELEMENT_TINT_OPACITY },
+                { width: boxW, height: boxH, tintColor: tint, opacity: ELEMENT_TINT_OPACITY },
               ]}
             />
           )}

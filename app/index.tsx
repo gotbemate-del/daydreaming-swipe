@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 
 import { AdSlot } from '../components/AdSlot';
 import { JobChoice } from '../components/JobChoice';
@@ -8,6 +8,8 @@ import { MainMenu } from '../components/MainMenu';
 import { SkillChoice } from '../components/SkillChoice';
 import { isPromotionStage, runStartFor, tierAfter, type JobTier, type LaneJob } from '../game/laneJobs';
 import { applySkills, learnSkill, skillOffers, type SkillState } from '../game/laneSkills';
+import { useSave } from '../hooks/useSave';
+import { TOTAL_STAGES, type SavedJob } from '../game/save';
 
 // 一輪的流程:
 //   主介面 →(按開始闖關)→ 跑圖 →(通關)→ 學技能 → 每 5 關再多一次轉職 → 回主介面(關卡 +1)
@@ -19,29 +21,39 @@ import { applySkills, learnSkill, skillOffers, type SkillState } from '../game/l
 // 關卡只有通關才前進。失敗重打同一關,所以卡關的時候是「這一關要再試一次」,
 // 不是「整個進度倒退」——後者在這種一場 48 秒的節奏下會非常挫折。
 //
-// 存檔還沒接上:這些選擇目前只活在記憶體裡,重新整理就沒了。
+// 存檔:跨場留下來的四樣東西(關卡、職業、永久技能、金幣)由 useSave 持有並寫進 AsyncStorage。
+// **畫面中途的狀態刻意不存**(正在挑技能、正在轉職、跑到一半的那一場):存了就會有
+// 「復原到一半的一場」這種永遠測不完的狀態。代價是在挑技能的當下關掉分頁,那一關要重打——
+// 但金幣已經進帳了(onRunFinish 先加),所以不是整場白跑。
 //
 // 一場跑圖 = 一個 LaneRunner 實例,每次開始都換 key 重新掛載。跑圖裡有一整套跑到一半的
 // 狀態(波次、飛行中的武器、已結算的排、計時起點),在原地 reset 很容易漏掉其中一項,
 // 症狀是「上一場的怪出現在這一場」——重新掛載沒有這個問題。
 type Screen = 'menu' | 'run';
 
+/**
+ * 存檔裡的職業 → 遊戲用的 LaneJob。兩邊刻意分開:存檔格式是對外的邊界,
+ * laneJobs 的型別以後改欄位不該讓所有人的存檔失效(見 game/save.ts)。
+ */
+function toLaneJob(saved: SavedJob | null): LaneJob {
+  return saved === null ? null : { archetype: saved.archetype, branch: saved.branch, tier: saved.tier };
+}
+
 export default function HomeScreen() {
+  const { save, loaded, update } = useSave();
+  const { stage, coins } = save;
+  const job = toLaneJob(save.job);
+  const skills = save.skills;
+
   const [screen, setScreen] = useState<Screen>('menu');
-  const [stage, setStage] = useState(1);
   const [runKey, setRunKey] = useState(0);
-  const [job, setJob] = useState<LaneJob>(null);
-  const [skills, setSkills] = useState<SkillState[]>([]);
   const [promotionTier, setPromotionTier] = useState<JobTier | null>(null);
   const [offers, setOffers] = useState<SkillState[]>([]);
-  // 跨場累積的金幣。跑圖裡的 state.coins 每場重來,這裡才是玩家真正的存款。
-  // 目前還沒有用途(分頁列全部未開放),但每一場都看得到它在長,不然賺金幣毫無反饋。
-  const [coins, setCoins] = useState(0);
   const [lastResult, setLastResult] = useState<'cleared' | 'dead' | null>(null);
 
   /** 技能選完之後:該轉職就先轉職,不然直接回主介面並前進一關。 */
   function afterSkill(nextSkills: SkillState[]) {
-    setSkills(nextSkills);
+    update((prev) => ({ ...prev, skills: nextSkills }));
     setOffers([]);
     const tier = isPromotionStage(stage) ? tierAfter(stage) : null;
     if (tier !== null) setPromotionTier(tier);
@@ -50,13 +62,14 @@ export default function HomeScreen() {
 
   /** 回主介面。通關的話關卡 +1,陣亡則維持同一關。 */
   function backToMenu(cleared: boolean) {
-    if (cleared) setStage((s) => s + 1);
+    // 關卡 +1 走 update 而不是 setState:它是要留下來的東西,寫進存檔的時機就在這裡。
+    if (cleared) update((prev) => ({ ...prev, stage: Math.min(TOTAL_STAGES, prev.stage + 1) }));
     setLastResult(cleared ? 'cleared' : 'dead');
     setScreen('menu');
   }
 
   function onRunFinish(result: 'cleared' | 'dead', earned: number) {
-    setCoins((c) => c + earned);
+    update((prev) => ({ ...prev, coins: prev.coins + earned }));
     if (result === 'dead') {
       backToMenu(false);
       return;
@@ -65,6 +78,16 @@ export default function HomeScreen() {
     const next = skillOffers(skills);
     if (next.length > 0) setOffers(next);
     else afterSkill(skills);
+  }
+
+  // 讀存檔是非同步的,讀完之前一律不畫遊戲——先畫 1-1 再跳回真正的進度,
+  // 玩家有可能在那一瞬間按下「開始闖關」,結束時就把預設值寫回去,進度整個被蓋掉。
+  if (!loaded) {
+    return (
+      <View style={styles.screen}>
+        <Text style={styles.loading}>載入存檔…</Text>
+      </View>
+    );
   }
 
   if (offers.length > 0) {
@@ -90,7 +113,10 @@ export default function HomeScreen() {
           tier={promotionTier}
           clearedStage={stage}
           onChoose={(chosen) => {
-            setJob(chosen);
+            update((prev) => ({
+              ...prev,
+              job: chosen === null ? null : { archetype: chosen.archetype, branch: chosen.branch, tier: chosen.tier },
+            }));
             setPromotionTier(null);
             backToMenu(true);
           }}
@@ -142,4 +168,5 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     gap: 10,
   },
+  loading: { color: '#8a8a95', fontSize: 14 },
 });

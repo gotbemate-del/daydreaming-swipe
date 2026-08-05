@@ -6,6 +6,8 @@
 // require 的路徑一定要是字面字串,Metro 才打包得到——不能用樣板字串組出來,所以下面全部展開寫。
 import type { ImageSourcePropType } from 'react-native';
 
+import { MONSTER_ANIM, JOB_ANIM, type AnimArt } from './animFrames';
+
 /**
  * 主角:史萊姆。兩張是同一隻的「待機」與「往上噴出尖刺」,不是兩個角色。
  *
@@ -193,6 +195,57 @@ const MONSTER_ART: Record<string, ImageSourcePropType> = {
 export function monsterArt(monsterId: string): ImageSourcePropType {
   const archetype = monsterId.includes('-') ? monsterId.slice(0, monsterId.lastIndexOf('-')) : monsterId;
   return MONSTER_ART[archetype] ?? MONSTER_ART.blob;
+}
+
+// ---- 敵人的兩格動畫 ----
+//
+// 素材本來就有 `_open`(待機)與 `_middle`(動作)兩張,但**兩張的畫布大小不一樣**,
+// 直接輪播會讓怪在原地抽搐。對齊過的版本由 scripts/align-frames.py 產生
+// (重心對齊、底邊對齊、同一張畫布),連同畫框要用的比例一起寫進 animFrames.ts。
+//
+// 這裡只做「查得到就用動畫、查不到就退回單張」——少一組動畫不該讓那隻怪消失。
+
+// 魔王在 game/monsters.ts 叫 stage_boss_tierN / final_boss,素材檔卻叫 boss_tierN / boss_final。
+// 這個落差本來被 MONSTER_ART 用兩組 key 各寫一次蓋過去了,動畫這邊改成明確轉換——
+// 少了它魔王會查不到動畫,而且症狀只是「魔王不會動」,很容易被當成沒問題。
+const BOSS_ANIM_KEY: Record<string, string> = {
+  stage_boss_tier1: 'boss_tier1',
+  stage_boss_tier2: 'boss_tier2',
+  stage_boss_tier3: 'boss_tier3',
+  stage_boss_tier4: 'boss_tier4',
+  stage_boss_tier5: 'boss_tier5',
+  final_boss: 'boss_final',
+};
+
+/** 怪物/魔王的兩格動畫。查不到就回 null,呼叫端退回 monsterArt 的單張。 */
+export function monsterAnim(monsterId: string): AnimArt | null {
+  const archetype = monsterId.includes('-') ? monsterId.slice(0, monsterId.lastIndexOf('-')) : monsterId;
+  return MONSTER_ANIM[BOSS_ANIM_KEY[archetype] ?? archetype] ?? null;
+}
+
+// 職業立繪分四個資料夾、三種命名(見 JOB_ART),動畫那邊照原樣分組,所以要同一套對照。
+function jobAnimKey(archetype: string, branch: string, tier: number): string {
+  const t = Math.min(4, Math.max(1, tier));
+  if (t === 1) return `jobs/${archetype}`;
+  if (t === 2) return `jobs2/${archetype}_${branch}`;
+  return `jobs${t}/${archetype}_${branch}`;
+}
+
+/** 勇者波敵人的兩格動畫。 */
+export function jobHeroAnim(archetype: string | null, branch: string, tier: number): AnimArt | null {
+  if (archetype === null) return null;
+  return JOB_ANIM[jobAnimKey(archetype, branch, tier)] ?? null;
+}
+
+/**
+ * 一組動畫在這一刻要播第幾格。
+ *
+ * `phase` 讓每一隻各自錯開——同一波十幾隻同時換格的話,整群像同一個貼圖在閃,
+ * 而不是一群各走各的怪(跟隊伍那邊「各自晃動」是同一個理由)。
+ */
+export const ENEMY_FRAME_MS = 260;
+export function animFrameIndex(now: number, phase: number): number {
+  return Math.floor(now / ENEMY_FRAME_MS + phase) % 2;
 }
 
 // ---- 八元素的顏色 ----
