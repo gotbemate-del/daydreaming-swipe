@@ -42,9 +42,7 @@ export type RunSkillId =
   | 'strike' | 'pierce' | 'rally' | 'aegis';
 
 /**
- * 八元素。**不做克制,做功能差異**——跑道遊戲看不到下一波是什麼屬性,
- * 做克制的話「看得到 → 選擇變成查表」「看不到 → 變成擲骰子」,兩個都不好玩。
- * 所以每個元素在**不同的處境**有用,不是對**不同的敵人**有用。
+ * 八元素。每一款的**規則**都不一樣(不是同一個東西換名字),而且互相剋制(見 ELEMENT_COUNTERS)。
  *
  * **八個都刻意只在你失誤時才生效**(漏接、被撞、快死),完美玩家全清不漏,一個都碰不到:
  * 這讓它們自動不進理想路線,敵人不會為了一個沒人用得到的東西變強——
@@ -53,6 +51,50 @@ export type RunSkillId =
 export const ELEMENTS: RunSkillId[] = ['fire', 'metal', 'thunder', 'water', 'wood', 'earth', 'light', 'dark'];
 export function isElement(id: RunSkillId): boolean {
   return ELEMENTS.includes(id);
+}
+
+/**
+ * 相剋表:每個元素剋誰。**兩個閉環,所以每個元素剛好剋一個、也剛好被一個剋**——
+ * 沒有「萬用元素」也沒有「廢元素」。
+ *
+ *   五行:金 → 木 → 土 → 水 → 火 → 金
+ *   三才:光 → 暗 → 雷 → 光
+ *
+ * ## 為什麼這樣做不會變成「查表」或「擲骰子」
+ *
+ * 這是原本反對相剋的兩個理由:看得到下一波屬性 ⇒ 挑剋它的那個,是查表不是決策;
+ * 看不到 ⇒ 純運氣。解法是**把接下來幾波的屬性公開**(技能面板會列),於是決策變成:
+ *
+ *   押注:花一個格子點剋接下來三波的元素,那三波會非常好過,但之後可能用不到
+ *   通用:點一個每一波都有用的(鋒刃/增殖/水/木…),平均但不突出
+ *
+ * 10 個格子、14 種技能,**押錯就是浪費一格**——這才是取捨。
+ *
+ * ## 為什麼它不會破壞敵人的結構保證
+ *
+ * 相剋只放大「元素本來的效果」,而八元素全部只在**你已經失誤了**的時候才生效
+ * (打不完、漏接、死過人)。完美玩家全清不漏,所以相剋對他一樣是零——
+ * 它照樣不進理想路線,敵人不會為了它變強。
+ */
+export const ELEMENT_COUNTERS: Partial<Record<RunSkillId, RunSkillId>> = {
+  metal: 'wood', wood: 'earth', earth: 'water', water: 'fire', fire: 'metal',
+  light: 'dark', dark: 'thunder', thunder: 'light',
+};
+
+/** 剋中的時候,那個元素的效果放大幾倍。 */
+export const COUNTER_BONUS = 2.5;
+
+/** 我帶的技能裡,有沒有剋得到這一波屬性的?回傳放大倍率(沒有就是 1)。 */
+export function counterMultiplier(skills: RunSkillState[], waveElement?: RunSkillId): number {
+  if (!waveElement) return 1;
+  return skills.some((s) => s.level > 0 && ELEMENT_COUNTERS[s.id] === waveElement) ? COUNTER_BONUS : 1;
+}
+
+/** 這一波是什麼屬性。用雜湊算,同一排永遠一樣(重播與驗證才對得起來)。 */
+export function elementForRow(rowIndex: number): RunSkillId {
+  let h = Math.imul(rowIndex + 1, 0x9e3779b1) ^ 0x85ebca6b;
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+  return ELEMENTS[((h ^ (h >>> 16)) >>> 0) % ELEMENTS.length];
 }
 
 /** 哪些是主動技能。轉職解鎖的就是這一串的前 N 款(見 laneJobs 的 activeSkillsForStage)。 */

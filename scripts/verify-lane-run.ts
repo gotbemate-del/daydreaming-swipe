@@ -23,7 +23,8 @@ import {
 import {
   runSkillPicksForWave, totalRunSkillPicks, MAX_RUN_SKILL_LEVEL, RUN_SKILLS,
   MAX_RUN_SKILL_SLOTS, runSkillEffects, strikeCooldownWaves, bestRunSkillChoice, runSkillOffersAt,
-  ACTIVE_SKILL_IDS, ELEMENTS, runSkillSpec,
+  ACTIVE_SKILL_IDS, ELEMENTS, runSkillSpec, ELEMENT_COUNTERS, COUNTER_BONUS,
+  counterMultiplier, elementForRow,
 } from '../game/laneRunSkills';
 
 let fail = 0;
@@ -495,6 +496,51 @@ check('落後的玩家帶了就活得比較久(越落後越有用)',
 check('木・再生沒失去就補不了',
   resolveEnemy(behindState, behindWave, { regen: 9, lostSoFar: 0 }).state.heroes
   === resolveEnemy(behindState, behindWave).state.heroes);
+
+// --- 相剋:兩個閉環,每個元素剛好剋一個、也剛好被一個剋 ---
+const counterTargets = ELEMENTS.map((id) => ELEMENT_COUNTERS[id]);
+check('每個元素都剋一個,而且沒有兩個元素剋同一個(所以沒有廢元素也沒有萬用元素)',
+  counterTargets.every((x) => x !== undefined) && new Set(counterTargets).size === ELEMENTS.length,
+  ELEMENTS.map((id) => `${runSkillSpec(id).name.split('・')[0]}→${runSkillSpec(ELEMENT_COUNTERS[id]!).name.split('・')[0]}`).join(' '));
+// 相剋是**兩個**環(五行 5 個 + 三才 3 個),不是一個 8 元素的大環——
+// 所以不能「走 8 步看回不回得到原點」,要走到回來為止再看長度。
+const cycleLengths = new Set(ELEMENTS.map((start) => {
+  let cur = start;
+  for (let n = 1; n <= ELEMENTS.length; n++) {
+    cur = ELEMENT_COUNTERS[cur]!;
+    if (cur === start) return n;
+  }
+  return -1;
+}));
+check('相剋是封閉的環,而且沒有元素剋自己',
+  !cycleLengths.has(-1) && !cycleLengths.has(1)
+  && [...cycleLengths].sort((a, b) => a - b).join(',') === '3,5',
+  `環長 ${[...cycleLengths].sort((a, b) => a - b).join(' 與 ')}(五行 + 三才)`);
+check('帶對元素才有相剋倍率', counterMultiplier([{ id: 'metal', level: 1 }], 'wood') === COUNTER_BONUS
+  && counterMultiplier([{ id: 'metal', level: 1 }], 'fire') === 1
+  && counterMultiplier([], 'wood') === 1);
+// 每一波的屬性要夠平均,不然有些元素整場都用不到。
+const elemTally = new Map<string, number>();
+for (let r = 0; r < 4000; r++) {
+  const e = elementForRow(r);
+  elemTally.set(e, (elemTally.get(e) ?? 0) + 1);
+}
+check('八種屬性長期分佈平均(不會有元素整場都碰不到)',
+  [...elemTally.values()].every((n) => n > 4000 / ELEMENTS.length * 0.75 && n < 4000 / ELEMENTS.length * 1.25)
+  && elemTally.size === ELEMENTS.length,
+  [...elemTally.values()].join('/'));
+// **相剋照樣不進理想路線**:它只放大元素,而元素只在失誤時生效。
+check('完美玩家帶對屬性也一模一樣(相剋沒有破壞結構保證)',
+  resolveEnemy(perfectState, perfectWave, { ...allElements, counter: COUNTER_BONUS }).state.heroes
+  === resolveEnemy(perfectState, perfectWave).state.heroes);
+check('落後的玩家帶對屬性明顯更有用',
+  resolveEnemy(behindState, behindWave, { ...allElements, counter: COUNTER_BONUS }).state.heroes
+  > resolveEnemy(behindState, behindWave, allElements).state.heroes,
+  `沒剋 ${resolveEnemy(behindState, behindWave, allElements).state.heroes} 人 / 剋中 ${resolveEnemy(behindState, behindWave, { ...allElements, counter: COUNTER_BONUS }).state.heroes} 人`);
+// 相剋只放大元素,不放大主動技能——不然帶對屬性就變成整體 x2.5,是另一種買到勝利。
+check('相剋不放大主動技能',
+  resolveEnemy(behindState, behindWave, { kills: 4, counter: COUNTER_BONUS }).state.heroes
+  === resolveEnemy(behindState, behindWave, { kills: 4 * COUNTER_BONUS }).state.heroes);
 
 console.log('\n過關率(列=關卡,欄=選法):');
 console.log('        最佳    隨機    最差');

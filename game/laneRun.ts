@@ -18,9 +18,9 @@
 
 import { FINAL_BOSS_MONSTER, getStageBossMonster, pickMonster } from './monsters';
 import {
-  ACTIVE_SKILL_IDS,
+  ACTIVE_SKILL_IDS, elementForRow,
   applyRunSkillPick, bestRunSkillChoice, learnRunSkill, runSkillOffersAt, runSkillPicksForWave,
-  type RunSkillState,
+  type RunSkillState, type RunSkillId,
 } from './laneRunSkills';
 import type { JobTier } from './combat';
 import type { Rarity } from './trigger';
@@ -140,6 +140,8 @@ export interface EnemyEffect {
   heroWave?: boolean;
   /** 武器的落點(offset 區間)。站在區間裡就會被砸中,砸中削掉一部分隊伍。 */
   hazards?: { from: number; to: number }[];
+  /** 這一波的屬性。帶著剋它的元素,那個元素的效果會放大(見 laneRunSkills 的 ELEMENT_COUNTERS)。 */
+  element?: RunSkillId;
   /**
    * 每漏掉一隻要換掉幾個勇者。一般小怪是 1,**精英是一整群的份**——
    * 「大」在這個模型裡的意思就是這個:牠一隻抵一群,擋不下來就是一次大額兌換。
@@ -1013,6 +1015,7 @@ function makeEnemyRow(
     units,
     ...(elite ? { elite: true, leakCost: ELITE_MASS, hitsPerUnit: ELITE_HITS } : {}),
     ...(heroWave ? { heroWave: true, hazards: hazardsFor(rowIndex) } : {}),
+    element: elementForRow(rowIndex),
   };
   return Array.from({ length: LANE_COUNT }, (_, lane) => ({
     lane: lane as Lane,
@@ -1186,6 +1189,12 @@ export const MISS_MESSAGE = '沒碰到';
  * 敵人不會為了一個沒人用得到的東西變強(跟兌換率、主動技能同一個形狀)。
  */
 export interface WaveBoost {
+  /**
+   * 相剋倍率:帶著剋這一波屬性的元素就 > 1(見 laneRunSkills 的 COUNTER_BONUS)。
+   * 它只放大**元素來的那幾項**(燒/穿/連鎖/再生/吸取/復活),不碰主動技能與基礎戰力——
+   * 而元素本來就只在「已經失誤了」時才生效,所以相剋一樣不進理想路線。
+   */
+  counter?: number;
   /** 額外清掉幾隻(火・燃燒 + 主動) */
   kills?: number;
   /** 額外清掉整波的幾成(金・穿透 + 貫穿) */
@@ -1229,17 +1238,20 @@ export function resolveEnemy(
   }
   // 主動技能加在 kills 上而不是加在戰力上:固定效果才有「越落後越有用」的性質,
   // 而且理想玩家本來就全清,對他等於零——所以它不進理想路線,也就不會把敵人養大。
+  // 相剋只放大「元素來的那幾項」。主動技能與基礎戰力不受影響——
+  // 不然帶對屬性就變成整體 x2.5,那是另一種「養成買到勝利」。
+  const cx = Math.max(1, boost.counter ?? 1);
   const own = waveKillCount(totalAttack(state), enemy.power, enemy.units);
-  const extra = Math.max(0, boost.kills ?? 0)
-    + Math.ceil(enemy.units * Math.max(0, boost.killRatio ?? 0))
-    + Math.ceil(own * Math.max(0, boost.chainRatio ?? 0));
-  const kills = Math.min(enemy.units, own + extra);
+  const extra = Math.max(0, boost.kills ?? 0) * cx
+    + Math.ceil(enemy.units * Math.max(0, boost.killRatio ?? 0) * cx)
+    + Math.ceil(own * Math.max(0, boost.chainRatio ?? 0) * cx);
+  const kills = Math.min(enemy.units, own + Math.floor(extra));
   const leaked = Math.max(0, enemy.units - kills);
   const next = { ...state };
   // 打倒的怪有一部分加入隊伍。放在「漏 0」那條路徑上而不是照 kills 給:
   // 半殘的一波已經在扣人了,再補回來會讓「擋不住」這件事變得模糊。
   // 木・再生:只補得回「已經失去的」,沒失去就沒得補——所以完美玩家拿它等於零。
-  const regen = Math.min(Math.max(0, boost.regen ?? 0), Math.max(0, boost.lostSoFar ?? 0));
+  const regen = Math.min(Math.floor(Math.max(0, boost.regen ?? 0) * cx), Math.max(0, boost.lostSoFar ?? 0));
   const rallied = Math.max(0, boost.heroes ?? 0) + regen;
   if (leaked === 0 || boost.immune) {
     const joined = absorbedFrom(kills, enemy.leakCost) + rallied;
@@ -1258,12 +1270,12 @@ export function resolveEnemy(
   next.heroes += rallied;
   const lost = Math.ceil((leaked * cost) / Math.max(BASE_TRADE_RATE, next.tradeRate));
   // 暗・吸取:漏過來的怪有一部分反而加入你。只有漏接時才有東西可吸,所以完美玩家拿它等於零。
-  const leeched = Math.floor(leaked * Math.max(0, boost.leech ?? 0));
+  const leeched = Math.floor(leaked * Math.min(1, Math.max(0, boost.leech ?? 0) * cx));
   const before = totalAttack(next);
   next.heroes = next.heroes - lost + leeched;
   if (next.heroes <= 0) {
     // 光・復活:歸零的那一刻保住幾個人。一場一次,由外層負責只給一次。
-    const saved = Math.max(0, boost.revive ?? 0);
+    const saved = Math.floor(Math.max(0, boost.revive ?? 0) * cx);
     if (saved > 0) {
       next.heroes = saved;
     } else {

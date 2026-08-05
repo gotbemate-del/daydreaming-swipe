@@ -35,8 +35,8 @@ import {
   type WaveSpecies,
 } from '../game/laneRun';
 import {
-  applyRunSkillPick, learnRunSkill, runSkillEffects, runSkillOffersAt, runSkillPicksForWave,
-  type RunSkillState,
+  applyRunSkillPick, counterMultiplier, learnRunSkill, runSkillEffects, runSkillOffersAt, runSkillPicksForWave,
+  type RunSkillState, type RunSkillId,
 } from '../game/laneRunSkills';
 
 const TICK_MS = 33; // ~30fps
@@ -138,6 +138,11 @@ export interface LaneRunView {
   skillOffers: RunSkillState[];
   /** 還欠玩家幾次選擇(決戰前那次會欠 2 次)。 */
   pendingPicks: number;
+  /**
+   * 接下來幾波的屬性。**公開它是相剋能成立的前提**:
+   * 看不到就變成擲骰子,看得到才有「押注這三波 vs 拿通用的」這個取捨。
+   */
+  upcomingElements: RunSkillId[];
   chooseRunSkill: (choice: RunSkillState) => void;
   feedback: RunFeedback | null;
   speed: number;
@@ -503,6 +508,9 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         if (due.nodes[0]?.kind === 'enemy') {
           const units = due.nodes[0].enemy?.units ?? 0;
           const fx = runSkillEffects(runSkills);
+          // 相剋:帶著剋這一波屬性的元素,元素的效果放大(見 laneRunSkills 的 ELEMENT_COUNTERS)。
+          const cx = counterMultiplier(runSkills, due.nodes[0].enemy?.element);
+          if (cx > 1) { boost.counter = cx; fired.push('剋'); }
           // 八元素:常駐,不用冷卻(除了土)。全部只在「已經失誤了」的路徑上生效,
           // 所以完美玩家一個都碰不到——它們因此不進理想路線(見 laneRun 的 WaveBoost)。
           if (fx.burnKills > 0) boost.kills = (boost.kills ?? 0) + fx.burnKills;
@@ -597,6 +605,11 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
     runSkills,
     skillOffers,
     pendingPicks,
+    upcomingElements: rows
+      .filter((r) => !passedRef.current.has(r.index) && r.nodes[0]?.kind === 'enemy')
+      .slice(0, 3)
+      .map((r) => r.nodes[0].enemy!.element)
+      .filter((e): e is RunSkillId => e !== undefined),
     chooseRunSkill,
     feedback,
     speed,

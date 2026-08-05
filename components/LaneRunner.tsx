@@ -21,7 +21,7 @@ import {
   type RunStart,
   type TerrainId,
 } from '../game/laneRun';
-import { describeRunSkill, runSkillSpec } from '../game/laneRunSkills';
+import { describeRunSkill, runSkillSpec, ELEMENT_COUNTERS } from '../game/laneRunSkills';
 import { HIT_NUMBER_MS, useLaneRun, type HitNumber, type Projectile, type WaveView } from '../hooks/useLaneRun';
 import {
   heroBoxHeight, heroForm, squadForms, monsterArt, weaponArt, jobHeroArt,
@@ -138,7 +138,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
   const {
     state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers,
     lastShotAt, lastShotId, feedback, steer, dragTo,
-    runSkills, skillOffers, pendingPicks, chooseRunSkill, lastStrike,
+    runSkills, skillOffers, pendingPicks, chooseRunSkill, lastStrike, upcomingElements,
   } = run;
   const attack = totalAttack(state);
 
@@ -420,7 +420,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
                 ? `精英 ${incoming.name} · 戰力 ${compact(incoming.power)} · 漏一隻 -${ELITE_MASS} 人`
                 : incoming.heroWave
                   ? `敵方勇者 x${incoming.units} · 會投擲武器,離開紅色區域`
-                  : `來襲 ${incoming.name} x${incoming.units} · 戰力 ${compact(incoming.power)}`}
+                  : `${incoming.element ? runSkillSpec(incoming.element).name.split('・')[0] + '屬 ' : ''}${incoming.name} x${incoming.units} · 戰力 ${compact(incoming.power)}`}
           </Text>
         )}
       </View>
@@ -547,6 +547,13 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
                 勇者 {compact(state.heroes)} · 戰力 {compact(attack)}
                 {pendingPicks > 1 ? ` · 還可以挑 ${pendingPicks} 個` : ''}
               </Text>
+              {/* 接下來幾波的屬性。**公開它是相剋能成立的前提**——看不到就變成擲骰子,
+                  看得到才有「押注這幾波 vs 拿通用的」這個取捨。 */}
+              {upcomingElements.length > 0 && (
+                <Text style={styles.resultSummary}>
+                  接下來:{upcomingElements.map((e) => runSkillSpec(e).name.split('・')[0]).join(' → ')}
+                </Text>
+              )}
               {skillOffers.map((offer) => (
                 <Pressable
                   key={offer.id}
@@ -558,6 +565,11 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
                 >
                   <Text style={styles.skillName}>
                     {runSkillSpec(offer.id).name} {offer.level > 1 ? `Lv.${offer.level}` : '新'}
+                    {/* 這個元素剋得到接下來哪幾波,直接標出來——不標的話玩家得自己背相剋表 */}
+                    {ELEMENT_COUNTERS[offer.id]
+                      && upcomingElements.filter((e) => e === ELEMENT_COUNTERS[offer.id]).length > 0
+                      ? `  剋 x${upcomingElements.filter((e) => e === ELEMENT_COUNTERS[offer.id]).length}`
+                      : ''}
                   </Text>
                   <Text style={styles.skillDesc}>{describeRunSkill(offer)}</Text>
                 </Pressable>
