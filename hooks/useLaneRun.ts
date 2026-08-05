@@ -178,11 +178,17 @@ export interface WaveView {
   /** 每一隻倒了沒。倒下的不再畫,活著的會一路衝到勇者頭上。 */
   down: boolean[];
   /**
-   * 每一隻現在有沒有被凍住。凍住的那一隻**停在畫面上原地不動**(其他人照樣衝過來),
-   * 那就是「凍在原地」在這款的座標系裡唯一說得通的畫法:怪的世界座標是固定的、
-   * 是玩家在往前跑,所以要讓牠「不再逼近」就得讓牠跟著玩家一起前進。
+   * 每一隻被凍到什麼時候(0 = 沒凍)。
+   *
+   * **給的是截止時間不是布林值**,因為畫面要拿它做兩件事:一是「停在原地不動」
+   *(凍住的那一隻跟著玩家一起前進,其他人照樣衝過來——怪的世界座標是固定的、
+   * 往前跑的是玩家,所以「不再逼近」只能這樣表達),二是**把兩格動畫也停住**:
+   * 位置停了但手腳還在動的話,那看起來是「原地跑步」不是「凍住」。
+   * 有了截止時間就能反推凍住的那一刻是哪一格,畫面直接凍在那一格。
    */
-  frozen: boolean[];
+  frozenUntil: number[];
+  /** 這一波的怪被土・遲滯拖慢幾成(0 = 沒點)。畫面拿它疊咖啡色。 */
+  slow: number;
 }
 
 function sameFlags(a: boolean[], b: boolean[]): boolean {
@@ -243,6 +249,10 @@ export interface LaneRunView {
   lastStrike: { at: number; names: string[]; kills: number } | null;
   /** 命中那一刻的元素演出(燃燒擴散 / 連鎖閃電 / 凍結)。 */
   elementEvents: ElementEvent[];
+  /** 光・護盾:手上還有幾個(0 = 沒有)。畫面在勇者外圍畫一圈淺黃色光。 */
+  shields: number;
+  /** 最後一次擋下攻擊的時間戳。畫面拿它閃一下光圈。 */
+  lastShieldAt: number;
   /**
    * 這一場帶著的技能與冷卻。**畫面最下方那一列就是這個**——
    * 主動技能改成秒冷卻之後,玩家一定要看得到「還有幾秒」,不然它就只是偶爾自己跳出來的特效。
@@ -375,8 +385,18 @@ export function useLaneRun(
   const readyAtRef = useRef<Record<string, number>>({});
   /** 這一場到目前為止總共失去幾個人。木・再生只補得回這個數字以內。 */
   const lostSoFarRef = useRef(0);
-  /** 光・復活用過沒。一場只有一次。 */
-  const revivedRef = useRef(false);
+  /**
+   * 光・護盾:手上還有幾個。每一波開始時擲一次骰,中了就 +1(上限 fx.shieldCap),
+   * 被武器砸中的時候消耗一個、那一下完全不扣人。
+   *
+   * **跨波保留**:結不出來的那幾波就是沒有,結出來沒用掉的可以留到下一波。
+   * 每波清空的話它會退化成「這一波有沒有中獎」,而玩家對一個自己控制不了、
+   * 又留不住的東西不會有任何規劃。
+   */
+  const shieldsRef = useRef(0);
+  /** 最後一次擋下攻擊的時間戳。畫面拿它閃一下光圈(不閃的話玩家不知道護盾用掉了)。 */
+  const [lastShieldAt, setLastShieldAt] = useState(0);
+  const [shields, setShields] = useState(0);
   /** 目前帶的技能。tick 迴圈(每 33ms)要讀,走 ref 才不用把整個迴圈綁進相依陣列。 */
   const runSkillsRef = useRef<RunSkillState[]>([]);
   runSkillsRef.current = runSkills;
@@ -470,7 +490,10 @@ export function useLaneRun(
     if (fx.chainRatio > 0) boost.chainRatio = fx.chainRatio;
     if (fx.leech > 0) boost.leech = fx.leech;
     if (fx.regen > 0) { boost.regen = fx.regen; boost.lostSoFar = lostSoFarRef.current; }
-    if (fx.revive > 0 && !revivedRef.current) boost.revive = fx.revive;
+    if (fx.lossCut > 0) boost.lossCut = fx.lossCut;
+    // 護盾走 boost 只是為了跟模擬器對齊(它沒有時間軸,只能在結算時一次抵掉);
+    // 遊戲裡是**飛到你身上的那一刻**逐發抵的,見下面 EnemyShot 那一段。
+    if (shieldsRef.current > 0) boost.shields = shieldsRef.current;
     if (fired.immune) boost.immune = true;
     return boost;
   }
@@ -496,11 +519,6 @@ export function useLaneRun(
       readyAtRef.current[id] = now + cooldownSeconds * 1000;
       return true;
     };
-    // 土・護盾:唯一有冷卻的元素,跟主動技能同一套時鐘。
-    if (Number.isFinite(fx.shieldCooldownSeconds) && ready('earth', fx.shieldCooldownSeconds)) {
-      current.fired.immune = true;
-      fired.push('土・護盾');
-    }
     for (const a of fx.actives as ActiveTrigger[]) {
       if (!ready(a.id, a.cooldown)) continue;
       fired.push(a.name);
@@ -628,6 +646,14 @@ export function useLaneRun(
       projectilesRef.current = [];
       enemyShotsRef.current = [];
       elementEventsRef.current = [];
+      // 光・護盾:每一波開始時擲一次骰。用雜湊不用亂數,理由跟凍結一樣——
+      // 這一段每 33ms 會重跑,亂數的話同一波會一直重抽。
+      const lightFx = runSkillEffects(runSkillsRef.current, current.element, bookLevel, collectionScale);
+      if (lightFx.shieldChance > 0 && shieldsRef.current < lightFx.shieldCap
+          && procRoll(current.rowIndex, 0, 977) < lightFx.shieldChance) {
+        shieldsRef.current += 1;
+        setShields(shieldsRef.current);
+      }
     }
 
     // 這一波的技能效果。**每個 tick 重算**:波次中途選了新技能、或是吃到閘門讓戰力變了,
@@ -637,9 +663,10 @@ export function useLaneRun(
 
     // 凍住的那幾隻跟著玩家一起前進 = 畫面上停在原地不再逼近。
     // 怪的世界座標是固定的、往前跑的是玩家,所以「不動」只能用這個方式表達。
-    if (movedBy > 0) {
+    // 土・遲滯則是**整波**都慢一截(fx.slow),跟凍結疊起來就是「慢慢逼近、偶爾完全停住」。
+    if (movedBy > 0 && (fx.slow > 0 || current.frozenUntil.some((t) => t > now))) {
       for (let i = 0; i < current.monsters.length; i++) {
-        if (current.frozenUntil[i] > now) current.monsters[i].distance += movedBy;
+        current.monsters[i].distance += current.frozenUntil[i] > now ? movedBy : movedBy * fx.slow;
       }
     }
 
@@ -777,7 +804,13 @@ export function useLaneRun(
         if (moved.distance > travelled) { stillFlying.push(moved); continue; }
         // 飛到你身上了:站在這條線上就會被砸中。一波最多扣一次(見 hazardHitRowRef)。
         const inLine = Math.abs(offsetRef.current - shot.offset) <= HAZARD_WIDTH / 2;
-        if (inLine) {
+        if (inLine && shieldsRef.current > 0) {
+          // 光・護盾:擋掉這一下,完全不扣人。**要有畫面訊號**——沒有的話玩家看到的是
+          // 「武器穿過去但沒事」,那跟「這款的碰撞判定壞了」長得一模一樣。
+          shieldsRef.current -= 1;
+          setShields(shieldsRef.current);
+          setLastShieldAt(now);
+        } else if (inLine) {
           // **每一下都算,一波不設上限**:一把武器換一個人。
           if (hazardHitsRef.current.row !== current.rowIndex) hazardHitsRef.current = { row: current.rowIndex, hits: 0 };
           hazardHitsRef.current.hits += 1;
@@ -817,11 +850,12 @@ export function useLaneRun(
 
     const down = current.monsters.map((m) => isDown(m.index));
     const frozen = current.monsters.map((m) => current!.frozenUntil[m.index] > now);
+    const frozenUntil = current.monsters.map((m) => current!.frozenUntil[m.index]);
     setWave((prev) =>
       prev !== null
       && prev.rowIndex === current!.rowIndex
       && sameFlags(prev.down, down)
-      && sameFlags(prev.frozen, frozen)
+      && sameFlags(prev.frozenUntil.map((t) => t > now), frozen)
       && prev.hitsOn.every((h, i) => h === current!.hitsOn[i])
         ? prev
         : {
@@ -835,7 +869,8 @@ export function useLaneRun(
             hitsPerUnit: current!.hitsPerUnit,
             monsters: current!.monsters,
             down,
-            frozen,
+            frozenUntil,
+            slow: fx.slow,
           },
     );
   }
@@ -897,7 +932,6 @@ export function useLaneRun(
         const r = resolveRow(landed, due, offsetRef.current, boost);
         // 記帳:失去的人累加起來給木・再生當上限;復活用掉就記起來(一場一次)。
         if (r.heroDelta < 0) lostSoFarRef.current += -r.heroDelta;
-        if (boost.revive && r.state.phase !== 'dead' && r.state.heroes === boost.revive) revivedRef.current = true;
         feedbackKeyRef.current += 1;
         setFeedback({
           key: feedbackKeyRef.current,
@@ -976,6 +1010,8 @@ export function useLaneRun(
     dashing,
     lastStrike,
     elementEvents,
+    shields,
+    lastShieldAt,
     // 冷卻的倒數在**畫的時候**才算(readyAt 是 ref,不觸發重畫)。
     // 跑圖每個 tick 都會因為 distance 變動而重畫,所以倒數自然會走,不必再開一個計時器。
     carriedSkills: runSkills.map((s) => {

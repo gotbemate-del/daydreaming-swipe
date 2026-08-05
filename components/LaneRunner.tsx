@@ -20,7 +20,7 @@ import {
   type TerrainId,
 } from '../game/laneRun';
 import {
-  describeRunSkill, runSkillSpec, ELEMENT_COUNTERS, isActiveSkill, type RunSkillId,
+  describeRunSkill, runSkillSpec, ELEMENT_COUNTERS, isActiveSkill, FREEZE_MS, type RunSkillId,
 } from '../game/laneRunSkills';
 import {
   HIT_NUMBER_MS, ELEMENT_FX_MS, useLaneRun,
@@ -113,6 +113,12 @@ const FROST_COLOR = '#9fd8e8';
 const BURN_SIZE = 34;
 /** 凍結那一下炸開的圈多大。 */
 const FROST_BURST = 28;
+/** 土・遲滯疊在怪身上的咖啡色。跟 artAssets 的土屬性同色。 */
+const EARTH_COLOR = '#a8865e';
+/** 光・護盾的光圈顏色(淺黃)。跟 artAssets 的光屬性同色。 */
+const SHIELD_COLOR = '#e8e0c4';
+/** 擋下一次攻擊之後,光圈亮一下的時間。 */
+const SHIELD_FLASH_MS = 420;
 
 
 /**
@@ -197,7 +203,7 @@ export function LaneRunner({
     lastShotAt, lastShotId, feedback, steer, dragTo,
     runSkills, skillOffers, pendingPicks, chooseRunSkill, lastStrike, upcomingElements,
     enemyShots, lastHazardAt, enemyThrowAt, waveNumber, totalWaves,
-    elementEvents, carriedSkills,
+    elementEvents, carriedSkills, shields, lastShieldAt,
   } = run;
   const attack = totalAttack(state);
 
@@ -380,8 +386,14 @@ export function LaneRunner({
         && anim !== null
         && anim.frames.length > 2
         && now - (enemyThrowAt[m.index] ?? 0) < THROW_POSE_MS;
+      // 冰・凍結:**連動畫的幀一起停住**,不是只有位置停住。
+      // 位置停了但手腳還在動的話,看起來是「原地跑步」而不是「凍住」——
+      // 而原地跑步在這個畫面上跟「這一隻的移動壞掉了」長得一模一樣。
+      // 停在哪一格用「凍住的那一刻」反推(frozenUntil - FREEZE_MS),所以不會突然跳格。
+      const frozen = w.frozenUntil[m.index] > now;
+      const frameClock = frozen ? w.frozenUntil[m.index] - FREEZE_MS : now;
       const art = anim
-        ? anim.frames[throwing ? 2 : animFrameIndex(now, m.index * 0.37)]
+        ? anim.frames[throwing ? 2 : animFrameIndex(frameClock, m.index * 0.37)]
         : w.heroWave
           ? jobHeroArt(enemyLook.archetype, enemyLook.branch, enemyLook.tier)
           : monsterArt(species.id);
@@ -409,9 +421,22 @@ export function LaneRunner({
               ]}
             />
           )}
+          {/* 土・遲滯:整波疊一層咖啡色,表示「這一波被拖慢了」。
+              疊在屬性色之上、冰色之下——它是全波共用的狀態,而凍結是單隻的,
+              單隻的那一層要壓在最上面才看得出「這一隻不只是慢,是完全停住」。 */}
+          {w.slow > 0 && (
+            <Image
+              source={art}
+              resizeMode="contain"
+              style={[
+                styles.pixelArt, styles.floating,
+                { width: boxW, height: boxH, tintColor: EARTH_COLOR, opacity: 0.28 + w.slow * 0.64 },
+              ]}
+            />
+          )}
           {/* 冰・凍結:凍住的那一隻整個罩上一層冰色,而且**停在原地不再逼近**
-              (位置由 hook 推,見 WaveView.frozen)。只染色不停住的話玩家會以為只是換了顏色。 */}
-          {w.frozen[m.index] && (
+              (位置與動畫幀都由 frozenUntil 推)。只染色不停住的話玩家會以為只是換了顏色。 */}
+          {frozen && (
             <>
               <Image
                 source={art}
@@ -900,6 +925,32 @@ export function LaneRunner({
             />
           );
         })}
+        {/*
+          光・護盾:勇者群外圍一圈淺黃色的光,手上有幾個就畫幾圈(由外往內縮)。
+          **擋掉一次攻擊的當下要亮一下**——不亮的話玩家看到的是「武器穿過去但沒事」,
+          那跟「碰撞判定壞了」長得一模一樣(勇者波的紅閃踩過同一個坑)。
+        */}
+        {ready && shields > 0 && Array.from({ length: Math.min(3, shields) }, (_, i) => {
+          const flash = Date.now() - lastShieldAt < SHIELD_FLASH_MS;
+          const pad = 10 + i * 7;
+          return (
+            <View
+              key={`shield-${i}`}
+              pointerEvents="none"
+              style={[
+                styles.shieldRing,
+                {
+                  left: heroLeft + leadSize.w / 2 - (leadSize.w / 2 + pad),
+                  bottom: HERO_BOTTOM + bob - pad,
+                  width: leadSize.w + pad * 2,
+                  height: leadSize.w + pad * 2,
+                  borderRadius: (leadSize.w + pad * 2) / 2,
+                  opacity: flash ? 0.95 : 0.4 - i * 0.08,
+                },
+              ]}
+            />
+          );
+        })}
         {state.heroes > units.length && (
           <Text style={[styles.squadCount, { left: heroLeft - 12, bottom: HERO_BOTTOM + HERO_HEIGHT - 6 }]}>
             x{compact(state.heroes)}
@@ -1127,4 +1178,6 @@ const styles = StyleSheet.create({
   skillGlyph: { fontSize: 14, fontWeight: '700', lineHeight: 16 },
   skillSlotSub: { color: '#8a8a95', fontSize: 9, lineHeight: 10 },
   skillBarEmpty: { color: '#8a8a95', fontSize: 11 },
+  /** 光・護盾的光圈。畫在勇者群外面,不填色(填了會蓋掉勇者)。 */
+  shieldRing: { position: 'absolute', borderWidth: 2, borderColor: SHIELD_COLOR, zIndex: 19 },
 });

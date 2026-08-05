@@ -493,7 +493,7 @@ check('八個元素都存在,而且效果組合互不相同(不是同一個東�
   && new Set(ELEMENTS.map((id) => {
     const e = elemFx(id);
     return JSON.stringify([e.burnKills > 0, e.pierceRatio > 0, e.chainRatio > 0, e.tradeMultiplier > 1,
-      e.regen > 0, Number.isFinite(e.shieldCooldownSeconds), e.revive > 0, e.leech > 0]);
+      e.regen > 0, e.slow > 0, e.shieldChance > 0, e.leech > 0]);
   })).size === 8,
   ELEMENTS.map((id) => runSkillSpec(id).name).join(' '));
 check('沒有任何元素會加戰力(所以八個都不進敵人曲線)',
@@ -528,19 +528,22 @@ check('冰的凍結機率吃相剋,擴散/連鎖的隻數不吃',
   > runSkillEffects([{ id: 'ice', level: 3 }]).freezeChance
   && runSkillEffects([{ id: 'fire', level: 3 }], 'metal').burnSpread
   === runSkillEffects([{ id: 'fire', level: 3 }]).burnSpread);
-// 擋一整波損失的兩款(壁障、土・護盾)的冷卻要落在「幾波」的量級,不是「一波之內幾次」——
+// 壁障擋的是「一整波的損失」,所以冷卻要落在「幾波」的量級,不是「一波之內幾次」——
 // 一波約 18 秒,秒數必須遠大於它,不然它會變成「每一波都免疫」。
+// (土曾經是第二款,改成減速之後它沒有冷卻了——**有倒數的就是主動,沒有的就是被動**。)
 const waveCycle = runSeconds(1) / wavesForStage(1);
-check('壁障與土・護盾的冷卻是「幾波」的量級(不是每波都擋)',
-  skillCooldownSeconds('aegis', 5) > waveCycle * 3
-  && skillCooldownSeconds('earth', 5) > waveCycle * 2,
+check('壁障的冷卻是「幾波」的量級(不是每波都擋)',
+  skillCooldownSeconds('aegis', 5) > waveCycle * 3,
   `壁障 ${skillCooldownSeconds('aegis', 1)}~${skillCooldownSeconds('aegis', 5)} 秒 ≈ ${(skillCooldownSeconds('aegis', 5) / waveCycle).toFixed(1)}~${(skillCooldownSeconds('aegis', 1) / waveCycle).toFixed(1)} 波`);
+check('只有四款主動有冷卻,八元素一款都沒有(技能列的規則:有倒數的就是主動)',
+  ELEMENTS.every((id) => skillCooldownSeconds(id, MAX_RUN_SKILL_LEVEL) === 0)
+  && ACTIVE_SKILL_IDS.every((id) => skillCooldownSeconds(id, 1) > 0));
 // 這一項是八元素設計的核心:完美玩家(全清、不漏、不死)一個都用不到。
 // 用一波「戰力遠超過」的結算去驗——帶滿八元素跟什麼都不帶,結果必須完全一樣。
 const perfectWave = { power: 1, reward: 0, species: [{ id: 'blob-1', name: '史' }], name: '史', units: 6 };
 const perfectState: RunState = { ...initialRunState(1), heroes: 50, perHero: 1000 };
 const allElements: WaveBoost = {
-  kills: 5, killRatio: 0.3, chainRatio: 0.3, leech: 1, regen: 9, lostSoFar: 0, revive: 3,
+  kills: 5, killRatio: 0.3, chainRatio: 0.3, leech: 1, regen: 9, lostSoFar: 0, lossCut: 3, shields: 3,
 };
 check('完美玩家帶滿八元素也一模一樣(所以它們是抬地板不抬天花板)',
   resolveEnemy(perfectState, perfectWave).state.heroes
@@ -597,11 +600,11 @@ const vsMetal = runSkillEffects(mixed, 'metal'); // 火剋金
 const vsIce = runSkillEffects(mixed, 'ice');     // 冰剋火
 check('剋中只放大那一個元素,別的元素不動',
   Math.abs(vsMetal.burnKills - base.burnKills * COUNTER_BONUS) < 1e-9
-  && vsMetal.revive === base.revive,
-  `火 ${base.burnKills} → ${vsMetal.burnKills} / 光 ${base.revive} → ${vsMetal.revive}`);
+  && vsMetal.shieldChance === base.shieldChance,
+  `火 ${base.burnKills} → ${vsMetal.burnKills} / 光 ${base.shieldChance} → ${vsMetal.shieldChance}`);
 check('被剋只削弱那一個元素',
   Math.abs(vsIce.burnKills - base.burnKills * (1 - COUNTERED_PENALTY)) < 1e-9
-  && vsIce.revive === base.revive,
+  && vsIce.shieldChance === base.shieldChance,
   `火 ${base.burnKills} → ${vsIce.burnKills}`);
 check('相剋完全不碰主動技能與基礎戰力',
   vsMetal.actives[0].kills === base.actives[0].kills
@@ -691,15 +694,18 @@ check('魔王也有屬性,而且關卡前就公開(x-10 是最值得押注的一
 // **相剋照樣不進理想路線**:它只放大元素,而元素只在失誤時生效。
 const counteredAll: WaveBoost = {
   kills: 5 * COUNTER_BONUS, killRatio: 0.3 * COUNTER_BONUS, chainRatio: 0.3 * COUNTER_BONUS,
-  leech: 1, regen: 9 * COUNTER_BONUS, lostSoFar: 0, revive: 3 * COUNTER_BONUS,
+  leech: 1, regen: 9 * COUNTER_BONUS, lostSoFar: 0, lossCut: 3 * COUNTER_BONUS,
 };
 check('完美玩家帶對屬性也一模一樣(相剋沒有破壞結構保證)',
   resolveEnemy(perfectState, perfectWave, counteredAll).state.heroes
   === resolveEnemy(perfectState, perfectWave).state.heroes);
+// **這一波要夠大,大到兩邊都還有漏接**才比得出相剋的差別:小波會被兩邊都清光,
+// 清光之後「再多清一點」是零效益,兩邊的結果自然一模一樣(那不是相剋失效,是天花板)。
+const behindBigWave = { ...perfectWave, power: 4000, units: 200 };
 check('落後的玩家帶對屬性明顯更有用',
-  resolveEnemy(behindState, behindWave, counteredAll).state.heroes
-  > resolveEnemy(behindState, behindWave, allElements).state.heroes,
-  `沒剋 ${resolveEnemy(behindState, behindWave, allElements).state.heroes} 人 / 剋中 ${resolveEnemy(behindState, behindWave, counteredAll).state.heroes} 人`);
+  resolveEnemy(behindState, behindBigWave, counteredAll).state.heroes
+  > resolveEnemy(behindState, behindBigWave, allElements).state.heroes,
+  `沒剋 ${resolveEnemy(behindState, behindBigWave, allElements).state.heroes} 人 / 剋中 ${resolveEnemy(behindState, behindBigWave, counteredAll).state.heroes} 人`);
 
 // --- 第 40 小關之後的難度分段 ---
 // 三顆旋鈕、一段一顆,而且**三顆都不能碰到完美玩家**——碰到就進了理想路線,

@@ -214,8 +214,12 @@ const PER_LEVEL = {
   iceTrade: 0.25,
   /** 木・再生:每一波把這一場**已經失去的人**補回來幾個(沒失去就沒得補) */
   woodRegen: 1,
-  /** 光・復活:人數歸零時保住幾個人。一場只有一次。 */
-  lightRevive: 3,
+  /** 土・遲滯:怪往你逼近的速度慢幾成(**演出**;實際的好處是下面那個固定值) */
+  earthSlow: 0.12,
+  /** 土・遲滯:怪衝得慢,每一波少損失幾個人(**固定值**,跟冰的乘數互補) */
+  earthLossCut: 1,
+  /** 光・護盾:每一波有幾成機率結出一個護盾(擋下一次攻擊) */
+  lightShieldChance: 0.2,
   /** 暗・吸取:漏過來的怪有幾成反而加入你(只有漏接時才有東西可吸) */
   darkLeech: 0.2,
   /** 爆裂(主動):每次觸發直接清掉幾隻(固定值,前期最有感) */
@@ -249,10 +253,12 @@ const COOLDOWN_SPEC: Partial<Record<RunSkillId, { base: number; perLevel: number
   strike: { base: 18, perLevel: 2, min: 8 },
   pierce: { base: 20, perLevel: 2, min: 10 },
   rally: { base: 22, perLevel: 2, min: 12 },
-  // 壁障與土・護盾擋的是「一整波的損失」,所以冷卻的量級是**波**不是「一波之內幾次」:
-  // 一個波週期約 18 秒,110 秒 ≈ 6 波、70 秒 ≈ 4 波,跟改版前完全一樣。
+  // 壁障擋的是「一整波的損失」,所以冷卻的量級是**波**不是「一波之內幾次」:
+  // 一個波週期約 18 秒,110 秒 ≈ 6 波、70 秒 ≈ 4 波。
   aegis: { base: 120, perLevel: 10, min: 70 },
-  earth: { base: 100, perLevel: 12, min: 40 },
+  // 土曾經也在這裡(每 N 秒擋下一整波損失)。改成「減緩怪物前進速度」之後它沒有冷卻了,
+  // 是常駐的被動——**四款主動之外不要再有第五個有冷卻的東西**,技能列的規則才單純:
+  // 有倒數的就是主動,沒有的就是被動。
 };
 
 /** 這一款技能幾秒觸發一次。沒有冷卻的(被動)回傳 0。 */
@@ -301,6 +307,28 @@ export function freezeChanceAt(level: number, matchup = 1): number {
 /** 凍住多久(毫秒)。畫面與邏輯共用,不要各寫一份。 */
 export const FREEZE_MS = 900;
 
+/**
+ * 土・遲滯:怪往你逼近的速度慢幾成。
+ *
+ * **上限 0.5**:超過一半就會變成「怪幾乎不動」,而牠的世界座標是固定的、往前跑的是玩家——
+ * 慢到極限就是跟著玩家一起前進(那是冰的凍結),兩款元素會變成同一個東西的強弱版。
+ * 土的識別度來自「整波一直慢下來」而不是「某幾隻完全停住」。
+ */
+export function earthSlowRatio(level: number): number {
+  return level > 0 ? Math.min(0.5, PER_LEVEL.earthSlow * Math.min(MAX_RUN_SKILL_LEVEL, level)) : 0;
+}
+
+/**
+ * 光・護盾:最多同時帶幾個護盾。
+ *
+ * 每一波開始時擲一次骰,中了就 +1 個,擋掉一次「被武器砸中」。
+ * **上限存在的理由是它不能變成「攢起來的免傷」**:囤十個護盾等於整場勇者波免疫,
+ * 而勇者波的威脅剛好等於「你沒打完的部分」——免疫掉就等於那一段沒有難度。
+ */
+export function shieldChargeCap(level: number): number {
+  return level > 0 ? 1 + Math.floor(Math.min(MAX_RUN_SKILL_LEVEL, level) / 3) : 0;
+}
+
 export const RUN_SKILLS: RunSkillSpec[] = [
   { id: 'edge', name: '鋒刃', describe: (l) => `每人攻擊力 +${Math.round(PER_LEVEL.edgeAttack * l * 100)}%` },
   { id: 'swarm', name: '增殖', describe: (l) => `數量 +${Math.round(PER_LEVEL.swarmHeroes * l * 100)}%` },
@@ -322,8 +350,16 @@ export const RUN_SKILLS: RunSkillSpec[] = [
     describe: (l) => `命中有 ${Math.round(freezeChanceAt(l) * 100)}% 機率凍住,兌換率 +${Math.round(PER_LEVEL.iceTrade * l * 100)}%`,
   },
   { id: 'wood', name: '木・再生', describe: (l) => `每波補回 ${PER_LEVEL.woodRegen * l} 個失去的同伴` },
-  { id: 'earth', name: '土・護盾', describe: (l) => `每 ${skillCooldownSeconds('earth', l)} 秒擋下一整波損失` },
-  { id: 'light', name: '光・復活', describe: (l) => `倒下時保住 ${PER_LEVEL.lightRevive * l} 人(一場一次)` },
+  {
+    id: 'earth',
+    name: '土・遲滯',
+    describe: (l) => `怪衝得慢 ${Math.round(earthSlowRatio(l) * 100)}%,每波少損失 ${PER_LEVEL.earthLossCut * l} 人`,
+  },
+  {
+    id: 'light',
+    name: '光・護盾',
+    describe: (l) => `每波 ${Math.round(PER_LEVEL.lightShieldChance * l * 100)}% 機率結出護盾,擋下一次攻擊(最多帶 ${shieldChargeCap(l)} 個)`,
+  },
   { id: 'dark', name: '暗・吸取', describe: (l) => `漏過來的怪有 ${Math.round(PER_LEVEL.darkLeech * l * 100)}% 加入你` },
   {
     id: 'strike',
@@ -478,8 +514,14 @@ export interface RunSkillEffects {
   chainRatio: number;
   /** 木・再生:每波補回幾個「這一場已經失去的人」 */
   regen: number;
-  /** 土・護盾:幾**秒**擋一次(Infinity = 沒點) */
-  shieldCooldownSeconds: number;
+  /** 土・遲滯:怪往你逼近的速度慢幾成(演出) */
+  slow: number;
+  /** 土・遲滯:每一波少損失幾個人(這才是它的實際好處) */
+  lossCut: number;
+  /** 光・護盾:每一波結出一個護盾的機率 */
+  shieldChance: number;
+  /** 光・護盾:最多同時帶幾個 */
+  shieldCap: number;
   // ---- 以下四個只決定「命中的那一刻演出什麼」,不決定總共多打倒幾隻 ----
   // 擊殺數一律由 burnKills / pierceRatio / chainRatio 決定(見 laneRun 的 extraKills)。
   // 分開的理由寫在上面 burnSpreadTargets 那一段:演出變好看不該等於難度悄悄降低。
@@ -491,8 +533,6 @@ export interface RunSkillEffects {
   chainEvery: number;
   /** 雷・連鎖:一次電到幾隻 */
   chainTargets: number;
-  /** 光・復活:倒下時保住幾個人(一場一次;0 = 沒點) */
-  revive: number;
   /** 暗・吸取:漏過來的怪有幾成加入你 */
   leech: number;
   /**
@@ -549,9 +589,10 @@ export function runSkillEffects(
   let pierceRatio = 0;
   let chainRatio = 0;
   let regen = 0;
-  let shieldLevel = 0;
-  let shieldShift = 0;
-  let revive = 0;
+  let slow = 0;
+  let lossCut = 0;
+  let shieldChance = 0;
+  let shieldCap = 0;
   let leech = 0;
   let burnSpread = 0;
   let freezeChance = 0;
@@ -575,10 +616,11 @@ export function runSkillEffects(
     }
     if (s.id === 'ice') { trade += PER_LEVEL.iceTrade * level * mx; freezeChance += freezeChanceAt(level, mx); }
     if (s.id === 'wood') regen += PER_LEVEL.woodRegen * level * mx;
-    // 土是冷卻不是數值:剋中少等一段冷卻,被剋多等一段。
-    if (s.id === 'earth') shieldLevel = Math.max(shieldLevel, level);
-    if (s.id === 'earth') shieldShift = mx > 1 ? -1 : mx < 1 ? 1 : 0;
-    if (s.id === 'light') revive += PER_LEVEL.lightRevive * level * mx;
+    // 土・遲滯:減速是演出(所以不吃相剋,免得剋中就直接把整波定住),
+    // 少損失幾個人才是它的實際好處(所以那個吃相剋)。
+    if (s.id === 'earth') { slow += earthSlowRatio(level); lossCut += PER_LEVEL.earthLossCut * level * mx; }
+    // 光・護盾:機率吃相剋(它是機率,放大得動),上限不吃(整數,放大就變成另一個技能)。
+    if (s.id === 'light') { shieldChance += PER_LEVEL.lightShieldChance * level * mx; shieldCap += shieldChargeCap(level); }
     if (s.id === 'dark') leech += PER_LEVEL.darkLeech * level * mx;
     if (level <= 0) continue;
     // 主動技能吃技能書的放大,但**不吃相剋**(相剋只放大元素,見 elementMatchup)。
@@ -605,11 +647,10 @@ export function runSkillEffects(
     pierceRatio,
     chainRatio,
     regen,
-    // 剋中少等一段冷卻、被剋多等一段。一段 = 一級的幅度(12 秒),跟等級同一個尺度。
-    shieldCooldownSeconds: shieldLevel > 0
-      ? Math.max(20, skillCooldownSeconds('earth', shieldLevel) + shieldShift * 12)
-      : Infinity,
-    revive,
+    slow: Math.min(0.5, slow),
+    lossCut,
+    shieldChance: Math.min(1, shieldChance),
+    shieldCap,
     leech,
     burnSpread,
     freezeChance: Math.min(0.6, freezeChance),
