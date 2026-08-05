@@ -15,6 +15,7 @@ import {
   ACTIVE_SKILL_IDS, bestRunSkillChoice, learnRunSkill, runSkillOffersAt,
   runSkillEffects, type RunSkillState,
 } from '../game/laneRunSkills';
+import { COLLECTION_FLAVOUR_BONUS } from '../game/collection';
 import { clearRate, pickAccurate, pickBest, pickRandom, pickWorst, type LanePicker } from './simRun';
 
 let fail = 0;
@@ -157,6 +158,24 @@ check('帶滿技能書也不會改變戰力曲線(所以敵人一格都不會變
     if (a.attackMultiplier !== b.attackMultiplier || a.heroMultiplier !== b.heroMultiplier) return false;
   }
   return true;
+})());
+// 裝備圖鑑跟技能書同一條軸:也只放大元素與主動,所以也不會把敵人養大。
+check('裝備圖鑑碰不到鋒刃/增殖', (() => {
+  let skills: RunSkillState[] = [];
+  for (let k = 0; k < 40; k++) {
+    const offers = runSkillOffersAt(skills, 999, k, ACTIVE_SKILL_IDS.length);
+    if (offers.length === 0) break;
+    skills = learnRunSkill(skills, bestRunSkillChoice(skills, offers));
+    const a = runSkillEffects(skills, undefined, 0, 1);
+    const b = runSkillEffects(skills, undefined, 0, 1 + COLLECTION_FLAVOUR_BONUS);
+    if (a.attackMultiplier !== b.attackMultiplier || a.heroMultiplier !== b.heroMultiplier) return false;
+  }
+  return true;
+})());
+check('裝備圖鑑會放大元素(對玩家是真的變強)', (() => {
+  const kit: RunSkillState[] = [{ id: 'fire', level: 5 }];
+  return runSkillEffects(kit, undefined, 0, 1 + COLLECTION_FLAVOUR_BONUS).burnKills
+    > runSkillEffects(kit, undefined, 0, 1).burnKills;
 })());
 // 反過來:對真人是真的變強(元素的效果被放大)。
 check('技能書讓元素明顯更強(對玩家是真的變強)', (() => {

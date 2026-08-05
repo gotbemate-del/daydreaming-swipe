@@ -175,9 +175,11 @@ const BOOK_POWER_PER_LEVEL = 0.15;
  * 技能書把元素/主動的效果放大多少。**只乘在元素與主動上**——
  * 鋒刃/增殖 是唯二進理想路線的,碰了敵人就會跟著變強。
  */
-export function bookPowerScale(id: RunSkillId, bookLevel = 0): number {
+export function bookPowerScale(id: RunSkillId, bookLevel = 0, collectionScale = 1): number {
+  // 鋒刃/增殖 一律 1:它們是唯二進理想路線的,碰了敵人就會跟著變強。
   if (!isElement(id) && !isActiveSkill(id)) return 1;
-  return 1 + BOOK_POWER_PER_LEVEL * Math.min(MAX_SKILL_BOOK_LEVEL, Math.max(0, Math.floor(bookLevel)));
+  const book = 1 + BOOK_POWER_PER_LEVEL * Math.min(MAX_SKILL_BOOK_LEVEL, Math.max(0, Math.floor(bookLevel)));
+  return book * Math.max(1, collectionScale);
 }
 
 /**
@@ -432,8 +434,13 @@ export interface ActiveTrigger {
  * 不給 waveElement 的地方(理想路線、貪心比較、上限驗證)拿到的就是沒有相剋的基準值,
  * 這正是我們要的:敵人曲線不能跟著相剋跑,不然它就變成「大家都有的東西」而不是選擇。
  */
+/**
+ * @param bookLevel 技能書等級(生存模式掉的)
+ * @param collectionScale 裝備圖鑑給的放大倍率(1 = 沒有)。跟技能書同一條軸——
+ *   兩者都只乘在元素與主動上,所以都不進理想路線(見 game/collection.ts 的說明)。
+ */
 export function runSkillEffects(
-  skills: RunSkillState[], waveElement?: RunSkillId, bookLevel = 0,
+  skills: RunSkillState[], waveElement?: RunSkillId, bookLevel = 0, collectionScale = 1,
 ): RunSkillEffects {
   let attack = 0;
   let heroes = 0;
@@ -454,7 +461,7 @@ export function runSkillEffects(
     // 八元素:每一款的規則都不一樣,而且全部只在「失誤了」才生效。
     // mx 是這一個元素對上這一波屬性的倍率(剋中放大、被剋削弱),逐元素各算各的。
     // 相剋(逐元素)乘上技能書的放大。兩者都只碰元素/主動,所以都不進理想路線。
-    const mx = elementMatchup(s.id, waveElement) * bookPowerScale(s.id, bookLevel);
+    const mx = elementMatchup(s.id, waveElement) * bookPowerScale(s.id, bookLevel, collectionScale);
     if (s.id === 'fire') burnKills += PER_LEVEL.fireKills * level * mx;
     if (s.id === 'metal') pierceRatio += PER_LEVEL.metalRatio * level * mx;
     if (s.id === 'thunder') chainRatio += PER_LEVEL.thunderRatio * level * mx;
@@ -467,7 +474,7 @@ export function runSkillEffects(
     if (s.id === 'dark') leech += PER_LEVEL.darkLeech * level * mx;
     if (level <= 0) continue;
     // 主動技能吃技能書的放大,但**不吃相剋**(相剋只放大元素,見 elementMatchup)。
-    const bk = bookPowerScale(s.id, bookLevel);
+    const bk = bookPowerScale(s.id, bookLevel, collectionScale);
     if (s.id === 'strike') {
       actives.push({ id: s.id, name: '爆裂', cooldown: strikeCooldownWaves(level), kills: PER_LEVEL.strikeKills * level * bk });
     }

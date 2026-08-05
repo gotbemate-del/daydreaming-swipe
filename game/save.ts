@@ -21,12 +21,13 @@
 import { LEVELS_PER_CHAPTER, TOTAL_CHAPTERS } from './laneRun';
 import { MAX_SKILL_LEVEL, MAX_SKILL_SLOTS, SKILLS, type SkillId, type SkillState } from './laneSkills';
 import { MAX_SKILL_BOOK_LEVEL } from './laneRunSkills';
+import { decodeCollection, encodeCollection } from './collection';
 
 /**
  * 存檔格式版本。**改動任何欄位的意義就要 +1,並在 MIGRATIONS 補一條。**
  * 只是新增一個「有預設值的欄位」不必升版:readSave 會幫沒有的欄位補預設值。
  */
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 3;
 
 /** localStorage / AsyncStorage 的 key。改這個等於讓所有人的存檔消失,不要改。 */
 export const SAVE_KEY = 'daydreaming-swipe/save';
@@ -72,6 +73,11 @@ export interface SaveData {
   books: number;
   /** 生存模式的最佳紀錄:連續過了幾關。純紀錄,不影響數值。 */
   bestSurvival: number;
+  /**
+   * 裝備圖鑑:5668 個 bit 壓成 base64(見 game/collection.ts)。
+   * 存 id 陣列的話滿收會是幾萬個字,bitset 壓完約 950 字。
+   */
+  collected: string;
 }
 
 export const DEFAULT_SAVE: SaveData = {
@@ -82,6 +88,7 @@ export const DEFAULT_SAVE: SaveData = {
   coins: 0,
   books: 0,
   bestSurvival: 0,
+  collected: '',
 };
 
 /** 全新的一份存檔。回傳新物件,呼叫端改它不會污染 DEFAULT_SAVE。 */
@@ -142,6 +149,8 @@ const MIGRATIONS: Record<number, (raw: Record<string, unknown>) => Record<string
   // 所以這一步其實只要改版號——但**還是要留這一條**,不然「v1 存檔」會走到
   // 「沒有對應遷移就直接跳版」那條路徑,以後真的需要轉換欄位時很容易漏掉。
   1: (raw) => ({ ...raw, version: 2, books: raw.books ?? 0, bestSurvival: raw.bestSurvival ?? 0 }),
+  // v2 → v3:裝備圖鑑上線。舊存檔沒收過任何東西,所以是空字串。
+  2: (raw) => ({ ...raw, version: 3, collected: raw.collected ?? '' }),
 };
 
 /**
@@ -195,6 +204,8 @@ export function readSave(text: string | null | undefined): { save: SaveData; mig
       coins: readInt(raw.coins, 0, 0, Number.MAX_SAFE_INTEGER),
       books: readInt(raw.books, 0, 0, MAX_SKILL_BOOK_LEVEL),
       bestSurvival: readInt(raw.bestSurvival, 0, 0, TOTAL_STAGES),
+      // 圖鑑走 decode → encode 一圈:壞掉的字串會變成空圖鑑,超出總數的 bit 也會被清掉。
+      collected: encodeCollection(decodeCollection(raw.collected)),
     },
     migrated,
   };

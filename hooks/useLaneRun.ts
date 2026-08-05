@@ -226,7 +226,9 @@ interface WaveRuntime {
  *   `createRun` 完全不知道它——這正是它不會把敵人養大的原因(見 laneRunSkills 的
  *   MAX_SKILL_BOOK_LEVEL)。傳進理想路線就會變成「數字在動、體感沒動」。
  */
-export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START, bookLevel = 0): LaneRunView {
+export function useLaneRun(
+  stage: number, start: RunStart = DEFAULT_RUN_START, bookLevel = 0, collectionScale = 1,
+): LaneRunView {
   // 這一場的 seed。閘門與技能選項都由它決定,敵人戰力也是照同一顆 seed 的最佳路線算的,
   // 所以 seed 必須留著——技能選項另外抽的話,玩家看到的選單就不是 createRun 假設的那一組。
   const [seed] = useState(() => Math.floor(Math.random() * 1e9));
@@ -639,7 +641,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START, b
           // 相剋是**逐元素**的:結算的時候就把這一波的屬性交給 runSkillEffects,
           // 剋中的那個元素放大、被剋的那個削弱,其他元素與主動技能一律不動。
           const waveElement = due.nodes[0].enemy?.element;
-          const fx = runSkillEffects(runSkills, waveElement, bookLevel);
+          const fx = runSkillEffects(runSkills, waveElement, bookLevel, collectionScale);
           if (runSkills.some((s) => s.level > 0 && ELEMENT_COUNTERS[s.id] === waveElement)) fired.push('剋');
           // 八元素:常駐,不用冷卻(除了土)。全部只在「已經失誤了」的路徑上生效,
           // 所以完美玩家一個都碰不到——它們因此不進理想路線(見 laneRun 的 WaveBoost)。

@@ -8,6 +8,10 @@ import {
   DEFAULT_SAVE, newSave, readSave, writeSave, SAVE_VERSION, TOTAL_STAGES, type SaveData,
 } from '../game/save';
 import { MAX_SKILL_BOOK_LEVEL } from '../game/laneRunSkills';
+import {
+  addItem, collectedCount, decodeCollection, emptyCollection, encodeCollection, hasItem,
+  rollDrops, TOTAL_ITEMS,
+} from '../game/collection';
 import { MAX_SKILL_LEVEL, MAX_SKILL_SLOTS } from '../game/laneSkills';
 
 let fail = 0;
@@ -34,6 +38,7 @@ const full: SaveData = {
   coins: 98765,
   books: 3,
   bestSurvival: 42,
+  collected: encodeCollection((() => { const b = emptyCollection(); addItem(b, 0); addItem(b, 5000); return b; })()),
 };
 const round = readSave(writeSave(full)).save;
 check('存進去再讀回來一模一樣', JSON.stringify(round) === JSON.stringify(full), JSON.stringify(round));
@@ -118,10 +123,50 @@ survives('技能書被改超過上限 -> 夾回上限',
 survives('技能書是負數 -> 夾回 0',
   JSON.stringify({ version: 2, books: -3 }), (s) => s.books === 0);
 
+// --- 圖鑑 ---
+// 圖鑑是 5668 個 bit 壓成 base64,而它跟其他欄位一樣是玩家改得動的字串。
+check('圖鑑存進去再讀回來一模一樣', (() => {
+  const bits = emptyCollection();
+  for (const i of [0, 1, 63, 64, 100, 2999, TOTAL_ITEMS - 1]) addItem(bits, i);
+  const back = decodeCollection(encodeCollection(bits));
+  return [0, 1, 63, 64, 100, 2999, TOTAL_ITEMS - 1].every((i) => hasItem(back, i))
+    && collectedCount(back) === 7;
+})());
+survives('圖鑑欄位壞掉 -> 空圖鑑,其他欄位照留',
+  JSON.stringify({ version: 3, stage: 300, collected: { nope: true } }),
+  (s) => s.stage === 300 && collectedCount(decodeCollection(s.collected)) === 0);
+survives('圖鑑塞了亂碼 -> 不會丟例外',
+  JSON.stringify({ version: 3, collected: '!!!!####$$$$' }),
+  (s) => collectedCount(decodeCollection(s.collected)) >= 0);
+check('圖鑑被灌滿也不會超過總件數', (() => {
+  // 全 1 的 base64:超出 TOTAL_ITEMS 的那幾個 bit 必須被清掉,不然收集率會 > 100%。
+  const all = '/'.repeat(Math.ceil(Math.ceil(TOTAL_ITEMS / 8) / 3) * 4);
+  return collectedCount(decodeCollection(all)) <= TOTAL_ITEMS;
+})());
+check('掉落優先給還沒收到的(不然 5668 件會一直掉重複的)', (() => {
+  const bits = emptyCollection();
+  let x = 1;
+  const rng = () => { x = (x * 1103515245 + 12345) & 0x7fffffff; return x / 0x7fffffff; };
+  for (let run = 0; run < 200; run++) {
+    const got = rollDrops(bits, 3, rng);
+    if (got.some((i) => hasItem(bits, i))) return false;
+    if (new Set(got).size !== got.length) return false;
+    for (const i of got) addItem(bits, i);
+  }
+  return collectedCount(bits) === 600;
+})());
+
 // --- 版本與遷移 ---
 // CLAUDE.md:改動存檔結構要附遷移邏輯,並模擬一次「舊存檔載入」。
 // v0 = 這款正式格式之前的那些(沒有 version 欄位)。欄位名稱對得上的要留著。
 // v1 存檔:上一版正式格式,沒有 books / bestSurvival(生存模式那時還不存在)。
+const v2 = JSON.stringify({ version: 2, stage: 120, coins: 9, job: null, skills: [], books: 2, bestSurvival: 7 });
+const fromV2 = readSave(v2);
+check('v2 存檔升到 v3 之後進度全留著,圖鑑是空的',
+  fromV2.save.stage === 120 && fromV2.save.books === 2 && fromV2.save.bestSurvival === 7
+  && collectedCount(decodeCollection(fromV2.save.collected)) === 0
+  && fromV2.save.version === SAVE_VERSION);
+
 const v1 = JSON.stringify({ version: 1, stage: 88, coins: 500, job: null, skills: [{ id: 'craft', level: 2 }] });
 const fromV1 = readSave(v1);
 check('v1 存檔升到 v2 之後進度全留著,新欄位補 0',

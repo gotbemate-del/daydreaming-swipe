@@ -10,6 +10,12 @@ import { isPromotionStage, runStartFor, tierAfter, type JobTier, type LaneJob } 
 import { applySkills, learnSkill, skillOffers, type SkillState } from '../game/laneSkills';
 import { useSave } from '../hooks/useSave';
 import { booksForSurvival, TOTAL_STAGES, type SavedJob } from '../game/save';
+import {
+  addItem, bookDropChance, collectionFlavourScale, decodeCollection, dropCountForRun,
+  encodeCollection, rollDrops,
+} from '../game/collection';
+import { MAX_SKILL_BOOK_LEVEL } from '../game/laneRunSkills';
+import { Codex } from '../components/Codex';
 import { SurvivalResult } from '../components/SurvivalResult';
 
 // 一輪的流程:
@@ -30,7 +36,7 @@ import { SurvivalResult } from '../components/SurvivalResult';
 // 一場跑圖 = 一個 LaneRunner 實例,每次開始都換 key 重新掛載。跑圖裡有一整套跑到一半的
 // 狀態(波次、飛行中的武器、已結算的排、計時起點),在原地 reset 很容易漏掉其中一項,
 // 症狀是「上一場的怪出現在這一場」——重新掛載沒有這個問題。
-type Screen = 'menu' | 'run' | 'survivalOver';
+type Screen = 'menu' | 'run' | 'survivalOver' | 'codex';
 
 /**
  * 生存模式:**連續闖關,死了就結束。**
@@ -89,8 +95,33 @@ export default function HomeScreen() {
   /** 生存模式:一輪的累計金幣(死了才一次結算給玩家看)。 */
   const [survivalCoins, setSurvivalCoins] = useState(0);
 
+  /** 剛撿到的那幾件(結算完顯示一下,不然玩家不會發現圖鑑有在長)。 */
+  const [justFound, setJustFound] = useState<number[]>([]);
+
+  /**
+   * 一場跑完的掉落:裝備進圖鑑,偶爾掉技能書。
+   * **陣亡也掉**(只是少)——完全不掉的話,卡關的人會完全沒有進展,
+   * 而圖鑑正是拿來讓卡關的人有事做的。
+   */
+  function rollRunDrops(cleared: boolean) {
+    update((prev) => {
+      const bits = decodeCollection(prev.collected);
+      const rng = () => Math.random();
+      const found = rollDrops(bits, dropCountForRun(cleared), rng);
+      for (const index of found) addItem(bits, index);
+      setJustFound(found);
+      const gotBook = cleared && Math.random() < bookDropChance(bits);
+      return {
+        ...prev,
+        collected: encodeCollection(bits),
+        books: gotBook ? Math.min(MAX_SKILL_BOOK_LEVEL, prev.books + 1) : prev.books,
+      };
+    });
+  }
+
   function onRunFinish(result: 'cleared' | 'dead', earned: number) {
     update((prev) => ({ ...prev, coins: prev.coins + earned }));
+    rollRunDrops(result === 'cleared');
     if (mode === 'survival') {
       setSurvivalCoins((c) => c + earned);
       if (result === 'dead') {
@@ -126,6 +157,15 @@ export default function HomeScreen() {
     return (
       <View style={styles.screen}>
         <Text style={styles.loading}>載入存檔…</Text>
+      </View>
+    );
+  }
+
+  if (screen === 'codex') {
+    return (
+      <View style={styles.screen}>
+        <AdSlot />
+        <Codex collected={save.collected} books={save.books} onDone={() => setScreen('menu')} />
       </View>
     );
   }
@@ -197,6 +237,8 @@ export default function HomeScreen() {
             setRunKey((k) => k + 1);
             setScreen('run');
           }}
+          justFound={justFound}
+          onCodex={() => setScreen('codex')}
           onSurvival={() => {
             // 從目前進度的關卡開始:生存模式不是另一條難度曲線,是同一條的「不能失手」版本。
             setMode('survival');
@@ -221,6 +263,7 @@ export default function HomeScreen() {
         job={job}
         start={applySkills(runStartFor(job), skills)}
         bookLevel={save.books}
+        collectionScale={collectionFlavourScale(decodeCollection(save.collected))}
         survivalStreak={mode === 'survival' ? survivalStreak : null}
         onFinish={onRunFinish}
       />

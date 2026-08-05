@@ -164,12 +164,16 @@ interface Props {
   bookLevel?: number;
   /** 生存模式:已經連過幾關(不是生存模式就是 null)。畫面拿它顯示連勝數。 */
   survivalStreak?: number | null;
+  /** 裝備圖鑑給的放大倍率(只放大元素與主動)。 */
+  collectionScale?: number;
   /** 這一場結束(通關或陣亡)。coins 是這一場賺到的,由 app 層累加起來帶回主介面。 */
   onFinish: (result: 'cleared' | 'dead', coins: number) => void;
 }
 
-export function LaneRunner({ stage, job, start, onFinish, bookLevel = 0, survivalStreak = null }: Props) {
-  const run = useLaneRun(stage, start, bookLevel);
+export function LaneRunner({
+  stage, job, start, onFinish, bookLevel = 0, survivalStreak = null, collectionScale = 1,
+}: Props) {
+  const run = useLaneRun(stage, start, bookLevel, collectionScale);
   const {
     state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers,
     lastShotAt, lastShotId, feedback, steer, dragTo,

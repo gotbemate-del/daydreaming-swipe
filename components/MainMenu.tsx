@@ -41,11 +41,16 @@ interface Props {
   books: number;
   /** 生存模式最好撐過幾關。 */
   bestSurvival: number;
+  /** 這一場剛撿到幾件裝備。主介面閃一下,不然玩家不會發現圖鑑有在長。 */
+  justFound: number[];
   onStart: () => void;
   onSurvival: () => void;
+  onCodex: () => void;
 }
 
-export function MainMenu({ stage, job, coins, lastResult, books, bestSurvival, onStart, onSurvival }: Props) {
+export function MainMenu({
+  stage, job, coins, lastResult, books, bestSurvival, justFound, onStart, onSurvival, onCodex,
+}: Props) {
   const [heroStep, setHeroStep] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
   // 主角永遠是史萊姆,轉職不換造型。職業立繪只留在轉職選擇畫面(那裡是在介紹職業)。
@@ -119,6 +124,9 @@ export function MainMenu({ stage, job, coins, lastResult, books, bestSurvival, o
       </View>
 
       <View style={styles.resultRow}>
+        {justFound.length > 0 && (
+          <Text style={styles.found}>撿到 {justFound.length} 件裝備</Text>
+        )}
         {lastResult !== null && (
           <Text style={lastResult === 'cleared' ? styles.resultWin : styles.resultLose}>
             {lastResult === 'cleared' ? `${stageLabel(stage - 1)} 通關` : `${stageLabel(stage)} 失敗,再挑戰一次`}
@@ -150,13 +158,18 @@ export function MainMenu({ stage, job, coins, lastResult, books, bestSurvival, o
       >
         {TAB_ICONS.map((tab) => {
           // 「副本」是第一個開放的分頁:生存模式。其餘九個維持鎖著(見檔頭的說明)。
-          const open = tab.id === 'dungeon';
+          // 開放的兩個:副本(生存模式)與裝備(圖鑑)。其餘八個維持鎖著。
+          const open = tab.id === 'dungeon' || tab.id === 'equipment';
           return (
             <Pressable
               key={tab.id}
               style={styles.tab}
-              accessibilityLabel={open ? `${tab.label}(生存模式)` : `${tab.label}(未開放)`}
-              onPress={() => (open ? onSurvival() : setNotice(`${tab.label}尚未開放`))}
+              accessibilityLabel={open ? tab.label : `${tab.label}(未開放)`}
+              onPress={() => {
+                if (tab.id === 'dungeon') onSurvival();
+                else if (tab.id === 'equipment') onCodex();
+                else setNotice(`${tab.label}尚未開放`);
+              }}
             >
               <View style={styles.tabIconBox}>
                 <Image source={tab.art} resizeMode="contain" style={styles.tabIcon} />
@@ -254,6 +267,7 @@ const styles = StyleSheet.create({
   tabIcon: { width: TAB_SIZE, height: TAB_SIZE },
   // 鎖頭壓在圖示右下角。不用 opacity 壓掉,鎖頭本身要看得清楚才讀得出「這是鎖住的」。
   tabLock: { position: 'absolute', right: -2, bottom: -2, width: 15, height: 15, opacity: 1 },
+  found: { color: '#5ec26a', fontSize: 12 },
   tabLabelOpen: { color: '#e0a95c' },
   tabLabel: { color: '#8a8a95', fontSize: 10 },
 });
