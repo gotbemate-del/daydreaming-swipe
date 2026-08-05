@@ -33,7 +33,7 @@ import {
   type WaveSpecies,
 } from '../game/laneRun';
 import {
-  applyRunSkillPick, learnRunSkill, runSkillOffersAt, runSkillPicksForWave,
+  applyRunSkillPick, learnRunSkill, runSkillEffects, runSkillOffersAt, runSkillPicksForWave,
   type RunSkillState,
 } from '../game/laneRunSkills';
 
@@ -137,6 +137,8 @@ export interface LaneRunView {
   speed: number;
   /** 正在加速趕路(前方沒東西)。畫面拿它做視覺回饋。 */
   dashing: boolean;
+  /** 主動技能剛觸發(時間戳 + 清掉幾隻)。畫面拿它播特效。 */
+  lastStrike: { at: number; kills: number } | null;
   /** 手指拖曳:直接把角色放到這個位置 */
   dragTo: (offset: number) => void;
   /** 方向鍵:滑順移到隔壁跑道中央 */
@@ -211,6 +213,12 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
   // 這是第幾次開選單。選項綁「seed + 第幾次」,重跑同一顆 seed 會開出同一串——
   // createRun 算敵人的時候重播的就是這一串(見 laneRunSkills 的 runSkillOffersAt)。
   const skillOrdinalRef = useRef(0);
+  /**
+   * 主動技能「爆裂」:距離上次觸發過了幾波。冷卻**用波數不用秒**——
+   * 綁秒的話跑速一變技能強度就跟著變(第 1 關每 4.5 排、第 40 關每 11 排)。
+   */
+  const wavesSinceStrikeRef = useRef(99);
+  const [lastStrike, setLastStrike] = useState<{ at: number; kills: number } | null>(null);
 
   const paused = skillOffers.length > 0;
 
@@ -473,7 +481,18 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         // 踩到哪一格是「通過這一排的當下」才決定的,所以直接讀 ref 換算,不用 prev.lane。
         const landed = { ...prev, lane: laneFromOffset(offsetRef.current) };
         // 帶著連續位置去結算:站對邊還不夠,得真的踩在閘門上(見 laneRun 的 hitsGate)。
-        const r = resolveRow(landed, due, offsetRef.current);
+        // 敵人排:先看爆裂的冷卻好了沒,好了就把它的固定擊殺數帶進結算。
+        let bonusKills = 0;
+        if (due.nodes[0]?.kind === 'enemy') {
+          const fx = runSkillEffects(runSkills);
+          wavesSinceStrikeRef.current += 1;
+          if (fx.strikeKills > 0 && wavesSinceStrikeRef.current >= fx.strikeCooldown) {
+            bonusKills = fx.strikeKills;
+            wavesSinceStrikeRef.current = 0;
+            setLastStrike({ at: Date.now(), kills: bonusKills });
+          }
+        }
+        const r = resolveRow(landed, due, offsetRef.current, bonusKills);
         feedbackKeyRef.current += 1;
         setFeedback({
           key: feedbackKeyRef.current,
@@ -542,6 +561,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
     feedback,
     speed,
     dashing,
+    lastStrike,
     dragTo,
     steer,
     stage,

@@ -32,7 +32,7 @@
 // 刻意不從 laneRun import 任何東西:laneRun 會 import 這個檔(理想路線要把場內技能算進去),
 // 反向再 import 就是循環相依——實測會炸在「Cannot access 'GEAR_STEP' before initialization」,
 // 而且是在模組載入時才炸,型別檢查完全看不出來。
-export type RunSkillId = 'edge' | 'swarm' | 'bulwark' | 'focus';
+export type RunSkillId = 'edge' | 'swarm' | 'bulwark' | 'focus' | 'strike';
 
 export interface RunSkillSpec {
   id: RunSkillId;
@@ -47,6 +47,13 @@ export interface RunSkillState {
 
 /** 場內技能最高幾級。之後接技能書的時候,這個值會變成「由技能書決定的上限」。 */
 export const MAX_RUN_SKILL_LEVEL = 5;
+/**
+ * 一場最多帶幾個技能。
+ *
+ * 10 格 x 一般小關 10 次選擇 = **剛好湊得滿**,而長關的 20 次讓玩家「湊滿再練深」。
+ * 核心決策因此是**廣度 vs 深度**:每次都拿新的 = 10 個各 1 級,拿升級 = 例如 5 個各 2 級。
+ */
+export const MAX_RUN_SKILL_SLOTS = 10;
 /** 一次給幾個選項。 */
 export const RUN_SKILL_OFFERS = 3;
 
@@ -65,13 +72,31 @@ const PER_LEVEL = {
   bulwarkTrade: 0.3,
   /** 專注:暴擊率(純演出,不影響擊殺數,見 laneRun 的 isCritHit) */
   focusCrit: 0.06,
+  /** 爆裂(主動):每次觸發直接清掉幾隻 */
+  strikeKills: 2,
 };
+
+/**
+ * 主動技能的冷卻,單位是**波**不是秒。
+ *
+ * 綁秒會壞:跑速隨關卡從 45 爬到 111,「每 10 秒一次」在第 1 關是每 4.5 排、
+ * 第 40 關是每 11 排——**越後面的關卡技能越弱**,而那不是設計決定的,
+ * 純粹是兩個時鐘沒對齊(CLAUDE.md 的「兩條各走各的曲線」在新系統上的翻版)。
+ */
+export function strikeCooldownWaves(level: number): number {
+  return Math.max(1, 4 - Math.floor(Math.max(0, level) / 2));
+}
 
 export const RUN_SKILLS: RunSkillSpec[] = [
   { id: 'edge', name: '鋒刃', describe: (l) => `每人攻擊力 +${Math.round(PER_LEVEL.edgeAttack * l * 100)}%` },
   { id: 'swarm', name: '增殖', describe: (l) => `勇者數量 +${Math.round(PER_LEVEL.swarmHeroes * l * 100)}%` },
   { id: 'bulwark', name: '壁壘', describe: (l) => `兌換率 +${Math.round(PER_LEVEL.bulwarkTrade * l * 100)}%` },
   { id: 'focus', name: '專注', describe: (l) => `暴擊率 +${Math.round(PER_LEVEL.focusCrit * l * 100)}%` },
+  {
+    id: 'strike',
+    name: '爆裂',
+    describe: (l) => `每 ${strikeCooldownWaves(l)} 波清掉 ${PER_LEVEL.strikeKills * l} 隻`,
+  },
 ];
 
 export function runSkillSpec(id: RunSkillId): RunSkillSpec {
@@ -107,7 +132,10 @@ export function totalRunSkillPicks(totalWaves: number): number {
  * 用傳進來的 rng,驗證腳本才能重現同一組選項。
  */
 export function runSkillOffers(skills: RunSkillState[], rng: () => number = Math.random): RunSkillState[] {
+  // 帶滿 10 格之後只能升級手上的——不然「廣度 vs 深度」那個決策不存在(永遠可以再拿新的)。
+  const full = skills.length >= MAX_RUN_SKILL_SLOTS;
   const pool = RUN_SKILLS
+    .filter((spec) => !full || skills.some((s) => s.id === spec.id))
     .map((spec) => ({ id: spec.id, level: runSkillLevel(skills, spec.id) + 1 }))
     .filter((o) => o.level <= MAX_RUN_SKILL_LEVEL);
   for (let i = pool.length - 1; i > 0; i--) {
@@ -171,6 +199,17 @@ export interface RunSkillEffects {
   tradeMultiplier: number;
   /** 額外暴擊率(純演出) */
   bonusCrit: number;
+  /**
+   * 主動技能「爆裂」每次觸發直接清掉幾隻。0 = 沒點。
+   *
+   * **刻意是固定值,不是百分比。** 百分比會被敵人曲線完全吸收(敵人是照最佳路線算的,
+   * 最佳路線包含技能),畫面很炫但難度一點沒動;固定值對已經滾出 80 人的最佳玩家是零頭,
+   * 對剩 12 個人的你是活下來——**越落後越有用**,而且因此不進理想路線(理想玩家全清,
+   * 額外擊殺對他是浪費),不會讓敵人為了一個沒人用得到的東西變強。
+   */
+  strikeKills: number;
+  /** 爆裂的冷卻(幾波一次)。沒點就是 Infinity。 */
+  strikeCooldown: number;
 }
 
 /**
@@ -182,18 +221,23 @@ export function runSkillEffects(skills: RunSkillState[]): RunSkillEffects {
   let heroes = 0;
   let trade = 0;
   let crit = 0;
+  let strikeKills = 0;
+  let strikeLevel = 0;
   for (const s of skills) {
     const level = Math.min(MAX_RUN_SKILL_LEVEL, Math.max(0, s.level));
     if (s.id === 'edge') attack += PER_LEVEL.edgeAttack * level;
     if (s.id === 'swarm') heroes += PER_LEVEL.swarmHeroes * level;
     if (s.id === 'bulwark') trade += PER_LEVEL.bulwarkTrade * level;
     if (s.id === 'focus') crit += PER_LEVEL.focusCrit * level;
+    if (s.id === 'strike') { strikeKills += PER_LEVEL.strikeKills * level; strikeLevel = Math.max(strikeLevel, level); }
   }
   return {
     attackMultiplier: 1 + attack,
     heroMultiplier: 1 + heroes,
     tradeMultiplier: 1 + trade,
     bonusCrit: crit,
+    strikeKills,
+    strikeCooldown: strikeLevel > 0 ? strikeCooldownWaves(strikeLevel) : Infinity,
   };
 }
 

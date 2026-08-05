@@ -20,7 +20,10 @@ import {
   clearRate, pickAccurate, pickBest as simBest, pickRandom as simRandom, pickWorst as simWorst,
   simulateRun, type LanePicker,
 } from './simRun';
-import { runSkillPicksForWave, totalRunSkillPicks, MAX_RUN_SKILL_LEVEL, RUN_SKILLS } from '../game/laneRunSkills';
+import {
+  runSkillPicksForWave, totalRunSkillPicks, MAX_RUN_SKILL_LEVEL, RUN_SKILLS,
+  MAX_RUN_SKILL_SLOTS, runSkillEffects, strikeCooldownWaves, bestRunSkillChoice, runSkillOffersAt,
+} from '../game/laneRunSkills';
 
 let fail = 0;
 const check = (name: string, cond: boolean, extra = '') => {
@@ -207,10 +210,10 @@ check('這一排之前經過幾格閘門算得對',
 const exactMargins = [3, 11, 57, 99, 251, 808].flatMap((seed) =>
   simulateRun(seed, 10, simBest).margins.filter((m) => !m.boss).map((m) => m.margin));
 const want = 1 / enemyPowerRatioForStage(10);
-// 容許 5%:吸收讓每一波多一次整數進位(理想路線用理想隻數、玩家用實際擊殺數),
-// 十波累積下來的漂移比舊版大一點。結構保證還在——漂移不會隨排數發散,只是抖動變寬。
+// 理想路線與玩家在閘門用同一個取整之後,漂移收回 3% 以內,所以門檻維持 4%。
+// (一度放寬到 5%,那是在追症狀:真正的原因是理想路線用浮點、玩家用 Math.round。)
 check('最佳玩家的領先幅度每一排每一場都相同(結構保證,不是掃出來的)',
-  exactMargins.every((m) => Math.abs(m - want) / want < 0.05),
+  exactMargins.every((m) => Math.abs(m - want) / want < 0.04),
   `目標 ${want.toFixed(2)}x,實測 ${Math.min(...exactMargins).toFixed(2)}~${Math.max(...exactMargins).toFixed(2)}x`);
 
 // --- 敵人的量化呈現(每隻敵人都要指得到既有素材)---
@@ -406,6 +409,32 @@ function rate(stage: number, pick: LanePicker, trials = 300) {
 }
 // 上面那個 play 沒有場內技能,只留給「戰力不會被卡死」那種不看過關率的檢查。
 // 所有跟難度有關的數字一律走 simRun(它會照遊戲規則挑技能),不然玩家會比敵人假設的弱一截。
+
+// --- 主動技能「爆裂」:固定值 + 冷卻用波數 ---
+const strikeAt = (l: number) => runSkillEffects([{ id: 'strike' as const, level: l }]);
+check('爆裂是固定擊殺數,不是百分比(所以越落後越有用)',
+  [1, 3, 5].every((l) => strikeAt(l).strikeKills > 0)
+  && strikeAt(5).strikeKills === strikeAt(1).strikeKills * 5
+  && strikeAt(3).attackMultiplier === 1 && strikeAt(3).heroMultiplier === 1,
+  `1級 ${strikeAt(1).strikeKills} 隻 / 5級 ${strikeAt(5).strikeKills} 隻,完全不加戰力`);
+check('冷卻的單位是波不是秒(跑速變了強度才不會跟著變)',
+  [1, 2, 3, 4, 5].map((l) => strikeCooldownWaves(l)).every((c, i, a) => i === 0 || c <= a[i - 1])
+  && strikeCooldownWaves(5) >= 1,
+  [1, 3, 5].map((l) => `${l}級每 ${strikeCooldownWaves(l)} 波`).join(' / '));
+// 這條是它不會把敵人養大的保證:貪心只看戰力,所以理想路線永遠不會挑爆裂,
+// 敵人也就不會為了一個「理想玩家用不到的東西」變強(跟兌換率同一個道理)。
+check('理想路線永遠不會挑爆裂(所以它不進敵人曲線)',
+  bestRunSkillChoice([], [{ id: 'strike', level: 1 }, { id: 'edge', level: 1 }]).id === 'edge');
+check('額外擊殺不會超過整波隻數',
+  resolveEnemy({ ...initialRunState(1), heroes: 50, perHero: 1 },
+    { power: 1e9, reward: 0, species: [{ id: 'blob-1', name: '史' }], name: '史', units: 4 }, 99)
+    .state.heroes >= 50);
+// 10 格滿了之後只能升級手上的——不然「廣度 vs 深度」那個決策不存在。
+const fullBag = RUN_SKILLS.slice(0, MAX_RUN_SKILL_SLOTS).map((s) => ({ id: s.id, level: 1 }));
+check(`最多帶 ${MAX_RUN_SKILL_SLOTS} 格,滿了只能升級手上的`,
+  RUN_SKILLS.length <= MAX_RUN_SKILL_SLOTS
+  && runSkillOffersAt(fullBag, 1, 0).every((o) => fullBag.some((s) => s.id === o.id)),
+  `目前 ${RUN_SKILLS.length} 種技能`);
 
 console.log('\n過關率(列=關卡,欄=選法):');
 console.log('        最佳    隨機    最差');

@@ -1023,7 +1023,9 @@ export function createRun(seed: number, stage: number): RunRow[] {
     if (good.stat === 'heroes') {
       idealHeroes = good.op === 'mul' ? idealHeroes * good.value : idealHeroes + good.value;
     } else if (good.stat === 'gear') {
-      idealPerHero *= Math.pow(GEAR_STEP, good.value);
+      // **跟 applyGate 用同一個取整**:理想路線用浮點、玩家用 Math.round 的話,
+      // 二十個閘門累積下來領先幅度會漂到 ±6%,結構保證就只剩「大概」。
+      idealPerHero = Math.max(1, Math.round(idealPerHero * Math.pow(GEAR_STEP, good.value)));
     }
     rows.push({ index: i, distance: distances[i], nodes });
   }
@@ -1098,8 +1100,14 @@ export const MISS_MESSAGE = '沒碰到';
  *
  * **人數在這裡可以歸零**(閘門不行,見 applyGate):死亡發生在「最後一個人被換掉」那一刻。
  */
-export function resolveEnemy(state: RunState, enemy: EnemyEffect): RowResolution {
-  const kills = waveKillCount(totalAttack(state), enemy.power, enemy.units);
+export function resolveEnemy(state: RunState, enemy: EnemyEffect, bonusKills = 0): RowResolution {
+  // bonusKills = 主動技能這一波清掉的隻數(固定值,見 laneRunSkills 的 strikeKills)。
+  // 加在 kills 上而不是加在戰力上:固定值才有「越落後越有用」的性質,
+  // 而且理想玩家本來就全清,對他等於零——所以它不進理想路線,也就不會把敵人養大。
+  const kills = Math.min(
+    enemy.units,
+    waveKillCount(totalAttack(state), enemy.power, enemy.units) + Math.max(0, bonusKills),
+  );
   const leaked = Math.max(0, enemy.units - kills);
   const next = { ...state };
   // 打倒的怪有一部分加入隊伍。放在「漏 0」那條路徑上而不是照 kills 給:
@@ -1137,7 +1145,7 @@ export function resolveEnemy(state: RunState, enemy: EnemyEffect): RowResolution
  * 走過一排:只有玩家所在跑道的節點會生效,而且閘門還要真的踩到(見 hitsGate)。
  * offset 不給的話當作站在該跑道正中央——驗證腳本用跑道模擬時就是這個意思。
  */
-export function resolveRow(state: RunState, row: RunRow, offset?: number): RowResolution {
+export function resolveRow(state: RunState, row: RunRow, offset?: number, bonusKills = 0): RowResolution {
   const at = offset ?? laneCenterOffset(state.lane);
   const node = row.nodes.find((n) => n.lane === state.lane);
   const advanced = { ...state, rowIndex: row.index + 1 };
@@ -1147,7 +1155,7 @@ export function resolveRow(state: RunState, row: RunRow, offset?: number): RowRe
   }
 
   if (node.kind === 'enemy' && node.enemy) {
-    const r = resolveEnemy(advanced, node.enemy);
+    const r = resolveEnemy(advanced, node.enemy, bonusKills);
     return { ...r, state: { ...r.state, rowIndex: row.index + 1 } };
   }
 

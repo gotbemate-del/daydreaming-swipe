@@ -8,6 +8,7 @@ import {
   gateSpan,
   GATE_WIDTH,
   LANE_COUNT,
+  MAX_GEAR,
   MISS_MESSAGE,
   runLength,
   stageLabel,
@@ -73,6 +74,8 @@ const BOSS_SIZE = 132;
 /** 精英畫多大。介於小怪與魔王之間,一眼看出「這隻不一樣」但不會蓋掉兩條跑道。 */
 const ELITE_SIZE = 84;
 const PROJECTILE_SIZE = 30;
+/** 主動技能特效播多久。要看得到,但不能久到蓋住下一波。 */
+const STRIKE_FX_MS = 700;
 
 
 /**
@@ -135,7 +138,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
   const {
     state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers,
     lastShotAt, lastShotId, feedback, steer, dragTo,
-    runSkills, skillOffers, pendingPicks, chooseRunSkill,
+    runSkills, skillOffers, pendingPicks, chooseRunSkill, lastStrike,
   } = run;
   const attack = totalAttack(state);
 
@@ -486,6 +489,24 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
           </Text>
         )}
 
+        {/* 主動技能「爆裂」的特效。素材用既有的武器圖放大(圖示鐵則:一律用 assets/sprites 的 PNG),
+            畫在怪物之上、HUD 之下,而且**同一時間只會有一個**——冷卻以波計,不可能重疊。 */}
+        {ready && lastStrike && Date.now() - lastStrike.at < STRIKE_FX_MS && (
+          <View
+            pointerEvents="none"
+            // 往上拉到勇者與結算回饋之上:壓在判定線附近的話,劍會蓋住勇者,
+            // 而「爆裂 -N 隻」會跟同一時間跳出來的「擊倒… +N 人」疊在一起,兩行都看不清楚。
+            style={[styles.floating, { left: 0, right: 0, top: Math.max(4, headY - 250), alignItems: 'center' }]}
+          >
+            <Text style={styles.strikeText}>爆裂 -{lastStrike.kills} 隻</Text>
+            <Image
+              source={weaponArt(job?.archetype ?? null, MAX_GEAR)}
+              resizeMode="contain"
+              style={[styles.pixelArt, { width: 128, height: 128, opacity: 0.92 }]}
+            />
+          </View>
+        )}
+
         {/* 場內技能:打完一波就跳出來,跑圖同時暫停(見 useLaneRun 的 paused)。
             蓋在跑道上而不是換一個畫面:玩家還看得到自己剛打完的那一波與現在的戰力,
             「這一場我缺什麼」才判斷得出來——切到獨立畫面就只剩三個抽象的名詞。 */}
@@ -740,4 +761,8 @@ const styles = StyleSheet.create({
   },
   skillName: { color: '#f2f2f2', fontSize: 14, fontWeight: '700' },
   skillDesc: { color: '#8a8a95', fontSize: 12 },
+  strikeText: {
+    color: '#e0a95c', fontSize: 20, fontWeight: '700',
+    textShadowColor: '#16161c', textShadowRadius: 4, textShadowOffset: { width: 0, height: 1 },
+  },
 });
