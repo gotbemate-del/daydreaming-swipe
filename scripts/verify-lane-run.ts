@@ -14,6 +14,7 @@ import {
   applyGate, gateLabel, DOUBLE_GATES_PER_RUN, GEAR_STEP, doubleGatesForStage, LONG_LEVEL_RATIO_SCALE,
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
   TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane, MIN_WAVE_SIZE,
+  HERO_WAVE_ELEMENT_SALT, waveElementsForStage, throwerIndices, hazardsFor, HAZARD_WIDTH,
   type Lane, type RunState, type WaveBoost,
 } from '../game/laneRun';
 import {
@@ -23,8 +24,8 @@ import {
 import {
   runSkillPicksForWave, totalRunSkillPicks, MAX_RUN_SKILL_LEVEL, RUN_SKILLS,
   MAX_RUN_SKILL_SLOTS, runSkillEffects, strikeCooldownWaves, bestRunSkillChoice, runSkillOffersAt,
-  ACTIVE_SKILL_IDS, ELEMENTS, runSkillSpec, ELEMENT_COUNTERS, COUNTER_BONUS,
-  counterMultiplier, elementForRow,
+  ACTIVE_SKILL_IDS, ELEMENTS, runSkillSpec, ELEMENT_COUNTERS, COUNTER_BONUS, COUNTERED_PENALTY,
+  elementMatchup, elementForRow,
 } from '../game/laneRunSkills';
 
 let fail = 0;
@@ -516,9 +517,37 @@ check('相剋是封閉的環,而且沒有元素剋自己',
   !cycleLengths.has(-1) && !cycleLengths.has(1)
   && [...cycleLengths].sort((a, b) => a - b).join(',') === '3,5',
   `環長 ${[...cycleLengths].sort((a, b) => a - b).join(' 與 ')}(五行 + 三才)`);
-check('帶對元素才有相剋倍率', counterMultiplier([{ id: 'metal', level: 1 }], 'wood') === COUNTER_BONUS
-  && counterMultiplier([{ id: 'metal', level: 1 }], 'fire') === 1
-  && counterMultiplier([], 'wood') === 1);
+// 相剋是**逐元素**的:剋中那一個放大、被剋那一個削弱,其他元素與主動技能一律不動。
+check('相剋倍率:剋中 x2.5、被剋 x2/3、無關 x1',
+  elementMatchup('metal', 'wood') === COUNTER_BONUS
+  && elementMatchup('metal', 'fire') === 1 - COUNTERED_PENALTY
+  && elementMatchup('metal', 'light') === 1
+  && elementMatchup('metal', undefined) === 1);
+check('非元素技能不吃相剋(鋒刃/增殖/主動技能)',
+  (['edge', 'swarm', ...ACTIVE_SKILL_IDS] as const).every((id) => ELEMENTS.every((e) => elementMatchup(id, e) === 1)));
+// 一組技能裡,只有對得上的那一個被動到——這是「逐元素」跟舊版純量最關鍵的差別。
+// 第三款刻意挑**另一個環**的(光屬三才、火金屬五行),不然它會被同一波順帶剋到,
+// 就分不出「只動對得上的那一個」到底有沒有成立。
+const mixed = [
+  { id: 'fire' as const, level: 3 },
+  { id: 'light' as const, level: 3 },
+  { id: 'strike' as const, level: 3 },
+];
+const base = runSkillEffects(mixed);
+const vsMetal = runSkillEffects(mixed, 'metal'); // 火剋金
+const vsIce = runSkillEffects(mixed, 'ice');     // 冰剋火
+check('剋中只放大那一個元素,別的元素不動',
+  Math.abs(vsMetal.burnKills - base.burnKills * COUNTER_BONUS) < 1e-9
+  && vsMetal.revive === base.revive,
+  `火 ${base.burnKills} → ${vsMetal.burnKills} / 光 ${base.revive} → ${vsMetal.revive}`);
+check('被剋只削弱那一個元素',
+  Math.abs(vsIce.burnKills - base.burnKills * (1 - COUNTERED_PENALTY)) < 1e-9
+  && vsIce.revive === base.revive,
+  `火 ${base.burnKills} → ${vsIce.burnKills}`);
+check('相剋完全不碰主動技能與基礎戰力',
+  vsMetal.actives[0].kills === base.actives[0].kills
+  && vsMetal.attackMultiplier === base.attackMultiplier
+  && vsMetal.heroMultiplier === base.heroMultiplier);
 // 每一波的屬性要夠平均,不然有些元素整場都用不到。
 const elemTally = new Map<string, number>();
 for (let r = 0; r < 4000; r++) {
@@ -529,18 +558,39 @@ check('八種屬性長期分佈平均(不會有元素整場都碰不到)',
   [...elemTally.values()].every((n) => n > 4000 / ELEMENTS.length * 0.75 && n < 4000 / ELEMENTS.length * 1.25)
   && elemTally.size === ELEMENTS.length,
   [...elemTally.values()].join('/'));
+// 勇者波走另一條 salt:關卡前公開的那一串不能洩漏它抽到什麼。
+const salted = Array.from({ length: 400 }, (_, r) => elementForRow(r, HERO_WAVE_ELEMENT_SALT));
+const plain = Array.from({ length: 400 }, (_, r) => elementForRow(r));
+check('勇者波的屬性跟公開的那一條不一樣(所以提示列標「?」是誠實的)',
+  salted.filter((e, i) => e === plain[i]).length < 400 * 0.25,
+  `重疊 ${salted.filter((e, i) => e === plain[i]).length}/400`);
+check('勇者波的屬性也是平均的',
+  new Set(salted).size === ELEMENTS.length);
+// 關卡前的提示:一般波公開、勇者波藏起來。
+const brief = waveElementsForStage(12);
+check('關卡前的屬性提示涵蓋每一波,而且只藏勇者波',
+  brief.length === wavesForStage(12)
+  && brief.filter((b) => b.hidden).length === Math.floor((wavesForStage(12) - 1) / 3),
+  `${brief.length} 波,藏 ${brief.filter((b) => b.hidden).length} 波`);
+// 魔王關(x-10)的最後一波是魔王,而且它的屬性關卡前就看得到——這是最值得押注的一格。
+const bossBrief = waveElementsForStage(20);
+check('魔王也有屬性,而且關卡前就公開(x-10 是最值得押注的一格)',
+  bossBrief[bossBrief.length - 1].boss
+  && !bossBrief[bossBrief.length - 1].hidden
+  && bossBrief[bossBrief.length - 1].element !== undefined,
+  `2-10 魔王 ${bossBrief[bossBrief.length - 1].element}`);
 // **相剋照樣不進理想路線**:它只放大元素,而元素只在失誤時生效。
+const counteredAll: WaveBoost = {
+  kills: 5 * COUNTER_BONUS, killRatio: 0.3 * COUNTER_BONUS, chainRatio: 0.3 * COUNTER_BONUS,
+  leech: 1, regen: 9 * COUNTER_BONUS, lostSoFar: 0, revive: 3 * COUNTER_BONUS,
+};
 check('完美玩家帶對屬性也一模一樣(相剋沒有破壞結構保證)',
-  resolveEnemy(perfectState, perfectWave, { ...allElements, counter: COUNTER_BONUS }).state.heroes
+  resolveEnemy(perfectState, perfectWave, counteredAll).state.heroes
   === resolveEnemy(perfectState, perfectWave).state.heroes);
 check('落後的玩家帶對屬性明顯更有用',
-  resolveEnemy(behindState, behindWave, { ...allElements, counter: COUNTER_BONUS }).state.heroes
+  resolveEnemy(behindState, behindWave, counteredAll).state.heroes
   > resolveEnemy(behindState, behindWave, allElements).state.heroes,
-  `沒剋 ${resolveEnemy(behindState, behindWave, allElements).state.heroes} 人 / 剋中 ${resolveEnemy(behindState, behindWave, { ...allElements, counter: COUNTER_BONUS }).state.heroes} 人`);
-// 相剋只放大元素,不放大主動技能——不然帶對屬性就變成整體 x2.5,是另一種買到勝利。
-check('相剋不放大主動技能',
-  resolveEnemy(behindState, behindWave, { kills: 4, counter: COUNTER_BONUS }).state.heroes
-  === resolveEnemy(behindState, behindWave, { kills: 4 * COUNTER_BONUS }).state.heroes);
+  `沒剋 ${resolveEnemy(behindState, behindWave, allElements).state.heroes} 人 / 剋中 ${resolveEnemy(behindState, behindWave, counteredAll).state.heroes} 人`);
 
 console.log('\n過關率(列=關卡,欄=選法):');
 console.log('        最佳    隨機    最差');

@@ -18,7 +18,7 @@ import {
   type JobBranch,
   type JobTier,
 } from './combat';
-import { DEFAULT_RUN_START, LEVELS_PER_CHAPTER, PROMOTION_CHAPTERS, type RunStart } from './laneRun';
+import { DEFAULT_RUN_START, LEVELS_PER_CHAPTER, PROMOTION_CHAPTERS, tierAtStage, type RunStart } from './laneRun';
 
 export type { Archetype, JobBranch, JobTier };
 
@@ -145,4 +145,38 @@ export function describeStart(job: LaneJob): string {
 
 export function jobTitle(job: LaneJob): string {
   return job === null ? '學生' : getJobTitle(job.archetype, job.branch, job.tier);
+}
+
+
+/**
+ * 勇者波的敵人長什麼樣。**由關卡決定,不是由玩家的職業決定。**
+ *
+ * 先前接的是玩家當下的職業,而玩家在第 1 大關還沒轉職 ⇒ `jobHeroArt(null, ...)` 退回
+ * 學生那張圖 ⇒ **整波敵人長得跟玩家自己一模一樣**,完全看不出那是敵人。
+ * (玩家的勇者就是學生那隻,所以那張圖只能是「我方」,不能同時當敵人。)
+ *
+ * 照玩家職業畫還有一個更硬的問題:玩家轉職越高、敵人立繪越華麗,
+ * 看起來像「養成把敵人養大了」——CLAUDE.md 早就記著敵人不能綁玩家的養成進度。
+ *
+ * 現在造型照排號輪替(六條路線 x A/B),階級跟著關卡走:正常玩家看到的還是
+ * 「跟自己同階的勇者」,但完全不受自己選了哪一條路線影響。
+ *
+ * 這個函式放在 laneJobs 不放 laneRun:laneRun 不能 import laneJobs(laneJobs 已經
+ * import 了 laneRun,反向再 import 就是循環相依,而且是模組載入時才炸)。
+ */
+export function enemyHeroLookForRow(stage: number, rowIndex: number): {
+  archetype: Archetype; branch: JobBranch; tier: number;
+} {
+  // 自己的雜湊,不跟跑圖那組共用:共用一條的話,勇者波的造型會跟閘門/怪種綁在一起變動。
+  const h = (salt: number) => {
+    let x = Math.imul(rowIndex + 1, 0x2545f491) ^ Math.imul(salt + 1, 0x9e3779b1);
+    x = Math.imul(x ^ (x >>> 15), 0x27d4eb2f);
+    return ((x ^ (x >>> 16)) >>> 0) / 0x100000000;
+  };
+  return {
+    archetype: ARCHETYPES[Math.floor(h(0) * ARCHETYPES.length) % ARCHETYPES.length],
+    branch: h(1) < 0.5 ? 'A' : 'B',
+    // 立繪只有 1~4 階,轉職階級可以到 5——夾住,不然滿階之後整波退回學生那張圖。
+    tier: Math.min(4, Math.max(1, tierAtStage(stage))),
+  };
 }

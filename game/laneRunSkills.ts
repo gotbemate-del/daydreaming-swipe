@@ -37,7 +37,7 @@ export type RunSkillId =
   | 'edge' | 'swarm'
   // 八元素:**全部只在你失誤的時候才生效**,所以完美玩家一個都用不到,
   // 也因此全部不進理想路線——敵人不會為了它們變強,幅度可以放心給(見下方 ELEMENTS)
-  | 'fire' | 'metal' | 'thunder' | 'water' | 'wood' | 'earth' | 'light' | 'dark'
+  | 'fire' | 'metal' | 'thunder' | 'ice' | 'wood' | 'earth' | 'light' | 'dark'
   // 主動技能(有冷卻、有特效、造成固定效果)。冷卻一律以**波**為單位。
   | 'strike' | 'pierce' | 'rally' | 'aegis';
 
@@ -48,7 +48,7 @@ export type RunSkillId =
  * 這讓它們自動不進理想路線,敵人不會為了一個沒人用得到的東西變強——
  * 跟兌換率、主動技能同一個道理,也是這款所有「抬地板不抬天花板」機制的共同形狀。
  */
-export const ELEMENTS: RunSkillId[] = ['fire', 'metal', 'thunder', 'water', 'wood', 'earth', 'light', 'dark'];
+export const ELEMENTS: RunSkillId[] = ['fire', 'metal', 'thunder', 'ice', 'wood', 'earth', 'light', 'dark'];
 export function isElement(id: RunSkillId): boolean {
   return ELEMENTS.includes(id);
 }
@@ -57,42 +57,67 @@ export function isElement(id: RunSkillId): boolean {
  * 相剋表:每個元素剋誰。**兩個閉環,所以每個元素剛好剋一個、也剛好被一個剋**——
  * 沒有「萬用元素」也沒有「廢元素」。
  *
- *   五行:金 → 木 → 土 → 水 → 火 → 金
+ *   五行:金 → 木 → 土 → 冰 → 火 → 金
  *   三才:光 → 暗 → 雷 → 光
+ *
+ * ## 相剋是**逐元素**的,不是整組的純量
+ *
+ * 剋中:那一個元素的效果 x COUNTER_BONUS。被剋:那一個元素的效果 x (1 - COUNTERED_PENALTY)。
+ * 其他元素、主動技能、基礎戰力一律不動。
+ *
+ * 早期版本是「剋中就把身上所有元素一起放大」,那等於帶對屬性就整體 x2.5——
+ * 是另一種形式的買到勝利,而且完全看不出「我是靠哪一個元素贏的」。逐元素之後,
+ * 一波裡可能同時有一個元素被放大、另一個被削弱,面板才有東西可以顯示。
  *
  * ## 為什麼這樣做不會變成「查表」或「擲骰子」
  *
  * 這是原本反對相剋的兩個理由:看得到下一波屬性 ⇒ 挑剋它的那個,是查表不是決策;
- * 看不到 ⇒ 純運氣。解法是**把接下來幾波的屬性公開**(技能面板會列),於是決策變成:
+ * 看不到 ⇒ 純運氣。解法是**把屬性公開**(進關卡前列出整關的順序,面板列接下來三波),
+ * 於是決策變成:
  *
- *   押注:花一個格子點剋接下來三波的元素,那三波會非常好過,但之後可能用不到
- *   通用:點一個每一波都有用的(鋒刃/增殖/水/木…),平均但不突出
+ *   押注:花一個格子點剋接下來幾波的元素,那幾波會非常好過,但之後可能用不到
+ *   通用:點一個每一波都有用的(鋒刃/增殖/冰/木…),平均但不突出
  *
- * 10 個格子、14 種技能,**押錯就是浪費一格**——這才是取捨。
+ * 10 個格子、14 種技能,**押錯就是浪費一格**——這才是取捨。而且被剋還要再扣一刀,
+ * 所以「整組都點同一個環上的元素」會在特定幾波集體變弱,分散比集中安全。
+ *
+ * **勇者波是唯一不公開的**(見 laneRun 的 elementForRow salt):敵方是勇者不是怪,
+ * 屬性另外抽、關卡前只標「?」——押注押得再準,每三波還是有一波要靠通用技能扛。
  *
  * ## 為什麼它不會破壞敵人的結構保證
  *
  * 相剋只放大「元素本來的效果」,而八元素全部只在**你已經失誤了**的時候才生效
  * (打不完、漏接、死過人)。完美玩家全清不漏,所以相剋對他一樣是零——
- * 它照樣不進理想路線,敵人不會為了它變強。
+ * 它照樣不進理想路線,敵人不會為了它變強。被剋的那一半同理:扣的是本來就等於零的東西。
  */
 export const ELEMENT_COUNTERS: Partial<Record<RunSkillId, RunSkillId>> = {
-  metal: 'wood', wood: 'earth', earth: 'water', water: 'fire', fire: 'metal',
+  metal: 'wood', wood: 'earth', earth: 'ice', ice: 'fire', fire: 'metal',
   light: 'dark', dark: 'thunder', thunder: 'light',
 };
 
-/** 剋中的時候,那個元素的效果放大幾倍。 */
+/** 剋中的時候,那一個元素的效果放大幾倍。 */
 export const COUNTER_BONUS = 2.5;
+/** 被剋的時候,那一個元素的效果扣掉幾成。 */
+export const COUNTERED_PENALTY = 1 / 3;
 
-/** 我帶的技能裡,有沒有剋得到這一波屬性的?回傳放大倍率(沒有就是 1)。 */
-export function counterMultiplier(skills: RunSkillState[], waveElement?: RunSkillId): number {
-  if (!waveElement) return 1;
-  return skills.some((s) => s.level > 0 && ELEMENT_COUNTERS[s.id] === waveElement) ? COUNTER_BONUS : 1;
+/**
+ * 我這一個元素碰上這一波的屬性,效果乘多少。
+ * 剋中 x2.5、被剋 x2/3、其餘 x1。非元素(鋒刃/增殖/主動技能)一律 1。
+ */
+export function elementMatchup(mine: RunSkillId, waveElement?: RunSkillId): number {
+  if (!waveElement || !isElement(mine)) return 1;
+  if (ELEMENT_COUNTERS[mine] === waveElement) return COUNTER_BONUS;
+  if (ELEMENT_COUNTERS[waveElement] === mine) return 1 - COUNTERED_PENALTY;
+  return 1;
 }
 
-/** 這一波是什麼屬性。用雜湊算,同一排永遠一樣(重播與驗證才對得起來)。 */
-export function elementForRow(rowIndex: number): RunSkillId {
-  let h = Math.imul(rowIndex + 1, 0x9e3779b1) ^ 0x85ebca6b;
+/**
+ * 這一波是什麼屬性。用雜湊算,同一排永遠一樣(重播與驗證才對得起來)。
+ *
+ * salt 給勇者波用:它跟一般波各走一條,所以「關卡前公開的那一串」不會洩漏勇者波抽到什麼。
+ */
+export function elementForRow(rowIndex: number, salt = 0): RunSkillId {
+  let h = Math.imul(rowIndex + 1, 0x9e3779b1) ^ (0x85ebca6b + Math.imul(salt, 0x7feb352d));
   h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
   return ELEMENTS[((h ^ (h >>> 16)) >>> 0) % ELEMENTS.length];
 }
@@ -145,7 +170,7 @@ const PER_LEVEL = {
   /** 雷・連鎖:額外清掉「你自己打倒的隻數」的幾成(你越強放大越多) */
   thunderRatio: 0.08,
   /** 水・減速:怪衝得慢 = 撞上來的損失小,也就是兌換率 */
-  waterTrade: 0.25,
+  iceTrade: 0.25,
   /** 木・再生:每一波把這一場**已經失去的人**補回來幾個(沒失去就沒得補) */
   woodRegen: 1,
   /** 土・護盾:每幾波擋下一整波的損失(冷卻以波計) */
@@ -180,7 +205,7 @@ export const RUN_SKILLS: RunSkillSpec[] = [
   { id: 'fire', name: '火・燃燒', describe: (l) => `每波多燒掉 ${PER_LEVEL.fireKills * l} 隻` },
   { id: 'metal', name: '金・穿透', describe: (l) => `每波多清掉整波的 ${Math.round(PER_LEVEL.metalRatio * l * 100)}%` },
   { id: 'thunder', name: '雷・連鎖', describe: (l) => `你打倒的每 ${Math.round(1 / (PER_LEVEL.thunderRatio * l))} 隻多帶走 1 隻` },
-  { id: 'water', name: '水・減速', describe: (l) => `怪衝得慢,兌換率 +${Math.round(PER_LEVEL.waterTrade * l * 100)}%` },
+  { id: 'ice', name: '冰・凍結', describe: (l) => `怪衝得慢,兌換率 +${Math.round(PER_LEVEL.iceTrade * l * 100)}%` },
   { id: 'wood', name: '木・再生', describe: (l) => `每波補回 ${PER_LEVEL.woodRegen * l} 個失去的勇者` },
   { id: 'earth', name: '土・護盾', describe: (l) => `每 ${Math.max(2, PER_LEVEL.earthCooldown - l)} 波擋下一整波損失` },
   { id: 'light', name: '光・復活', describe: (l) => `倒下時保住 ${PER_LEVEL.lightRevive * l} 人(一場一次)` },
@@ -358,8 +383,15 @@ export interface ActiveTrigger {
 /**
  * 目前帶的場內技能加起來是什麼效果。
  * 技能之間**相加不相乘**,跟永久技能同一個理由:相加算得出上限,而且玩家看到的 +18% 就真的是 +18%。
+ *
+ * `waveElement` 是「這一波的屬性」,給的話每一個元素各自照 elementMatchup 放大或削弱
+ * (剋中 x2.5、被剋 x2/3)。**只動元素**——鋒刃/增殖與主動技能不受相剋影響,
+ * 不然帶對屬性就變成整體 x2.5,是另一種買到勝利。
+ *
+ * 不給 waveElement 的地方(理想路線、貪心比較、上限驗證)拿到的就是沒有相剋的基準值,
+ * 這正是我們要的:敵人曲線不能跟著相剋跑,不然它就變成「大家都有的東西」而不是選擇。
  */
-export function runSkillEffects(skills: RunSkillState[]): RunSkillEffects {
+export function runSkillEffects(skills: RunSkillState[], waveElement?: RunSkillId): RunSkillEffects {
   let attack = 0;
   let heroes = 0;
   let trade = 0;
@@ -368,6 +400,7 @@ export function runSkillEffects(skills: RunSkillState[]): RunSkillEffects {
   let chainRatio = 0;
   let regen = 0;
   let shieldLevel = 0;
+  let shieldShift = 0;
   let revive = 0;
   let leech = 0;
   const actives: ActiveTrigger[] = [];
@@ -376,14 +409,18 @@ export function runSkillEffects(skills: RunSkillState[]): RunSkillEffects {
     if (s.id === 'edge') attack += PER_LEVEL.edgeAttack * level;
     if (s.id === 'swarm') heroes += PER_LEVEL.swarmHeroes * level;
     // 八元素:每一款的規則都不一樣,而且全部只在「失誤了」才生效。
-    if (s.id === 'fire') burnKills += PER_LEVEL.fireKills * level;
-    if (s.id === 'metal') pierceRatio += PER_LEVEL.metalRatio * level;
-    if (s.id === 'thunder') chainRatio += PER_LEVEL.thunderRatio * level;
-    if (s.id === 'water') trade += PER_LEVEL.waterTrade * level;
-    if (s.id === 'wood') regen += PER_LEVEL.woodRegen * level;
+    // mx 是這一個元素對上這一波屬性的倍率(剋中放大、被剋削弱),逐元素各算各的。
+    const mx = elementMatchup(s.id, waveElement);
+    if (s.id === 'fire') burnKills += PER_LEVEL.fireKills * level * mx;
+    if (s.id === 'metal') pierceRatio += PER_LEVEL.metalRatio * level * mx;
+    if (s.id === 'thunder') chainRatio += PER_LEVEL.thunderRatio * level * mx;
+    if (s.id === 'ice') trade += PER_LEVEL.iceTrade * level * mx;
+    if (s.id === 'wood') regen += PER_LEVEL.woodRegen * level * mx;
+    // 土是冷卻不是數值:剋中少等一波,被剋多等一波。
     if (s.id === 'earth') shieldLevel = Math.max(shieldLevel, level);
-    if (s.id === 'light') revive += PER_LEVEL.lightRevive * level;
-    if (s.id === 'dark') leech += PER_LEVEL.darkLeech * level;
+    if (s.id === 'earth') shieldShift = mx > 1 ? -1 : mx < 1 ? 1 : 0;
+    if (s.id === 'light') revive += PER_LEVEL.lightRevive * level * mx;
+    if (s.id === 'dark') leech += PER_LEVEL.darkLeech * level * mx;
     if (level <= 0) continue;
     if (s.id === 'strike') {
       actives.push({ id: s.id, name: '爆裂', cooldown: strikeCooldownWaves(level), kills: PER_LEVEL.strikeKills * level });
@@ -406,7 +443,9 @@ export function runSkillEffects(skills: RunSkillState[]): RunSkillEffects {
     pierceRatio,
     chainRatio,
     regen,
-    shieldCooldown: shieldLevel > 0 ? Math.max(2, PER_LEVEL.earthCooldown - shieldLevel) : Infinity,
+    shieldCooldown: shieldLevel > 0
+      ? Math.max(1, Math.max(2, PER_LEVEL.earthCooldown - shieldLevel) + shieldShift)
+      : Infinity,
     revive,
     leech,
     actives,

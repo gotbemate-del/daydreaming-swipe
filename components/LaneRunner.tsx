@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Image, PanResponder, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { jobTitle, type LaneJob } from '../game/laneJobs';
+import { enemyHeroLookForRow, jobTitle, type LaneJob } from '../game/laneJobs';
 import {
   gateLabel,
   isTrapGate,
@@ -21,10 +21,11 @@ import {
   type RunStart,
   type TerrainId,
 } from '../game/laneRun';
-import { describeRunSkill, runSkillSpec, ELEMENT_COUNTERS } from '../game/laneRunSkills';
+import { describeRunSkill, runSkillSpec, ELEMENT_COUNTERS, type RunSkillId } from '../game/laneRunSkills';
 import { HIT_NUMBER_MS, useLaneRun, type HitNumber, type Projectile, type WaveView } from '../hooks/useLaneRun';
 import {
   heroBoxHeight, heroForm, squadForms, monsterArt, weaponArt, jobHeroArt,
+  elementColor, elementLabel,
 } from './artAssets';
 
 // 跑道畫面。角色固定在跑道底部、物件由上往下逼近——這是「角色在跑」最省效能的表現方式:
@@ -76,7 +77,34 @@ const ELITE_SIZE = 84;
 const PROJECTILE_SIZE = 30;
 /** 主動技能特效播多久。要看得到,但不能久到蓋住下一波。 */
 const STRIKE_FX_MS = 700;
+/**
+ * 屬性染色疊多濃。tintColor 那一層是單色剪影,太濃會蓋掉造型、太淡看不出屬性;
+ * 0.45 是「一眼分得出顏色、還認得出是哪一種怪」的位置。
+ */
+const ELEMENT_TINT_OPACITY = 0.45;
+/** 敵方勇者的武器從投擲者飛到玩家要多久。 */
+const ENEMY_SHOT_MS = 800;
+/**
+ * 同一條線上同時掛幾把。
+ *
+ * 危險帶拿掉之後,「哪一條線不能站」全靠這一串武器來說——一兩把會斷成一顆一顆蹦,
+ * 玩家要盯著才看得出那是一條連續的線。三把才連得成一道,而且遠近都有,
+ * 從畫面上緣到勇者頭頂中間不會出現空窗。
+ */
+const ENEMY_SHOTS_PER_LANE = 3;
 
+
+/**
+ * 這個技能對上接下來幾波是「剋」還是「被剋」,標成一行短字。
+ * 兩邊都標:相剋是雙向的,只標有利的一半會讓押錯變成看不見的損失。
+ */
+function counterTag(id: RunSkillId, upcoming: RunSkillId[]): string {
+  if (!ELEMENT_COUNTERS[id]) return '';
+  const good = upcoming.filter((e) => ELEMENT_COUNTERS[id] === e).length;
+  const bad = upcoming.filter((e) => ELEMENT_COUNTERS[e] === id).length;
+  if (good === 0 && bad === 0) return '';
+  return `  ${good > 0 ? `剋 x${good}` : ''}${good > 0 && bad > 0 ? ' / ' : ''}${bad > 0 ? `被剋 x${bad}` : ''}`;
+}
 
 /**
  * 距離 → 物件底邊的 y。
@@ -292,28 +320,11 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
   function renderWave(w: WaveView) {
     if (!ready) return null;
     const size = w.boss ? BOSS_SIZE : w.elite ? ELITE_SIZE : MONSTER_SIZE;
-    // 勇者波的落點警示:紅色的危險帶,跟著整波一起逼近。
-    // 它是**反過來的閘門**——閘門畫成框是要你踩上去,這個畫成斜線帶是要你離開。
-    const lead = w.monsters.find((m) => !w.down[m.index]);
-    const hazardTop = lead ? bottomYFor(Math.max(0, lead.distance - distance), headY) : headY;
-    const bands = w.heroWave
-      ? w.hazards.map((h, i) => (
-        <View
-          key={`hz-${i}`}
-          pointerEvents="none"
-          style={[
-            styles.hazardBand,
-            {
-              left: h.from * trackWidth,
-              width: (h.to - h.from) * trackWidth,
-              top: Math.min(headY, hazardTop),
-              height: Math.max(24, headY - Math.min(headY, hazardTop)) + GATE_HEIGHT,
-            },
-          ]}
-        />
-      ))
-      : [];
-    return [...bands, ...w.monsters.map((m) => {
+    // 這一波的屬性色。一波共用一個屬性,所以整群同色——顏色就是屬性在畫面上的載體,
+    // 不必再靠面板文字去對照(見 artAssets 的 ELEMENT_COLORS)。
+    const tint = elementColor(w.element);
+    const enemyLook = enemyHeroLookForRow(stage, w.rowIndex);
+    return [...renderEnemyShots(w), ...w.monsters.map((m) => {
       if (w.down[m.index]) return null;
       const ahead = m.distance - distance;
       if (ahead > VISIBLE_AHEAD || ahead < 0) return null;
@@ -322,13 +333,29 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
       const left = (w.boss ? 0.5 : m.offset) * trackWidth - size / 2;
       const top = bottomYFor(ahead, headY) - size;
       const hpLeft = Math.max(0, 1 - w.hitsOn[m.index] / w.hitsPerUnit);
+      // 勇者波的敵人**照關卡輪替職業立繪**,不是照玩家的職業:玩家自己就是學生那隻,
+      // 拿同一張圖當敵人的話,整波看起來像自己在打自己(第 1 關還沒轉職時就是這樣)。
+      const art = w.heroWave
+        ? jobHeroArt(enemyLook.archetype, enemyLook.branch, enemyLook.tier)
+        : monsterArt(species.id);
       return (
         <View key={m.index} style={[styles.floating, { left, top, width: size }]} pointerEvents="none">
-          <Image
-            source={w.heroWave ? jobHeroArt(job?.archetype ?? null, job?.branch ?? 'A', Math.min(4, job?.tier ?? 1)) : monsterArt(species.id)}
-            resizeMode="contain"
-            style={[styles.pixelArt, { width: size, height: size }]}
-          />
+          <Image source={art} resizeMode="contain" style={[styles.pixelArt, { width: size, height: size }]} />
+          {/*
+            屬性染色:同一張圖再疊一層 tintColor 的複本。tintColor 會把整張圖壓成單色剪影,
+            單獨用會看不出造型,所以壓到 ELEMENT_TINT_OPACITY 疊在原圖上——造型還在,
+            色相整個偏過去。這是不動素材檔就能上色的做法(逐張染色是 build-time 管線,還沒做)。
+          */}
+          {tint && (
+            <Image
+              source={art}
+              resizeMode="contain"
+              style={[
+                styles.pixelArt, styles.floating,
+                { width: size, height: size, tintColor: tint, opacity: ELEMENT_TINT_OPACITY },
+              ]}
+            />
+          )}
           {(w.boss || w.elite) && (
             <View style={styles.bossHpTrack}>
               <View style={[styles.bossHpFill, { width: `${hpLeft * 100}%` }]} />
@@ -337,6 +364,63 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
         </View>
       );
     })];
+  }
+
+  /**
+   * 勇者波:敵方勇者**各自擲出武器,直線飛下來**。
+   *
+   * 舊版是在地上畫一條紅色危險帶。問題不是不夠清楚,是它跟「誰在丟」完全脫鉤——
+   * 帶子憑空出現在一個沒有任何人站著的位置,看起來像地形而不是攻擊。現在落點就是投擲者
+   * 站的那一條線(見 laneRun 的 hazardsFor),所以直接畫他丟出來的武器往下飛,
+   * 帶子就不必存在了:**看到武器往哪一條線飛,就知道不能站在那裡。**
+   *
+   * 只有直線:武器不追人,所以閃避仍然是「位置管理」而不是「反應」——
+   * 跟閘門同一套連續位置判定,只是反過來用(閘門要踩上去,這個要離開)。
+   */
+  function renderEnemyShots(w: WaveView) {
+    if (!w.heroWave || w.hazards.length === 0) return [];
+    const tint = elementColor(w.element);
+    // 丟出來的武器也照敵人的職業走,不是照玩家的——敵人拿的是他自己的武器。
+    const look = enemyHeroLookForRow(stage, w.rowIndex);
+    const shots: React.ReactNode[] = [];
+    w.hazards.forEach((h, i) => {
+      const center = (h.from + h.to) / 2;
+      const thrower = w.monsters[w.throwerIndices[i] ?? 0];
+      if (!thrower || w.down[thrower.index]) return;
+      const fromAhead = thrower.distance - distance;
+      if (fromAhead <= 0) return;
+      // 一條線上同時掛兩把、相位差半個週期,武器才會連成一串而不是一顆一顆蹦出來。
+      for (let k = 0; k < ENEMY_SHOTS_PER_LANE; k++) {
+        const phase = ((Date.now() / ENEMY_SHOT_MS) + k / ENEMY_SHOTS_PER_LANE) % 1;
+        const ahead = fromAhead * (1 - phase);
+        if (ahead > VISIBLE_AHEAD) continue;
+        // 同一條線上三把要是**同一件武器**(variant 只看 i 不看 k)。各丟各的話,
+        // 玩家看到的是一串不相干的東西掉下來,反而讀不出「這是一條線」。
+        const art = weaponArt(look.archetype, look.tier, i);
+        const box = {
+          left: center * trackWidth - PROJECTILE_SIZE / 2,
+          top: bottomYFor(ahead, headY) - PROJECTILE_SIZE,
+          width: PROJECTILE_SIZE,
+          height: PROJECTILE_SIZE,
+          transform: [{ rotate: '135deg' }],
+        };
+        shots.push(
+          <View key={`shot-${i}-${k}`} pointerEvents="none">
+            <Image source={art} resizeMode="contain" style={[styles.pixelArt, styles.floating, box]} />
+            {/* 染成這一波的屬性色:一來跟怪物同色,二來這條線在地面上更跳得出來
+                ——危險帶拿掉之後,顏色是「不能站這裡」剩下的唯一提示。 */}
+            {tint && (
+              <Image
+                source={art}
+                resizeMode="contain"
+                style={[styles.pixelArt, styles.floating, box, { tintColor: tint, opacity: 0.75 }]}
+              />
+            )}
+          </View>,
+        );
+      }
+    });
+    return shots;
   }
 
   /**
@@ -374,23 +458,28 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
     const offset = p.fromOffset + (p.toOffset - p.fromOffset) * t;
     const ahead = p.distance - distance;
     if (ahead > VISIBLE_AHEAD) return null;
+    // 元素演出掛在武器上,不在地上畫區域:身上帶幾個元素,丟出去的武器就輪流染成那幾個顏色。
+    const tint = elementColor(p.element);
+    const box = {
+      left: offset * trackWidth - PROJECTILE_SIZE / 2,
+      top: bottomYFor(ahead, headY) - PROJECTILE_SIZE,
+      width: PROJECTILE_SIZE,
+      height: PROJECTILE_SIZE,
+      transform: [{ rotate: '-45deg' }],
+    };
+    const art = weaponArt(job?.archetype ?? null, state.gear, p.id);
+    if (!tint) {
+      return <Image key={p.id} source={art} resizeMode="contain" style={[styles.pixelArt, styles.floating, box]} />;
+    }
     return (
-      <Image
-        key={p.id}
-        source={weaponArt(job?.archetype ?? null, state.gear, p.id)}
-        resizeMode="contain"
-        style={[
-          styles.pixelArt,
-          styles.floating,
-          {
-            left: offset * trackWidth - PROJECTILE_SIZE / 2,
-            top: bottomYFor(ahead, headY) - PROJECTILE_SIZE,
-            width: PROJECTILE_SIZE,
-            height: PROJECTILE_SIZE,
-            transform: [{ rotate: '-45deg' }],
-          },
-        ]}
-      />
+      <View key={p.id} pointerEvents="none">
+        <Image source={art} resizeMode="contain" style={[styles.pixelArt, styles.floating, box]} />
+        <Image
+          source={art}
+          resizeMode="contain"
+          style={[styles.pixelArt, styles.floating, box, { tintColor: tint, opacity: 0.7 }]}
+        />
+      </View>
     );
   }
 
@@ -419,8 +508,8 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
                 // 精英要標出「漏掉一隻抵幾個人」——牠的威脅不在隻數,玩家看不到就不會提早準備。
                 ? `精英 ${incoming.name} · 戰力 ${compact(incoming.power)} · 漏一隻 -${ELITE_MASS} 人`
                 : incoming.heroWave
-                  ? `敵方勇者 x${incoming.units} · 會投擲武器,離開紅色區域`
-                  : `${incoming.element ? runSkillSpec(incoming.element).name.split('・')[0] + '屬 ' : ''}${incoming.name} x${incoming.units} · 戰力 ${compact(incoming.power)}`}
+                  ? `${elementLabel(incoming.element)}屬 敵方勇者 x${incoming.units} · 武器直線飛來,別站在那條線上`
+                  : `${elementLabel(incoming.element)}屬 ${incoming.name} x${incoming.units} · 戰力 ${compact(incoming.power)}`}
           </Text>
         )}
       </View>
@@ -551,7 +640,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
                   看得到才有「押注這幾波 vs 拿通用的」這個取捨。 */}
               {upcomingElements.length > 0 && (
                 <Text style={styles.resultSummary}>
-                  接下來:{upcomingElements.map((e) => runSkillSpec(e).name.split('・')[0]).join(' → ')}
+                  接下來:{upcomingElements.map((e) => elementLabel(e)).join(' → ')}
                 </Text>
               )}
               {skillOffers.map((offer) => (
@@ -565,11 +654,10 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
                 >
                   <Text style={styles.skillName}>
                     {runSkillSpec(offer.id).name} {offer.level > 1 ? `Lv.${offer.level}` : '新'}
-                    {/* 這個元素剋得到接下來哪幾波,直接標出來——不標的話玩家得自己背相剋表 */}
-                    {ELEMENT_COUNTERS[offer.id]
-                      && upcomingElements.filter((e) => e === ELEMENT_COUNTERS[offer.id]).length > 0
-                      ? `  剋 x${upcomingElements.filter((e) => e === ELEMENT_COUNTERS[offer.id]).length}`
-                      : ''}
+                    {/* 這個元素在接下來幾波是強是弱,直接標出來——不標的話玩家得自己背相剋表。
+                        被剋也要標:相剋是雙向的(剋中 x2.5、被剋 x2/3),只標好的一半
+                        會讓「押錯」變成看不見的損失。 */}
+                    {counterTag(offer.id, upcomingElements)}
                   </Text>
                   <Text style={styles.skillDesc}>{describeRunSkill(offer)}</Text>
                 </Pressable>
@@ -802,14 +890,9 @@ const styles = StyleSheet.create({
   },
   skillName: { color: '#f2f2f2', fontSize: 14, fontWeight: '700' },
   skillDesc: { color: '#8a8a95', fontSize: 12 },
-  hazardBand: {
-    position: 'absolute',
-    backgroundColor: '#e0505022',
-    borderLeftWidth: 2,
-    borderRightWidth: 2,
-    borderColor: '#e05050aa',
-    zIndex: 6,
-  },
+  // 這裡曾經有一個 hazardBand(勇者波的紅色危險帶)。拿掉了,不要加回來:
+  // 它畫在一個沒有任何人站著的位置,看起來像地形而不是攻擊。現在落點就是投擲者站的線,
+  // 畫面直接畫他丟出來的武器往下飛(見 renderEnemyShots)。
   strikeText: {
     color: '#e0a95c', fontSize: 20, fontWeight: '700',
     textShadowColor: '#16161c', textShadowRadius: 4, textShadowOffset: { width: 0, height: 1 },

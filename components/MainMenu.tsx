@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { jobTitle, type LaneJob } from '../game/laneJobs';
-import { chapterOfStage, stageLabel, wavesForStage } from '../game/laneRun';
+import { chapterOfStage, stageLabel, waveElementsForStage, wavesForStage } from '../game/laneRun';
 import {
   COIN_ICON, HERO_ASPECT, HERO_FRAME_MS, HERO_FRAMES, HERO_SEQUENCE, heroBoxHeight, LOCK_ICON, TAB_ICONS,
+  elementColor, elementLabel,
 } from './artAssets';
 
 // 主介面。每一場闖關的起點與終點——通關或陣亡都回到這裡,再自己按下一次「開始闖關」。
@@ -78,6 +79,34 @@ export function MainMenu({ stage, job, coins, lastResult, onStart }: Props) {
           resizeMode="contain"
           style={[styles.hero, { width: HERO_WIDTH, height: HERO_HEIGHT }]}
         />
+      </View>
+
+      {/*
+        進關卡前的屬性提示。**押注要成立就得先看得到**——沒有這一列的話,
+        「花一格點剋屬」跟擲骰子沒兩樣;有了它,開跑之前就能規劃這一場要往哪個環走。
+        勇者波標「?」:敵方是勇者不是怪,屬性另外抽(見 laneRun 的 HERO_WAVE_ELEMENT_SALT),
+        所以每三波就有一波押不到,通用技能永遠有位置。
+      */}
+      <View style={styles.briefRow}>
+        <Text style={styles.briefLabel}>本關屬性</Text>
+        <View style={styles.briefChips}>
+          {waveElementsForStage(stage).map((w, i) => (
+            <View
+              key={i}
+              style={[
+                styles.briefChip,
+                w.hidden
+                  ? styles.briefChipHidden
+                  : { borderColor: elementColor(w.element), backgroundColor: `${elementColor(w.element)}33` },
+                w.boss && styles.briefChipBoss,
+              ]}
+            >
+              <Text style={[styles.briefChipText, !w.hidden && { color: elementColor(w.element) }]}>
+                {w.hidden ? '?' : elementLabel(w.element)}
+              </Text>
+            </View>
+          ))}
+        </View>
       </View>
 
       <View style={styles.resultRow}>
@@ -157,6 +186,23 @@ const styles = StyleSheet.create({
     borderColor: '#2a2a35',
     overflow: 'hidden',
   },
+  // 屬性提示列。chip 刻意做小(18px):長關有 20 波,再大一點在 375 寬的手機上會擠成三行,
+  // 把下面的「開始闖關」推出畫面——版面被切掉是這個專案踩過最貴的一種 bug。
+  briefRow: { width: '100%', marginTop: 8, alignItems: 'center' },
+  briefLabel: { color: '#8a8a95', fontSize: 11, marginBottom: 4 },
+  briefChips: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 3 },
+  briefChip: {
+    width: 18,
+    height: 18,
+    borderRadius: 4,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  briefChipHidden: { borderColor: '#3a3448', backgroundColor: '#2a2a35' },
+  /** 魔王那一格加一圈金框:整關最值得押注的就是它(關卡固定,屬性也固定)。 */
+  briefChipBoss: { borderWidth: 2, borderColor: '#e0a95c' },
+  briefChipText: { fontSize: 10, color: '#8a8a95' },
   ground: {
     position: 'absolute',
     left: 0,

@@ -914,6 +914,33 @@ export const ELITE_HITS = 6;
 
 /** 勇者波:每隔幾波來一次。太密會變成另一個遊戲,太疏又形同不存在。 */
 export const HERO_WAVE_EVERY = 3;
+/**
+ * 勇者波的屬性走另一條雜湊。
+ *
+ * 關卡前會把整關的屬性順序公開(押注才成立),但勇者波刻意不公開——用同一條雜湊的話,
+ * 玩家看得到前後兩波就等於也看得到它。分一條 salt,提示列就能誠實地標「?」。
+ */
+export const HERO_WAVE_ELEMENT_SALT = 0x51ed270b;
+
+/**
+ * 這一關每一波是什麼屬性,給「進關卡前的提示」用。
+ *
+ * `hidden` 的那幾波是勇者波:屬性照抽,但這裡不揭曉(見 HERO_WAVE_ELEMENT_SALT)。
+ * 純函式、不需要 seed——屬性只跟排號有關,所以主介面在還沒開跑之前就算得出來。
+ */
+export function waveElementsForStage(stage: number): { element: RunSkillId; hidden: boolean; boss: boolean }[] {
+  const out: { element: RunSkillId; hidden: boolean; boss: boolean }[] = [];
+  for (let rowIndex = 0; rowIndex < rowsForStage(stage); rowIndex++) {
+    if (!isEnemyRowIndex(rowIndex, stage)) continue;
+    const hidden = isHeroWaveRow(stage, rowIndex);
+    out.push({
+      element: elementForRow(rowIndex, hidden ? HERO_WAVE_ELEMENT_SALT : 0),
+      hidden,
+      boss: isBossRow(stage, rowIndex),
+    });
+  }
+  return out;
+}
 /** 一次砸幾發。之後可以照大關遞增(1 發 → 2 發分開 → 2 發夾擊只留中間一條縫)。 */
 export const HAZARD_COUNT = 1;
 /** 一發砸多寬(offset 單位)。跑道總寬 1,閘門是 0.34,所以這個要比閘門窄一點才閃得掉。 */
@@ -929,12 +956,31 @@ export function isHeroWaveRow(stage: number, rowIndex: number): boolean {
 }
 
 /**
- * 這一波的武器落在哪。用雜湊算,不抽亂數——同一排永遠一樣,重播與驗證才對得起來。
- * **一定留得下閃避空間**:落點寬 HAZARD_WIDTH,跑道寬 1,所以單發永遠閃得掉。
+ * 這一波由哪幾個勇者投擲。取中段的那幾個:最前面那個離玩家太近,武器還沒飛就到了。
  */
-export function hazardsFor(rowIndex: number, count = HAZARD_COUNT): { from: number; to: number }[] {
-  return Array.from({ length: count }, (_, i) => {
-    const center = 0.15 + hashFor(rowIndex, i, 7) * 0.7;
+export function throwerIndices(size: number, count = HAZARD_COUNT): number[] {
+  const n = Math.max(1, Math.min(count, size));
+  return Array.from({ length: n }, (_, i) => Math.min(size - 1, Math.floor((size * (i + 1)) / (n + 1))));
+}
+
+/**
+ * 這一波的武器落在哪。
+ *
+ * **落點就是投擲者站的那一條線**——不是另外抽一個位置。早期版本是獨立雜湊,畫面因此只能
+ * 畫一條紅色危險帶(因為沒有任何一隻怪對得上那個位置),而那條帶子跟「誰在丟」完全脫鉤。
+ * 綁到投擲者身上之後,畫面直接畫他丟出來的武器直線飛下來,危險帶就不必存在了。
+ *
+ * 用 waveMonsters 的同一組 offset,所以邏輯層與畫面層的落點是**同一個算式**算出來的,
+ * 不會有「看起來閃掉了卻還是被砸中」。
+ *
+ * **一定留得下閃避空間**:落點寬 HAZARD_WIDTH(0.26),而投擲者站在某一條跑道中心附近,
+ * 所以另一條跑道永遠是安全的。
+ */
+export function hazardsFor(rowIndex: number, size: number, count = HAZARD_COUNT): { from: number; to: number }[] {
+  // 只要 offset,距離與怪種在這裡用不到,所以 rowDistance/spread 給 0。
+  const monsters = waveMonsters(rowIndex, Math.max(1, size), 0, 1, 0);
+  return throwerIndices(Math.max(1, size), count).map((i) => {
+    const center = monsters[i]?.offset ?? 0.5;
     return { from: center - HAZARD_WIDTH / 2, to: center + HAZARD_WIDTH / 2 };
   });
 }
@@ -980,6 +1026,9 @@ function makeEnemyRow(
       species: [species],
       name: species.name,
       units: 1,
+      // 魔王也有屬性,而且**它是最值得押注的一格**:同一關的魔王永遠是同一隻、
+      // 同一個屬性,關卡前就看得到——「這關結尾是土,值得花一格點木」。
+      element: elementForRow(rowIndex),
     };
     return Array.from({ length: LANE_COUNT }, (_, lane) => ({
       lane: lane as Lane,
@@ -1014,8 +1063,11 @@ function makeEnemyRow(
     name: species[0].name,
     units,
     ...(elite ? { elite: true, leakCost: ELITE_MASS, hitsPerUnit: ELITE_HITS } : {}),
-    ...(heroWave ? { heroWave: true, hazards: hazardsFor(rowIndex) } : {}),
-    element: elementForRow(rowIndex),
+    ...(heroWave ? { heroWave: true, hazards: hazardsFor(rowIndex, units) } : {}),
+    // 一波怪共用一個屬性(不是一隻一個)——三種造型同一個顏色,一眼就分得出這波是什麼。
+    // **勇者波走另一條 salt**:對面是勇者不是怪,屬性另外抽,而且關卡前的提示不公開它,
+    // 所以每三波就有一波沒辦法事先押注,只能靠通用技能扛。
+    element: elementForRow(rowIndex, heroWave ? HERO_WAVE_ELEMENT_SALT : 0),
   };
   return Array.from({ length: LANE_COUNT }, (_, lane) => ({
     lane: lane as Lane,
@@ -1190,11 +1242,13 @@ export const MISS_MESSAGE = '沒碰到';
  */
 export interface WaveBoost {
   /**
-   * 相剋倍率:帶著剋這一波屬性的元素就 > 1(見 laneRunSkills 的 COUNTER_BONUS)。
-   * 它只放大**元素來的那幾項**(燒/穿/連鎖/再生/吸取/復活),不碰主動技能與基礎戰力——
-   * 而元素本來就只在「已經失誤了」時才生效,所以相剋一樣不進理想路線。
+   * 這裡**沒有相剋倍率**,而且是刻意的。相剋是逐元素的(剋中 x2.5、被剋 x2/3),
+   * 所以放大與削弱在 runSkillEffects(skills, waveElement) 那一層就結算完了,
+   * 傳到這裡的每一個數字都已經是「這一波實際生效的量」。
+   *
+   * 早期版本在這裡放過一個 counter 純量,結果是主動技能也被一起放大——
+   * 帶對屬性等於整體 x2.5。純量會誘發這種錯誤,所以連欄位都不留。
    */
-  counter?: number;
   /** 額外清掉幾隻(火・燃燒 + 主動) */
   kills?: number;
   /** 額外清掉整波的幾成(金・穿透 + 貫穿) */
@@ -1238,20 +1292,18 @@ export function resolveEnemy(
   }
   // 主動技能加在 kills 上而不是加在戰力上:固定效果才有「越落後越有用」的性質,
   // 而且理想玩家本來就全清,對他等於零——所以它不進理想路線,也就不會把敵人養大。
-  // 相剋只放大「元素來的那幾項」。主動技能與基礎戰力不受影響——
-  // 不然帶對屬性就變成整體 x2.5,那是另一種「養成買到勝利」。
-  const cx = Math.max(1, boost.counter ?? 1);
+  // 相剋已經在 runSkillEffects 那一層逐元素結算過了,這裡拿到的就是最終值。
   const own = waveKillCount(totalAttack(state), enemy.power, enemy.units);
-  const extra = Math.max(0, boost.kills ?? 0) * cx
-    + Math.ceil(enemy.units * Math.max(0, boost.killRatio ?? 0) * cx)
-    + Math.ceil(own * Math.max(0, boost.chainRatio ?? 0) * cx);
+  const extra = Math.max(0, boost.kills ?? 0)
+    + Math.ceil(enemy.units * Math.max(0, boost.killRatio ?? 0))
+    + Math.ceil(own * Math.max(0, boost.chainRatio ?? 0));
   const kills = Math.min(enemy.units, own + Math.floor(extra));
   const leaked = Math.max(0, enemy.units - kills);
   const next = { ...state };
   // 打倒的怪有一部分加入隊伍。放在「漏 0」那條路徑上而不是照 kills 給:
   // 半殘的一波已經在扣人了,再補回來會讓「擋不住」這件事變得模糊。
   // 木・再生:只補得回「已經失去的」,沒失去就沒得補——所以完美玩家拿它等於零。
-  const regen = Math.min(Math.floor(Math.max(0, boost.regen ?? 0) * cx), Math.max(0, boost.lostSoFar ?? 0));
+  const regen = Math.min(Math.floor(Math.max(0, boost.regen ?? 0)), Math.max(0, boost.lostSoFar ?? 0));
   const rallied = Math.max(0, boost.heroes ?? 0) + regen;
   if (leaked === 0 || boost.immune) {
     const joined = absorbedFrom(kills, enemy.leakCost) + rallied;
@@ -1270,12 +1322,12 @@ export function resolveEnemy(
   next.heroes += rallied;
   const lost = Math.ceil((leaked * cost) / Math.max(BASE_TRADE_RATE, next.tradeRate));
   // 暗・吸取:漏過來的怪有一部分反而加入你。只有漏接時才有東西可吸,所以完美玩家拿它等於零。
-  const leeched = Math.floor(leaked * Math.min(1, Math.max(0, boost.leech ?? 0) * cx));
+  const leeched = Math.floor(leaked * Math.min(1, Math.max(0, boost.leech ?? 0)));
   const before = totalAttack(next);
   next.heroes = next.heroes - lost + leeched;
   if (next.heroes <= 0) {
     // 光・復活:歸零的那一刻保住幾個人。一場一次,由外層負責只給一次。
-    const saved = Math.floor(Math.max(0, boost.revive ?? 0) * cx);
+    const saved = Math.floor(Math.max(0, boost.revive ?? 0));
     if (saved > 0) {
       next.heroes = saved;
     } else {

@@ -20,6 +20,7 @@ import {
   volleyRate,
   waveKillCount,
   waveMonsters,
+  throwerIndices,
   waveLength,
   DEFAULT_RUN_START,
   isEnemyRowIndex,
@@ -35,7 +36,7 @@ import {
   type WaveSpecies,
 } from '../game/laneRun';
 import {
-  applyRunSkillPick, counterMultiplier, learnRunSkill, runSkillEffects, runSkillOffersAt, runSkillPicksForWave,
+  applyRunSkillPick, ELEMENT_COUNTERS, isElement, learnRunSkill, runSkillEffects, runSkillOffersAt, runSkillPicksForWave,
   type RunSkillState, type RunSkillId,
 } from '../game/laneRunSkills';
 
@@ -85,6 +86,14 @@ export interface Projectile {
   fromOffset: number;
   toOffset: number;
   targetIndex: number;
+  /**
+   * 這一把帶的是什麼元素(沒帶元素技能就是 undefined)。
+   *
+   * **元素的演出一律掛在武器上,不在地上畫區域。** 地面區域是「這裡有東西」,
+   * 武器帶色是「我丟出去的這一把在做事」——後者才對得上「技能是我的攻擊」這個直覺,
+   * 而且不必再發明一套跟跑道無關的圖層。身上帶幾個元素就輪流出,一眼看得出組合。
+   */
+  element?: RunSkillId;
 }
 
 export interface WaveView {
@@ -93,10 +102,17 @@ export interface WaveView {
   boss: boolean;
   /** 精英排:一隻大的。畫面要畫大、要有血條(牠要打好幾下才倒)。 */
   elite: boolean;
-  /** 勇者波:敵方是勇者,會投擲武器。畫面要用職業立繪,而且要畫出落點。 */
+  /** 勇者波:敵方是勇者,會投擲武器。畫面要用職業立繪,而且要畫出飛過來的武器。 */
   heroWave: boolean;
   /** 武器落點(offset 區間)。站在裡面就會被砸中。 */
   hazards: { from: number; to: number }[];
+  /** 第 i 個落點是誰丟的(monsters 的索引)。畫面要從他身上把武器丟出來。 */
+  throwerIndices: number[];
+  /**
+   * 這一波的屬性。**整波共用一個**,畫面直接把整群染成這個顏色——
+   * 屬性長在怪身上,不是只寫在面板上(見 artAssets 的 ELEMENT_COLORS)。
+   */
+  element?: RunSkillId;
   /** 每隻的血條:已挨幾下 / 要挨幾下。魔王打很久,沒有進度條會不知道打到哪了。 */
   hitsOn: number[];
   hitsPerUnit: number;
@@ -167,6 +183,8 @@ interface WaveRuntime {
   elite: boolean;
   heroWave: boolean;
   hazards: { from: number; to: number }[];
+  throwerIndices: number[];
+  element?: RunSkillId;
   monsters: WaveMonster[];
   /** 每一隻各自挨了幾下。打不倒的那幾隻也會累加——勇者照樣丟,只是丟不倒。 */
   hitsOn: number[];
@@ -235,6 +253,9 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
   const lostSoFarRef = useRef(0);
   /** 光・復活用過沒。一場只有一次。 */
   const revivedRef = useRef(false);
+  /** 目前帶的技能。tick 迴圈(每 33ms)要讀,走 ref 才不用把整個迴圈綁進相依陣列。 */
+  const runSkillsRef = useRef<RunSkillState[]>([]);
+  runSkillsRef.current = runSkills;
   const [lastStrike, setLastStrike] = useState<{ at: number; names: string[]; kills: number } | null>(null);
 
   const paused = skillOffers.length > 0;
@@ -347,6 +368,8 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         elite: enemy.elite === true,
         heroWave: enemy.heroWave === true,
         hazards: enemy.hazards ?? [],
+        throwerIndices: throwerIndices(enemy.units),
+        element: enemy.element,
         monsters: waveMonsters(
           enemyRow.index, enemy.units, enemyRow.distance, enemy.species.length,
           waveLength(stage, enemy.units),
@@ -394,6 +417,9 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         // 每一把從隊伍裡不同的人手上飛出去(依 id 散開),不是全部從同一個點噴出來。
         const spread = Math.min(0.09, 0.02 * Math.min(stateRef.current.heroes, 6));
         const fromOffset = clampOffset(offsetRef.current + ((id % 5) / 4 - 0.5) * 2 * spread);
+        // 帶著幾個元素就輪流丟哪一個。這是元素在畫面上唯一的出口——
+        // 沒帶元素的話武器就是原本的樣子,不會憑空多一層顏色。
+        const mine = runSkillsRef.current.filter((s) => s.level > 0 && isElement(s.id));
         projectilesRef.current = [
           ...projectilesRef.current,
           {
@@ -403,6 +429,7 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
             fromOffset,
             toOffset: current.monsters[targetIndex].offset,
             targetIndex,
+            element: mine.length > 0 ? mine[id % mine.length].id : undefined,
           },
         ];
       }
@@ -461,6 +488,8 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
             elite: current!.elite,
             heroWave: current!.heroWave,
             hazards: current!.hazards,
+            throwerIndices: current!.throwerIndices,
+            element: current!.element,
             hitsOn: [...current!.hitsOn],
             hitsPerUnit: current!.hitsPerUnit,
             monsters: current!.monsters,
@@ -507,10 +536,11 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         const fired: string[] = [];
         if (due.nodes[0]?.kind === 'enemy') {
           const units = due.nodes[0].enemy?.units ?? 0;
-          const fx = runSkillEffects(runSkills);
-          // 相剋:帶著剋這一波屬性的元素,元素的效果放大(見 laneRunSkills 的 ELEMENT_COUNTERS)。
-          const cx = counterMultiplier(runSkills, due.nodes[0].enemy?.element);
-          if (cx > 1) { boost.counter = cx; fired.push('剋'); }
+          // 相剋是**逐元素**的:結算的時候就把這一波的屬性交給 runSkillEffects,
+          // 剋中的那個元素放大、被剋的那個削弱,其他元素與主動技能一律不動。
+          const waveElement = due.nodes[0].enemy?.element;
+          const fx = runSkillEffects(runSkills, waveElement);
+          if (runSkills.some((s) => s.level > 0 && ELEMENT_COUNTERS[s.id] === waveElement)) fired.push('剋');
           // 八元素:常駐,不用冷卻(除了土)。全部只在「已經失誤了」的路徑上生效,
           // 所以完美玩家一個都碰不到——它們因此不進理想路線(見 laneRun 的 WaveBoost)。
           if (fx.burnKills > 0) boost.kills = (boost.kills ?? 0) + fx.burnKills;

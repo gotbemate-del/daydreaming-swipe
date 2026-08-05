@@ -195,6 +195,41 @@ export function monsterArt(monsterId: string): ImageSourcePropType {
   return MONSTER_ART[archetype] ?? MONSTER_ART.blob;
 }
 
+// ---- 八元素的顏色 ----
+//
+// **顏色是屬性在畫面上的載體。** 早期版本把屬性掛在「排號」上,畫面完全看不出來——
+// 三隻深海魚衝過來,面板卻說這一波是火。改用顏色之後,屬性直接長在怪身上:
+// 一波共用一個屬性(見 laneRun 的 element),所以整群同色,一眼就分得出這波是什麼。
+//
+// 這也是**不必把屬性綁死在原型上**的原因:綁原型的話 12 種造型配 8 種屬性除不盡,
+// 有 4 個屬性會多一倍的出現機率,剋它的那幾款技能就永遠比較好——正是兩個閉環要避免的。
+// 顏色跟造型脫鉤,屬性才能維持精確平均,而混三種造型的畫面也留得住。
+//
+// 色相都壓在莫蘭迪暗色調裡(飽和度不高),疊在像素圖上才不會蓋掉造型。
+export const ELEMENT_COLORS: Record<string, string> = {
+  fire: '#c8674a',
+  metal: '#8f9bab',
+  thunder: '#c9a94e',
+  ice: '#6fa8bd',
+  wood: '#6f9e63',
+  earth: '#a8865e',
+  light: '#e8e0c4',
+  dark: '#7a6f96',
+};
+
+/** 屬性的單字標籤(面板、提示列都用這個,不用 emoji)。 */
+export const ELEMENT_LABELS: Record<string, string> = {
+  fire: '火', metal: '金', thunder: '雷', ice: '冰',
+  wood: '木', earth: '土', light: '光', dark: '暗',
+};
+
+export function elementColor(id?: string): string | undefined {
+  return id ? ELEMENT_COLORS[id] : undefined;
+}
+export function elementLabel(id?: string): string {
+  return (id && ELEMENT_LABELS[id]) ?? '?';
+}
+
 // ---- 職業 ----
 // 6 條路線 x A/B 分支 x 5 階,對應 game/laneJobs.ts。素材分四個資料夾,命名規則各不相同
 // (jobs 沒有分支、jobs2 是 _A/_B、jobs3 與 jobs4 多了 _open 後綴),所以只能一條一條列。
