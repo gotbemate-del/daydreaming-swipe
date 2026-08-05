@@ -1087,6 +1087,174 @@ export function enemyRarityForRow(rowIndex: number): Rarity {
  */
 export const SPECIES_PER_WAVE = 1;
 
+// ---- 石頭(路障) ----
+//
+// 石頭放在**戰鬥段**——那是一整段沒有閘門的路(見 rowDistances),前幾個大關尤其空
+// (第 1 關 13.6 秒的戰鬥段只有 3 隻怪,約 8 秒是純跑路,見 docs/DESIGN.md §10.6)。
+// 石頭給那段路一個「要看路」的理由,而且**完全不增加閘門**——閘門數量是指數的指數
+// (CLAUDE.md),想讓路上有事做絕對不能靠多塞閘門解決。
+//
+// ## 石頭跟閘門是兩種不同的東西,不要混
+//
+//   閘門 = 選擇。兩格一好一壞,一定要挑一邊,挑錯是「變弱」。
+//   石頭 = 反應。它只有一顆,站哪裡都行,只要不是它那裡;撞到是「失誤」。
+//
+// 所以石頭不佔跑道格、不成排、也不參與 bestLane 的比較——它不是一個選項,
+// 沒有「選石頭」這件事,只有「有沒有閃掉」。
+//
+// ## 為什麼石頭**不能**算進理想路線(這條最重要)
+//
+// 敵人戰力是照「這一場的最佳路線」算的(見 createRun),而最佳路線的玩家**閃得掉每一顆石頭**
+// (石頭永遠只擋住跑道的一小段,見 ROCK_WIDTH)。把石頭算進去的話,敵人會為了一個
+// 完美玩家根本不會付的代價而變強,真人反而更難——這跟 tradeRate 是同一條規則的第二次現身
+// (見 RunState.tradeRate:抬地板不抬天花板的東西,兩邊都不准進理想路線)。
+//
+// 結果是結構保證原封不動:**每一排都選對、而且閃得掉石頭的玩家,領先幅度仍然恰好是
+// 1/ENEMY_POWER_RATIO**。石頭只降地板,不降天花板。
+
+export interface RunRock {
+  index: number;
+  /** 在跑道上的絕對位置(跟 RunRow.distance 同一個座標系)。 */
+  distance: number;
+  /** 橫向位置 0~1,跟勇者的 offset 同一個座標系。 */
+  offset: number;
+}
+
+/**
+ * 石頭的寬度(offset 單位)。**跟小怪同一個量級**——畫面上小怪是 MONSTER_SIZE(42px),
+ * 在一般手機寬度上約佔 0.11,所以這裡取 0.11,視覺與判定才對得起來。
+ *
+ * 判定寬度要再加上勇者自己的體寬,不然會出現「圖明明擦過去了卻沒事」或反過來。
+ */
+export const ROCK_WIDTH = 0.11;
+/** 勇者的體寬(offset 單位)。判定用,跟畫面上的 HERO_BODY_HEIGHT 對應。 */
+export const HERO_HIT_WIDTH = 0.11;
+
+/**
+ * 撞到一顆石頭掉多少人。
+ *
+ * 用**比例**不用固定值,理由跟「勇者 x0.5」陷阱同一條:固定值在前期是滅頂、後期是零頭,
+ * 而這一場的人數會從 1 滾到 100 以上。20% 在任何階段的痛感都一樣。
+ */
+export const ROCK_HERO_LOSS = 0.2;
+
+/**
+ * 一般小關放幾顆。**每場固定次數,不是每個戰鬥段獨立抽**——理由跟 DOUBLE_GATES_PER_RUN 一樣:
+ * 獨立抽的話玩家感覺到的是「這場運氣好」,固定次數則是份量不變、隨機性只剩落點。
+ */
+export const ROCKS_PER_RUN_MIN = 2;
+export const ROCKS_PER_RUN_MAX = 3;
+
+/**
+ * 石頭離**前一排閘門**至少要隔這麼遠。
+ *
+ * 取 VISIBLE_AHEAD:石頭要等閘門結算完才准進視野。閘門是這款唯一的決策點,
+ * CLAUDE.md 明文寫著它的反應時間一秒都不能偷——玩家正在比較兩格的時候,
+ * 前方冒出一顆要閃的石頭,等於在那兩秒的決策裡硬加了第二件事。
+ */
+const ROCK_GATE_CLEARANCE = VISIBLE_AHEAD;
+/**
+ * 石頭離**這一波的結算點**至少要隔這麼遠。
+ *
+ * 不隔開的話「撞上石頭 -N 人」跟「漏了 N 隻 -N 人」會在同一瞬間跳出來,
+ * 玩家只看到人數掉了一大塊卻分不清是哪一件事造成的——兩筆懲罰疊在一起等於沒有回饋。
+ */
+const ROCK_RESOLVE_CLEARANCE = 120;
+/** 石頭的橫向落點範圍。不貼著最邊邊放:靠邊的石頭站另一邊就閃掉了,等於白放一顆。 */
+const ROCK_OFFSET_MIN = 0.16;
+const ROCK_OFFSET_MAX = 0.84;
+
+/**
+ * 這一小關放幾顆石頭。
+ *
+ * 長關(20 波)按比例加倍,跟 doubleGatesForStage 同一個理由:長關的路是兩倍長,
+ * 顆數不跟著加的話密度就砍半,玩家在長關幾乎遇不到——「大約 2~3 顆」講的是密度不是總數。
+ */
+export function rocksForStage(stage: number, rng: () => number): number {
+  const span = ROCKS_PER_RUN_MAX - ROCKS_PER_RUN_MIN;
+  const base = ROCKS_PER_RUN_MIN + Math.round(rng() * span);
+  const scale = wavesForStage(stage) / WAVES_PER_LEVEL;
+  return Math.max(1, Math.round(base * scale));
+}
+
+/**
+ * 產生這一場的石頭。**跟 createRun 用不同的亂數流**(跟挑怪造型同一個理由):
+ * 共用一條的話,多放一顆石頭就會把後面所有閘門的內容整個位移,
+ * 已經驗證過的過關率全部要重跑——而石頭刻意是不影響數值曲線的東西。
+ */
+export function createRocks(seed: number, stage: number): RunRock[] {
+  const rng = createRng((seed ^ 0x5f356495) >>> 0);
+  const distances = rowDistances(stage);
+  const battle = battleDistance(stage);
+
+  // 每一個戰鬥段就是一個候選位置。段的範圍 = [這一排敵人的結算點 - 戰鬥段, 結算點],
+  // 兩端再各讓出一段淨空(見上面兩個 CLEARANCE)。
+  const slots: { from: number; to: number }[] = [];
+  for (let i = 0; i < distances.length; i++) {
+    if (!isEnemyRowIndex(i, stage)) continue;
+    const from = distances[i] - battle + ROCK_GATE_CLEARANCE;
+    const to = distances[i] - ROCK_RESOLVE_CLEARANCE;
+    // 段太短就跳過。放不下的時候寧可少一顆,也不要擠在閘門或結算點旁邊。
+    if (to > from) slots.push({ from, to });
+  }
+  if (slots.length === 0) return [];
+
+  // 洗牌之後取前幾個:同一個戰鬥段不會放到兩顆(擠在一起等於一顆比較胖的石頭)。
+  for (let i = slots.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [slots[i], slots[j]] = [slots[j], slots[i]];
+  }
+  const wanted = Math.min(slots.length, rocksForStage(stage, rng));
+  return slots
+    .slice(0, wanted)
+    .map((slot) => ({
+      distance: slot.from + rng() * (slot.to - slot.from),
+      offset: ROCK_OFFSET_MIN + rng() * (ROCK_OFFSET_MAX - ROCK_OFFSET_MIN),
+    }))
+    // 依距離排序再重新編號:畫面與碰撞都是照「跑到哪了」在找下一顆,亂序會找錯。
+    .sort((a, b) => a.distance - b.distance)
+    .map((rock, index) => ({ index, ...rock }));
+}
+
+/** 勇者站在 offset 時會不會撞上這顆石頭。兩個體寬各算一半。 */
+export function hitsRock(offset: number, rock: RunRock): boolean {
+  return Math.abs(clampOffset(offset) - rock.offset) < (ROCK_WIDTH + HERO_HIT_WIDTH) / 2;
+}
+
+/**
+ * 只剩 1 個人的時候撞到石頭的回饋文字。
+ *
+ * 畫面要拿它判斷「這次沒扣到東西,但也不是好事」——heroDelta 是 0,光看數字會被當成
+ * 中性的好結果而畫成綠色。跟 MISS_MESSAGE 是同一個坑,原因也一樣。
+ */
+export const ROCK_GRAZE_MESSAGE = '撞上石頭';
+
+/**
+ * 撞上石頭:掉 ROCK_HERO_LOSS 的人。
+ *
+ * **下限是 1,石頭撞不死人**——跟閘門同一條規則(見 applyGate):死亡只發生在
+ * 「怪撞上來換掉最後一個人」那一刻,那才看得懂發生了什麼事。被一顆路邊的石頭
+ * 直接結束一場,玩家只會覺得是 bug。
+ *
+ * **但只要還有 2 個人以上,就至少掉 1 個**:20% 在 2~4 人的時候 round 完是 0,
+ * 玩家會看到「撞上石頭」卻什麼都沒發生,直接認定判定是壞的。這跟 applyRunSkillPick
+ * 保證「增殖至少 +1 人」是同一條規則的反面——有感的回饋比精確的百分比重要。
+ */
+export function applyRockHit(state: RunState): RowResolution {
+  const before = totalAttack(state);
+  const next = { ...state };
+  const scaled = Math.round(next.heroes * (1 - ROCK_HERO_LOSS));
+  // 夾在 [1, 原本人數 - 1]:撞不死人,但撞得到的時候一定看得出來。
+  next.heroes = Math.max(1, Math.min(scaled, next.heroes - 1));
+  const lost = state.heroes - next.heroes;
+  return {
+    state: next,
+    message: lost > 0 ? `撞上石頭 -${lost} 人` : ROCK_GRAZE_MESSAGE,
+    heroDelta: -lost,
+    attackDelta: totalAttack(next) - before,
+  };
+}
+
 /** 這一排是不是大魔王:魔王關的最後一排敵人。 */
 /**
  * 精英排:每一小關的**中點**放一隻大的。

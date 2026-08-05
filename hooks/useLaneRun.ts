@@ -35,7 +35,11 @@ import {
   procRoll,
   extraKills,
   engageRange,
+  createRocks,
+  hitsRock,
+  applyRockHit,
   type Lane,
+  type RunRock,
   type RunRow,
   type RunStart,
   type RunState,
@@ -199,6 +203,8 @@ function sameFlags(a: boolean[], b: boolean[]): boolean {
 
 export interface LaneRunView {
   rows: RunRow[];
+  /** 這一場路上的石頭。撞到掉人,但站哪裡都能閃(見 laneRun 的 createRocks)。 */
+  rocks: RunRock[];
   state: RunState;
   /** 已跑距離 */
   distance: number;
@@ -320,6 +326,8 @@ export function useLaneRun(
   // 所以 seed 必須留著——技能選項另外抽的話,玩家看到的選單就不是 createRun 假設的那一組。
   const [seed] = useState(() => Math.floor(Math.random() * 1e9));
   const [rows] = useState<RunRow[]>(() => createRun(seed, stage));
+  // 石頭走自己的亂數流,所以加減石頭不會位移閘門內容(見 createRocks)。
+  const [rocks] = useState<RunRock[]>(() => createRocks(seed, stage));
   const [state, setState] = useState<RunState>(() => initialRunState(stage, start));
   const [distance, setDistance] = useState(0);
   const [feedback, setFeedback] = useState<RunFeedback | null>(null);
@@ -344,6 +352,8 @@ export function useLaneRun(
   const dashingRef = useRef(false);
   // 已結算過的排。跟判定同步讀寫,走 state 會慢一拍導致同一排被結算兩次。
   const passedRef = useRef<Set<number>>(new Set());
+  // 已經跑過的石頭(不管撞到沒撞到)。同一顆只判定一次。
+  const passedRocksRef = useRef<Set<number>>(new Set());
   const feedbackKeyRef = useRef(0);
   // 戰鬥演出要讀當下的攻擊力(波次中途吃到 x2 閘門,打得掉的隻數要立刻跟著變),
   // 但它跑在 setInterval 裡,閉包抓到的會是舊的 state,所以另外鏡射一份。
@@ -439,6 +449,12 @@ export function useLaneRun(
    */
   const DASH_MONSTER_ZONE = VISIBLE_AHEAD * 0.35;
   function nothingAhead(travelled: number): boolean {
+    // 石頭走**閘門的標準**(進視野就絕不加速),不是怪的標準。石頭要玩家做反應,
+    // 而 x4 的速度衝向一顆才剛冒出來的石頭,反應時間只剩四分之一——那是硬塞的失誤,
+    // 不是玩家的失誤。加速只准發生在真的什麼都沒有的那一段。
+    if (rocks.some((k) => !passedRocksRef.current.has(k.index) && k.distance - travelled <= VISIBLE_AHEAD)) {
+      return false;
+    }
     return !rows.some((r) => {
       if (passedRef.current.has(r.index)) return false;
       if (r.nodes[0]?.kind !== 'enemy') return r.distance - travelled <= VISIBLE_AHEAD;
@@ -465,6 +481,7 @@ export function useLaneRun(
       const dash = idle && idleSinceRef.current > 0 && now - idleSinceRef.current >= DASH_DELAY_MS;
       if (dash !== dashingRef.current) { dashingRef.current = dash; setDashing(dash); }
 
+      const before = travelledRef.current;
       const movedBy = (speed * (dash ? DASH_MULTIPLIER : 1) * dt) / 1000;
       travelledRef.current += movedBy;
       const travelled = travelledRef.current;
@@ -477,6 +494,9 @@ export function useLaneRun(
         setHeroOffset(next);
       }
 
+      // 位置更新完才判石頭:玩家這一格拉到的位置就是撞不撞得到的位置,慢一拍會出現
+      // 「明明已經閃開了卻還是撞到」(結算用 offsetRef 也是同一個理由,見下面的排結算)。
+      stepRocks(before, travelled);
       stepWave(now, travelled, movedBy);
     }, TICK_MS);
     return () => clearInterval(id);
@@ -596,6 +616,37 @@ export function useLaneRun(
       ...elementEventsRef.current,
       { id: elementEventIdRef.current, kind, target, from, bornAt: now },
     ];
+  }
+
+  /**
+   * 跑過石頭:這一格跨過去的石頭各判定一次。
+   *
+   * 用「跨越」判定(前一格的距離 < 石頭 <= 這一格的距離),不是「距離夠近就算撞到」:
+   * 分頁切回來的時候 dt 會被夾到 250ms,一格可以前進 27 個距離單位,拿近似值判會整顆漏掉。
+   *
+   * 位置讀 offsetRef 不讀 state:state 慢一拍,會發生「明明已經拉開了卻還是撞到」——
+   * 跟排結算讀 offsetRef 是同一個理由。
+   */
+  function stepRocks(from: number, to: number) {
+    for (const rock of rocks) {
+      if (rock.distance > to) break; // createRocks 已經照距離排序,後面的更遠
+      if (passedRocksRef.current.has(rock.index)) continue;
+      passedRocksRef.current.add(rock.index);
+      if (rock.distance <= from) continue; // 起跑前就在身後(防呆,正常不會發生)
+      if (!hitsRock(offsetRef.current, rock)) continue;
+      // stateRef 同步更新:同一格裡戰鬥演出會讀它算「打得掉幾隻」,
+      // 撞掉的人必須立刻反映進去,不然這一格的擊殺數是用撞之前的戰力算的。
+      const r = applyRockHit(stateRef.current);
+      stateRef.current = r.state;
+      setState(r.state);
+      feedbackKeyRef.current += 1;
+      setFeedback({
+        key: feedbackKeyRef.current,
+        message: r.message,
+        heroDelta: r.heroDelta,
+        attackDelta: r.attackDelta,
+      });
+    }
   }
 
   /** 一波小怪的演出:該冒出來的冒出來、該丟的武器丟出去、打中的就消失。 */
@@ -1014,6 +1065,7 @@ export function useLaneRun(
 
   return {
     rows,
+    rocks,
     state,
     distance,
     heroOffset,

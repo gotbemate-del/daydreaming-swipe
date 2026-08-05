@@ -15,6 +15,8 @@ import {
   totalAttack,
   ELITE_MASS,
   VISIBLE_AHEAD,
+  ROCK_GRAZE_MESSAGE,
+  type RunRock,
   type WaveMonster,
   type RunRow,
   type RunStart,
@@ -30,7 +32,7 @@ import {
 } from '../hooks/useLaneRun';
 import { PixelFrame } from './PixelFrame';
 import {
-  heroBoxHeight, heroForm, squadForms, monsterArt, weaponArt, jobHeroArt,
+  heroBoxHeight, heroForm, squadForms, monsterArt, weaponArt, jobHeroArt, ROCK_ART,
   elementColor, elementLabel, monsterAnim, jobHeroAnim, animFrameIndex,
 } from './artAssets';
 
@@ -83,6 +85,12 @@ const ELITE_SIZE = 84;
 const PROJECTILE_SIZE = 30;
 /** 主動技能特效播多久。要看得到,但不能久到蓋住下一波。 */
 const STRIKE_FX_MS = 700;
+/**
+ * 石頭畫多大。**刻意等於 MONSTER_SIZE**——判定寬度(laneRun 的 ROCK_WIDTH)就是照小怪的
+ * 視覺尺寸定的,畫大一點會讓玩家以為擦到了卻沒事,畫小一點則反過來。
+ * 兩個常數要一起改,不要只動其中一個。
+ */
+const ROCK_SIZE = MONSTER_SIZE;
 /**
  * 屬性染色疊多濃。tintColor 那一層是單色剪影,太濃會蓋掉造型、太淡看不出屬性;
  * 0.45 是「一眼分得出顏色、還認得出是哪一種怪」的位置。
@@ -239,7 +247,7 @@ export function LaneRunner({
 }: Props) {
   const run = useLaneRun(stage, start, bookLevel, collection);
   const {
-    state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers,
+    state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers, rocks,
     lastShotAt, lastShotId, feedback, steer, dragTo,
     runSkills, skillOffers, pendingPicks, chooseRunSkill, lastStrike, upcomingElements,
     enemyShots, lastHazardAt, enemyThrowAt, waveNumber, totalWaves,
@@ -663,6 +671,42 @@ export function LaneRunner({
     );
   }
 
+  /**
+   * 路上的石頭。跟小怪同一個座標系(絕對距離 + offset),所以畫法也一樣。
+   *
+   * 石頭不分跑道、不畫框:它不是一個「選項」,是一個要閃開的東西(見 laneRun 的石頭段落)。
+   * 畫成閘門那種橫跨一格的框會讓玩家以為要「選」它。
+   */
+  function renderRock(rock: RunRock) {
+    if (!ready) return null;
+    const ahead = rock.distance - distance;
+    if (ahead > VISIBLE_AHEAD || ahead < 0) return null;
+    return (
+      <View
+        key={rock.index}
+        // pointerEvents 要放在 View 上:Image 沒有這個 prop,直接掛上去 tsc 會擋。
+        // 不擋掉的話石頭會吃掉拖曳手勢——正好在玩家最需要閃開的那一刻。
+        pointerEvents="none"
+        // 自動化測試要抓石頭:文字選取器抓不到純圖,而橫向位置是這一項唯一能驗的東西。
+        accessibilityLabel={`石頭 ${rock.offset.toFixed(2)}`}
+        style={[
+          styles.floating,
+          {
+            left: rock.offset * trackWidth - ROCK_SIZE / 2,
+            top: bottomYFor(ahead, headY) - ROCK_SIZE,
+            width: ROCK_SIZE,
+          },
+        ]}
+      >
+        <Image
+          source={ROCK_ART}
+          resizeMode="contain"
+          style={[styles.pixelArt, { width: ROCK_SIZE, height: ROCK_SIZE }]}
+        />
+      </View>
+    );
+  }
+
   /** 擲出去的武器。從擲出的位置往目標那一格斜著飛過去,所以 x 要跟著飛行進度內插。 */
   function renderProjectile(p: Projectile) {
     if (!ready || !wave) return null;
@@ -822,6 +866,8 @@ export function LaneRunner({
         </View>
 
         {upcoming.map(renderGateRow)}
+        {/* 石頭畫在小怪下面:牠們是跑過來的,會從石頭旁邊經過,壓在石頭上面才對 */}
+        {rocks.map(renderRock)}
         {wave && renderWave(wave)}
         {projectiles.map(renderProjectile)}
         {/*
@@ -853,7 +899,8 @@ export function LaneRunner({
                 top: headY - 24,
                 left: Math.min(Math.max(heroLeft + leadSize.w / 2 - 70, 2), Math.max(2, trackWidth - 142)),
               },
-              feedback.message === MISS_MESSAGE
+              // 漏接與「撞到但沒扣到人」的 delta 都是 0,不特別列出來的話會被當成好結果畫成綠色。
+              feedback.message === MISS_MESSAGE || feedback.message === ROCK_GRAZE_MESSAGE
                 ? styles.feedbackMiss
                 : feedback.heroDelta < 0 || feedback.attackDelta < 0
                   ? styles.feedbackBad
@@ -979,6 +1026,10 @@ export function LaneRunner({
               key={i}
               source={form.frames[spiking ? 1 : 0]}
               resizeMode="contain"
+              // 自動化測試要量「拖曳有沒有真的生效」,就得先抓得到勇者本人。
+              // 靠 `track img` 的第一張會抓到石頭或小怪(牠們畫在前面),量出來的 x 永遠不動,
+              // 於是機器人看起來在拖、其實一步都沒動——CLAUDE.md 記過的那個坑。
+              accessibilityLabel={i === drawn.length - 1 ? '勇者隊伍' : undefined}
               style={[
                 styles.hero,
                 styles.pixelArt,

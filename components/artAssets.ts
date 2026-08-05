@@ -163,6 +163,15 @@ export const TAB_ICONS: TabIcon[] = [
   { id: 'ascension', label: '轉生', art: require('../assets/sprites/ui/icon_tab_ascension.png') },
 ];
 
+/**
+ * 路上的石頭。沿用材料圖的 tier0 強化石——它是整套裡唯一的灰色岩塊,
+ * 其餘階級都上了顏色(藍/紫/金),放在跑道上會被誤認成可以吃的道具。
+ *
+ * 沒有另外畫一張:CLAUDE.md 的美術鐵則是一律用 assets/sprites 的既有 PNG,
+ * 而這張的像素風格與莫蘭迪暗色調本來就是同一套資產。
+ */
+export const ROCK_ART: ImageSourcePropType = require('../assets/sprites/materials/enhance_stone_tier0.png');
+
 /** 鎖頭。分頁全部未開放,疊在圖示上表示「還不能點」。 */
 export const LOCK_ICON: ImageSourcePropType = require('../assets/sprites/ui/icon_lock.png');
 /** 金幣。主介面顯示身上有多少錢。 */

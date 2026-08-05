@@ -14,6 +14,8 @@ import {
   ENEMY_POWER_RATIO, ENEMY_UNITS_PER_HERO, goodGateGrowthAt, gatesBeforeRow, isTrapGate, runSeconds, ELITE_MASS, ELITE_HITS, absorbedFrom,
   applyGate, gateLabel, DOUBLE_GATES_PER_RUN, GEAR_STEP, doubleGatesForStage, LONG_LEVEL_RATIO_SCALE,
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
+  createRocks, hitsRock, applyRockHit, rowDistances, battleDistance, isEnemyRowIndex, VISIBLE_AHEAD,
+  ROCKS_PER_RUN_MIN, ROCKS_PER_RUN_MAX, ROCK_HERO_LOSS, ROCK_GRAZE_MESSAGE,
   TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane, MIN_WAVE_SIZE,
   HERO_WAVE_ELEMENT_SALT, waveElementsForStage, hazardsFor, hitByHazard, HAZARD_WIDTH, HAZARD_LOSS_HEROES, expectedHazardHits, ENEMY_THROW_INTERVAL_MS,
   battleSecondsPerWave, engageRange, FIRE_RANGE_RATIO,
@@ -916,6 +918,120 @@ for (let t = 0; t < 200; t++) {
   minAttack = Math.min(minAttack, totalAttack(res.state));
 }
 check('戰力永遠 >= 1(不會被連續陷阱卡死)', minAttack >= 1, `最低 ${minAttack}`);
+
+// --- 石頭(路障)---
+// 要證明三件事:數量與落點合規、完美玩家完全不受影響(結構保證沒被動到)、
+// 而且它對會失誤的玩家真的有代價(不然放了等於沒放)。
+console.log('\n石頭:');
+const rockStages = [1, 5, 12, 20, 40, 105];
+const rockRuns = rockStages.map((s) => ({ stage: s, rocks: createRocks(9871 + s, s) }));
+console.log('  ' + rockRuns.map((r) => `${stageLabel(r.stage)} ${r.rocks.length}顆`).join('   '));
+
+// 顆數:一般小關 2~3 顆,長關按比例加倍(密度一致,不是總數一致)。
+const normalRockCounts: number[] = [];
+const longRockCounts: number[] = [];
+for (let t = 0; t < 200; t++) {
+  normalRockCounts.push(createRocks(t * 17 + 3, 12).length); // 12 = 2-2,一般小關
+  longRockCounts.push(createRocks(t * 17 + 3, 15).length); // 15 = 2-5,加倍長
+}
+const inRange = (v: number[], lo: number, hi: number) => v.every((n) => n >= lo && n <= hi);
+check('一般小關 2~3 顆', inRange(normalRockCounts, ROCKS_PER_RUN_MIN, ROCKS_PER_RUN_MAX),
+  `實測 ${Math.min(...normalRockCounts)}~${Math.max(...normalRockCounts)} 顆`);
+check('長關按比例加倍(密度一致,不是總數一致)',
+  inRange(longRockCounts, ROCKS_PER_RUN_MIN * 2, ROCKS_PER_RUN_MAX * 2),
+  `實測 ${Math.min(...longRockCounts)}~${Math.max(...longRockCounts)} 顆`);
+
+// 落點:石頭一律在戰鬥段裡,而且離閘門排與結算點都有淨空。
+let rockOffTrack = 0;
+let rockTooCloseToGate = 0;
+let rockTooCloseToResolve = 0;
+let rockDodgeable = 0;
+let rockTotal = 0;
+for (const stage of rockStages) {
+  const dists = rowDistances(stage);
+  const battle = battleDistance(stage);
+  for (let t = 0; t < 40; t++) {
+    for (const rock of createRocks(t * 29 + 11, stage)) {
+      rockTotal++;
+      if (rock.offset < 0 || rock.offset > 1) rockOffTrack++;
+      // 屬於哪一個戰鬥段:第一個結算點在它後面的敵人排。
+      const resolveAt = dists.find((d, i) => isEnemyRowIndex(i, stage) && d >= rock.distance);
+      if (resolveAt === undefined) { rockTooCloseToResolve++; continue; }
+      if (rock.distance <= resolveAt - battle + VISIBLE_AHEAD - 1) rockTooCloseToGate++;
+      if (rock.distance > resolveAt - 120 + 1) rockTooCloseToResolve++;
+      // 一定閃得掉:跑道上必須存在一個不會撞到它的位置。
+      const spots = Array.from({ length: 101 }, (_, i) => i / 100);
+      if (spots.some((o) => !hitsRock(o, rock))) rockDodgeable++;
+    }
+  }
+}
+check('石頭都在跑道範圍內', rockOffTrack === 0, `${rockTotal} 顆`);
+check('石頭等閘門結算完才進視野(不偷走閘門的決策時間)', rockTooCloseToGate === 0);
+check('石頭離波次結算點有淨空(兩筆懲罰不會疊在同一瞬間)', rockTooCloseToResolve === 0);
+check('每一顆都閃得掉(石頭是反應題,不是二選一)', rockDodgeable === rockTotal);
+
+// 同一個戰鬥段不會放到兩顆(擠在一起等於一顆比較胖的石頭)。
+// 用「屬於哪一個戰鬥段」比對,不要拿距離去猜:相鄰兩段的合法間距約 540,
+// 而高關卡的戰鬥段長到 1798——任何「距離小於半段就算同段」的門檻都會誤判。
+let sameSegment = 0;
+for (const stage of rockStages) {
+  const dists = rowDistances(stage);
+  const segmentOf = (d: number) => dists.findIndex((v, i) => isEnemyRowIndex(i, stage) && v >= d);
+  for (let t = 0; t < 40; t++) {
+    const segs = createRocks(t * 31 + 7, stage).map((k) => segmentOf(k.distance));
+    if (new Set(segs).size !== segs.length) sameSegment++;
+  }
+}
+check('同一個戰鬥段不會擠兩顆', sameSegment === 0);
+
+// 效果:掉 20%,但撞不死人,而且看得出來。
+const rockCases = [1, 2, 3, 5, 10, 40, 137];
+const rockLoss = rockCases.map((h) => {
+  const st = { ...initialRunState(10), heroes: h };
+  return h - applyRockHit(st).state.heroes;
+});
+console.log('  撞到掉幾人:' + rockCases.map((h, i) => `${h}人→-${rockLoss[i]}`).join('  '));
+check('石頭撞不死人(死亡只發生在怪撞上來那一刻)',
+  rockCases.every((h) => applyRockHit({ ...initialRunState(10), heroes: h }).state.heroes >= 1));
+check('2 人以上一定看得出扣了人(不然玩家會以為判定壞了)',
+  rockCases.every((h, i) => h < 2 || rockLoss[i] >= 1));
+check('人多的時候掉大約 20%',
+  Math.abs(rockLoss[rockCases.indexOf(137)] / 137 - ROCK_HERO_LOSS) < 0.02,
+  `137 人掉 ${rockLoss[rockCases.indexOf(137)]}`);
+check('只剩 1 人的時候有專用回饋文字(delta 是 0,不標出來會被畫成綠色)',
+  applyRockHit({ ...initialRunState(10), heroes: 1 }).message === ROCK_GRAZE_MESSAGE);
+
+// 結構保證:完美玩家閃得掉每一顆,所以石頭完全不該影響「選對就一定過關」。
+const bestNoRock = clearRate(20, simBest, 200, { rockHitRate: 0 });
+const bestAllRock = clearRate(20, simBest, 200, { rockHitRate: 1 });
+check('完美玩家(閃掉每一顆)仍然一定過關 —— 石頭沒有動到結構保證',
+  bestNoRock === 1, `${(bestNoRock * 100).toFixed(0)}%`);
+// 這一項只擋一件事:**石頭不能變成必死**。門檻刻意鬆(0.5),因為這個數字量的是
+// 「石頭 × 其他所有平衡」的交互作用,會隨敵人隻數、元素、燃燒等等一起漂——
+// 實測值在不同版本之間看過 89% 與 77%,而那兩次石頭本身完全沒改。
+// 拿它當精確門檻只會在別人動平衡時誤報。
+//
+// 真正的結構保證是上面那一項(完美玩家閃掉每顆 = 100%),那個不准掉。
+//
+// 代價是**複利**的:一般小關 3 顆各掉 20%,0.8^3 = 0.51,而容錯緩衝只有
+// 1/ENEMY_POWER_RATIO ≈ 2.08x —— 所以「閘門全對但石頭全撞」本來就該接近臨界。
+// 動 ROCK_HERO_LOSS 或顆數之前,先看一眼下面印出來的實測值往哪邊跑。
+check('就算每顆都撞到,選對閘門的玩家還是過得去(石頭是懲罰不是死刑)',
+  bestAllRock >= 0.5, `每顆都撞 ${(bestAllRock * 100).toFixed(0)}%`);
+
+// 代價:對會失誤的玩家要真的有感,但不能把難度整條拉走。
+console.log('\n石頭對過關率的影響(準確率 90%,石頭撞擊率 = 1 - 準確率):');
+for (const stage of [12, 102]) {
+  const noRock = clearRate(stage, pickAccurate(0.9), 300, { rockHitRate: 0 });
+  const withRock = clearRate(stage, pickAccurate(0.9), 300, { rockHitRate: 0.1 });
+  const allRock = clearRate(stage, pickAccurate(0.9), 300, { rockHitRate: 1 });
+  console.log(`  ${stageLabel(stage)}  沒石頭 ${(noRock * 100).toFixed(0)}%`
+    + `  照準確率撞 ${(withRock * 100).toFixed(0)}%  每顆都撞 ${(allRock * 100).toFixed(0)}%`);
+  check(`${stageLabel(stage)} 石頭沒有把難度整條拉走(照準確率撞,掉幅 <= 12pp)`,
+    noRock - withRock <= 0.12, `掉 ${((noRock - withRock) * 100).toFixed(0)}pp`);
+  check(`${stageLabel(stage)} 每顆都撞真的有代價(不是白放)`, noRock - allRock >= 0.03,
+    `掉 ${((noRock - allRock) * 100).toFixed(0)}pp`);
+}
 
 // --- 選最佳時數值的成長感 ---
 const sample = simulateRun(42, 10, simBest);

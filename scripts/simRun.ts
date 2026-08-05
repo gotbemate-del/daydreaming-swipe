@@ -6,8 +6,9 @@
 // 只會有一份被記得更新,另外兩份會靜靜地量錯東西。
 
 import {
-  bestLane, createRun, initialRunState, isEnemyRowIndex, LANE_COUNT, laneCenterOffset, resolveRow,
-  wavesForStage, worstLane, activeSkillCountForStage, type Lane, type RunRow, type RunStart, type RunState,
+  applyRockHit, bestLane, createRocks, createRun, initialRunState, isEnemyRowIndex, LANE_COUNT,
+  laneCenterOffset, resolveRow, wavesForStage, worstLane, activeSkillCountForStage,
+  type Lane, type RunRow, type RunStart, type RunState,
 } from '../game/laneRun';
 import {
   applyRunSkillPick, bestRunSkillChoice, learnRunSkill, runSkillOffersAt, runSkillPicksForWave,
@@ -31,6 +32,9 @@ export interface SimResult {
   /** 每一排敵人的「總戰力 / 敵人戰力」 */
   margins: { rowIndex: number; margin: number; boss: boolean }[];
   runSkills: RunSkillState[];
+  /** 這一場路上有幾顆石頭、撞到幾顆。 */
+  rocks: number;
+  rockHits: number;
 }
 
 export interface SimOptions {
@@ -41,6 +45,15 @@ export interface SimOptions {
    * 玩家就會比敵人假設的弱一整條技能曲線,量出來是「拉得再準也 0% 過關」。
    */
   sloppy?: number;
+  /**
+   * 撞上石頭的機率(0 = 每顆都閃掉)。
+   *
+   * 石頭不是「選項」,是反應題:它只擋住跑道的一小段,站哪裡都閃得掉,
+   * 所以**完美玩家的 rockHitRate 必須是 0**——敵人戰力是照完美玩家算的,
+   * 石頭刻意不進理想路線(見 laneRun 的石頭段落),模擬器這邊也必須對齊,
+   * 不然量出來的「每排都挑最好 → 100% 過關」會莫名其妙破掉。
+   */
+  rockHitRate?: number;
 }
 
 export function simulateRun(
@@ -49,8 +62,9 @@ export function simulateRun(
   pick: LanePicker,
   opts: SimOptions = {},
 ): SimResult {
-  const { start, sloppy = 0 } = opts;
+  const { start, sloppy = 0, rockHitRate = 0 } = opts;
   const rows = createRun(seed, stage);
+  const rocks = createRocks(seed, stage);
   let st = start ? initialRunState(stage, start) : initialRunState(stage);
   let x = seed + 7;
   const rng = () => { x = (x * 1103515245 + 12345) & 0x7fffffff; return x / 0x7fffffff; };
@@ -60,8 +74,21 @@ export function simulateRun(
   let waveIndex = 0;
   let skillOrdinal = 0;
   const margins: SimResult['margins'] = [];
+  let nextRock = 0;
+  let rockHits = 0;
+
+  /** 跑到這一排之前會先經過的石頭。石頭夾在排與排之間,不是排本身。 */
+  function passRocksBefore(distance: number) {
+    while (nextRock < rocks.length && rocks[nextRock].distance <= distance) {
+      nextRock += 1;
+      if (rng() >= rockHitRate) continue; // 閃掉了
+      rockHits += 1;
+      st = applyRockHit(st).state;
+    }
+  }
 
   for (const row of rows) {
+    passRocksBefore(row.distance);
     st = { ...st, lane: pick(st, row, rng) };
     const node = row.nodes.find((n) => n.lane === st.lane);
     if (node?.kind === 'enemy' && node.enemy) {
@@ -71,7 +98,10 @@ export function simulateRun(
     const offset = sloppy > 0 ? laneCenterOffset(st.lane) + (rng() * 2 - 1) * sloppy : undefined;
     st = resolveRow(st, row, offset).state;
     if (st.phase === 'dead') {
-      return { outcome: 'dead', state: st, deathRow: row.index, margins, runSkills: skills };
+      return {
+        outcome: 'dead', state: st, deathRow: row.index, margins, runSkills: skills,
+        rocks: rocks.length, rockHits,
+      };
     }
     // 打完一波就給技能,規則跟遊戲裡一模一樣。
     if (isEnemyRowIndex(row.index, stage)) {
@@ -89,7 +119,10 @@ export function simulateRun(
       }
     }
   }
-  return { outcome: 'cleared', state: st, deathRow: -1, margins, runSkills: skills };
+  return {
+    outcome: 'cleared', state: st, deathRow: -1, margins, runSkills: skills,
+    rocks: rocks.length, rockHits,
+  };
 }
 
 /** 過關率。 */
