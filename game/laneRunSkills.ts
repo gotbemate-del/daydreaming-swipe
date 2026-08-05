@@ -33,9 +33,27 @@
 // 反向再 import 就是循環相依——實測會炸在「Cannot access 'GEAR_STEP' before initialization」,
 // 而且是在模組載入時才炸,型別檢查完全看不出來。
 export type RunSkillId =
-  | 'edge' | 'swarm' | 'bulwark' | 'focus'
+  // 基礎被動:唯一兩款會加戰力的,也就是唯一兩款會被敵人曲線追平的(它們是「跟上」不是「變強」)
+  | 'edge' | 'swarm'
+  // 八元素:**全部只在你失誤的時候才生效**,所以完美玩家一個都用不到,
+  // 也因此全部不進理想路線——敵人不會為了它們變強,幅度可以放心給(見下方 ELEMENTS)
+  | 'fire' | 'metal' | 'thunder' | 'water' | 'wood' | 'earth' | 'light' | 'dark'
   // 主動技能(有冷卻、有特效、造成固定效果)。冷卻一律以**波**為單位。
   | 'strike' | 'pierce' | 'rally' | 'aegis';
+
+/**
+ * 八元素。**不做克制,做功能差異**——跑道遊戲看不到下一波是什麼屬性,
+ * 做克制的話「看得到 → 選擇變成查表」「看不到 → 變成擲骰子」,兩個都不好玩。
+ * 所以每個元素在**不同的處境**有用,不是對**不同的敵人**有用。
+ *
+ * **八個都刻意只在你失誤時才生效**(漏接、被撞、快死),完美玩家全清不漏,一個都碰不到:
+ * 這讓它們自動不進理想路線,敵人不會為了一個沒人用得到的東西變強——
+ * 跟兌換率、主動技能同一個道理,也是這款所有「抬地板不抬天花板」機制的共同形狀。
+ */
+export const ELEMENTS: RunSkillId[] = ['fire', 'metal', 'thunder', 'water', 'wood', 'earth', 'light', 'dark'];
+export function isElement(id: RunSkillId): boolean {
+  return ELEMENTS.includes(id);
+}
 
 /** 哪些是主動技能。轉職解鎖的就是這一串的前 N 款(見 laneJobs 的 activeSkillsForStage)。 */
 export const ACTIVE_SKILL_IDS: RunSkillId[] = ['strike', 'pierce', 'rally', 'aegis'];
@@ -77,10 +95,23 @@ const PER_LEVEL = {
   edgeAttack: 0.18,
   /** 增殖:隊伍人數的幾成 */
   swarmHeroes: 0.25,
-  /** 壁壘:兌換率(一個勇者能換掉幾隻怪)。血量拿掉之後,防禦軸一律走這個。 */
-  bulwarkTrade: 0.3,
-  /** 專注:暴擊率(純演出,不影響擊殺數,見 laneRun 的 isCritHit) */
-  focusCrit: 0.06,
+  // ---- 八元素(每一款的規則都不一樣,不是同一個東西換名字)----
+  /** 火・燃燒:每一波額外燒掉固定幾隻(前期、小波最有感) */
+  fireKills: 1,
+  /** 金・穿透:每一波額外清掉整波的幾成(後期、大波才有感,跟火互補) */
+  metalRatio: 0.06,
+  /** 雷・連鎖:額外清掉「你自己打倒的隻數」的幾成(你越強放大越多) */
+  thunderRatio: 0.08,
+  /** 水・減速:怪衝得慢 = 撞上來的損失小,也就是兌換率 */
+  waterTrade: 0.25,
+  /** 木・再生:每一波把這一場**已經失去的人**補回來幾個(沒失去就沒得補) */
+  woodRegen: 1,
+  /** 土・護盾:每幾波擋下一整波的損失(冷卻以波計) */
+  earthCooldown: 6,
+  /** 光・復活:人數歸零時保住幾個人。一場只有一次。 */
+  lightRevive: 3,
+  /** 暗・吸取:漏過來的怪有幾成反而加入你(只有漏接時才有東西可吸) */
+  darkLeech: 0.2,
   /** 爆裂(主動):每次觸發直接清掉幾隻(固定值,前期最有感) */
   strikeKills: 2,
   /** 貫穿(主動):清掉整波的幾成(比例值,後期大波才有感——跟爆裂互補) */
@@ -103,8 +134,15 @@ export function strikeCooldownWaves(level: number): number {
 export const RUN_SKILLS: RunSkillSpec[] = [
   { id: 'edge', name: '鋒刃', describe: (l) => `每人攻擊力 +${Math.round(PER_LEVEL.edgeAttack * l * 100)}%` },
   { id: 'swarm', name: '增殖', describe: (l) => `勇者數量 +${Math.round(PER_LEVEL.swarmHeroes * l * 100)}%` },
-  { id: 'bulwark', name: '壁壘', describe: (l) => `兌換率 +${Math.round(PER_LEVEL.bulwarkTrade * l * 100)}%` },
-  { id: 'focus', name: '專注', describe: (l) => `暴擊率 +${Math.round(PER_LEVEL.focusCrit * l * 100)}%` },
+  // 八元素。說明一律寫「什麼時候有用」,不是只寫數字——玩家要在 2 秒內判斷該不該拿。
+  { id: 'fire', name: '火・燃燒', describe: (l) => `每波多燒掉 ${PER_LEVEL.fireKills * l} 隻` },
+  { id: 'metal', name: '金・穿透', describe: (l) => `每波多清掉整波的 ${Math.round(PER_LEVEL.metalRatio * l * 100)}%` },
+  { id: 'thunder', name: '雷・連鎖', describe: (l) => `你打倒的每 ${Math.round(1 / (PER_LEVEL.thunderRatio * l))} 隻多帶走 1 隻` },
+  { id: 'water', name: '水・減速', describe: (l) => `怪衝得慢,兌換率 +${Math.round(PER_LEVEL.waterTrade * l * 100)}%` },
+  { id: 'wood', name: '木・再生', describe: (l) => `每波補回 ${PER_LEVEL.woodRegen * l} 個失去的勇者` },
+  { id: 'earth', name: '土・護盾', describe: (l) => `每 ${Math.max(2, PER_LEVEL.earthCooldown - l)} 波擋下一整波損失` },
+  { id: 'light', name: '光・復活', describe: (l) => `倒下時保住 ${PER_LEVEL.lightRevive * l} 人(一場一次)` },
+  { id: 'dark', name: '暗・吸取', describe: (l) => `漏過來的怪有 ${Math.round(PER_LEVEL.darkLeech * l * 100)}% 加入你` },
   {
     id: 'strike',
     name: '爆裂',
@@ -231,10 +269,22 @@ export interface RunSkillEffects {
   attackMultiplier: number;
   /** 隊伍人數乘這個 */
   heroMultiplier: number;
-  /** 兌換率乘這個 */
+  /** 兌換率乘這個(水・減速) */
   tradeMultiplier: number;
-  /** 額外暴擊率(純演出) */
-  bonusCrit: number;
+  /** 火・燃燒:每波額外燒掉幾隻 */
+  burnKills: number;
+  /** 金・穿透:每波額外清掉整波的幾成 */
+  pierceRatio: number;
+  /** 雷・連鎖:額外清掉「自己打倒的隻數」的幾成 */
+  chainRatio: number;
+  /** 木・再生:每波補回幾個「這一場已經失去的人」 */
+  regen: number;
+  /** 土・護盾:幾波擋一次(Infinity = 沒點) */
+  shieldCooldown: number;
+  /** 光・復活:倒下時保住幾個人(一場一次;0 = 沒點) */
+  revive: number;
+  /** 暗・吸取:漏過來的怪有幾成加入你 */
+  leech: number;
   /**
    * 目前帶著的主動技能,每一款各自的冷卻與效果。
    *
@@ -271,14 +321,27 @@ export function runSkillEffects(skills: RunSkillState[]): RunSkillEffects {
   let attack = 0;
   let heroes = 0;
   let trade = 0;
-  let crit = 0;
+  let burnKills = 0;
+  let pierceRatio = 0;
+  let chainRatio = 0;
+  let regen = 0;
+  let shieldLevel = 0;
+  let revive = 0;
+  let leech = 0;
   const actives: ActiveTrigger[] = [];
   for (const s of skills) {
     const level = Math.min(MAX_RUN_SKILL_LEVEL, Math.max(0, s.level));
     if (s.id === 'edge') attack += PER_LEVEL.edgeAttack * level;
     if (s.id === 'swarm') heroes += PER_LEVEL.swarmHeroes * level;
-    if (s.id === 'bulwark') trade += PER_LEVEL.bulwarkTrade * level;
-    if (s.id === 'focus') crit += PER_LEVEL.focusCrit * level;
+    // 八元素:每一款的規則都不一樣,而且全部只在「失誤了」才生效。
+    if (s.id === 'fire') burnKills += PER_LEVEL.fireKills * level;
+    if (s.id === 'metal') pierceRatio += PER_LEVEL.metalRatio * level;
+    if (s.id === 'thunder') chainRatio += PER_LEVEL.thunderRatio * level;
+    if (s.id === 'water') trade += PER_LEVEL.waterTrade * level;
+    if (s.id === 'wood') regen += PER_LEVEL.woodRegen * level;
+    if (s.id === 'earth') shieldLevel = Math.max(shieldLevel, level);
+    if (s.id === 'light') revive += PER_LEVEL.lightRevive * level;
+    if (s.id === 'dark') leech += PER_LEVEL.darkLeech * level;
     if (level <= 0) continue;
     if (s.id === 'strike') {
       actives.push({ id: s.id, name: '爆裂', cooldown: strikeCooldownWaves(level), kills: PER_LEVEL.strikeKills * level });
@@ -297,7 +360,13 @@ export function runSkillEffects(skills: RunSkillState[]): RunSkillEffects {
     attackMultiplier: 1 + attack,
     heroMultiplier: 1 + heroes,
     tradeMultiplier: 1 + trade,
-    bonusCrit: crit,
+    burnKills,
+    pierceRatio,
+    chainRatio,
+    regen,
+    shieldCooldown: shieldLevel > 0 ? Math.max(2, PER_LEVEL.earthCooldown - shieldLevel) : Infinity,
+    revive,
+    leech,
     actives,
   };
 }

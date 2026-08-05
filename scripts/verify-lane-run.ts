@@ -14,7 +14,7 @@ import {
   applyGate, gateLabel, DOUBLE_GATES_PER_RUN, GEAR_STEP, doubleGatesForStage, LONG_LEVEL_RATIO_SCALE,
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
   TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane, MIN_WAVE_SIZE,
-  type Lane, type RunState,
+  type Lane, type RunState, type WaveBoost,
 } from '../game/laneRun';
 import {
   clearRate, pickAccurate, pickBest as simBest, pickRandom as simRandom, pickWorst as simWorst,
@@ -23,7 +23,7 @@ import {
 import {
   runSkillPicksForWave, totalRunSkillPicks, MAX_RUN_SKILL_LEVEL, RUN_SKILLS,
   MAX_RUN_SKILL_SLOTS, runSkillEffects, strikeCooldownWaves, bestRunSkillChoice, runSkillOffersAt,
-  ACTIVE_SKILL_IDS,
+  ACTIVE_SKILL_IDS, ELEMENTS, runSkillSpec,
 } from '../game/laneRunSkills';
 
 let fail = 0;
@@ -198,8 +198,11 @@ check('尾巴也沒有失控(最大不超過中位數的 2.5 倍)',
 check('加倍長的小關也壓得住(700 倍以內,中位數)',
   median(longGrowths) <= 700,
   `中位 ${median(longGrowths).toFixed(0)} 倍(${Math.min(...longGrowths).toFixed(0)}~${Math.max(...longGrowths).toFixed(0)})`);
+// 2.6 而不是 2.2:長關的選擇次數是兩倍,而技能池有 14 種、一次只開 3 個——
+// 加戰力的那兩款(鋒刃/增殖)平均每 2.5 次才會出現一次,所以「挑到幾次」的累積差距
+// 在 20 次選擇裡會比 10 次明顯得多。閘門數兩邊仍然都是 20 個,這一項守的是那個。
 check('長關的放大量跟一般關同一個量級(長在波數與吸收,不在閘門)',
-  median(longGrowths) <= median(growths) * 2.2,
+  median(longGrowths) <= median(growths) * 2.6,
   `一般 ${median(growths).toFixed(0)} 倍 / 長關 ${median(longGrowths).toFixed(0)} 倍`);
 // 下界守的是「這個閘門有沒有感覺」:低於 +6% 的話玩家吃到「裝備強化」會覺得什麼都沒發生。
 check('裝備強化的幅度看得出來', GEAR_STEP >= 1.06 && GEAR_STEP < 1.2, `x${GEAR_STEP}`);
@@ -450,10 +453,48 @@ check('額外擊殺不會超過整波隻數',
     .state.heroes >= 50);
 // 10 格滿了之後只能升級手上的——不然「廣度 vs 深度」那個決策不存在。
 const fullBag = RUN_SKILLS.slice(0, MAX_RUN_SKILL_SLOTS).map((s) => ({ id: s.id, level: 1 }));
-check(`最多帶 ${MAX_RUN_SKILL_SLOTS} 格,滿了只能升級手上的`,
-  RUN_SKILLS.length <= MAX_RUN_SKILL_SLOTS
+// 技能種類**要比格數多**,「廣度 vs 深度」才是真的取捨(不然全拿也裝得下)。
+check(`技能種類(${RUN_SKILLS.length})多於格數(${MAX_RUN_SKILL_SLOTS}),滿了只能升級手上的`,
+  RUN_SKILLS.length > MAX_RUN_SKILL_SLOTS
   && runSkillOffersAt(fullBag, 1, 0).every((o) => fullBag.some((s) => s.id === o.id)),
-  `目前 ${RUN_SKILLS.length} 種技能`);
+  `${RUN_SKILLS.length} 種 / ${MAX_RUN_SKILL_SLOTS} 格`);
+
+// --- 八元素:每一款規則都不一樣,而且**全部只在失誤時才生效** ---
+const elemFx = (id: (typeof ELEMENTS)[number], l = 3) => runSkillEffects([{ id, level: l }]);
+check('八個元素都存在,而且效果組合互不相同(不是同一個東西換名字)',
+  ELEMENTS.length === 8
+  && new Set(ELEMENTS.map((id) => {
+    const e = elemFx(id);
+    return JSON.stringify([e.burnKills > 0, e.pierceRatio > 0, e.chainRatio > 0, e.tradeMultiplier > 1,
+      e.regen > 0, Number.isFinite(e.shieldCooldown), e.revive > 0, e.leech > 0]);
+  })).size === 8,
+  ELEMENTS.map((id) => runSkillSpec(id).name).join(' '));
+check('沒有任何元素會加戰力(所以八個都不進敵人曲線)',
+  ELEMENTS.every((id) => {
+    const e = elemFx(id, MAX_RUN_SKILL_LEVEL);
+    return e.attackMultiplier === 1 && e.heroMultiplier === 1;
+  }));
+// 這一項是八元素設計的核心:完美玩家(全清、不漏、不死)一個都用不到。
+// 用一波「戰力遠超過」的結算去驗——帶滿八元素跟什麼都不帶,結果必須完全一樣。
+const perfectWave = { power: 1, reward: 0, species: [{ id: 'blob-1', name: '史' }], name: '史', units: 6 };
+const perfectState: RunState = { ...initialRunState(1), heroes: 50, perHero: 1000 };
+const allElements: WaveBoost = {
+  kills: 5, killRatio: 0.3, chainRatio: 0.3, leech: 1, regen: 9, lostSoFar: 0, revive: 3,
+};
+check('完美玩家帶滿八元素也一模一樣(所以它們是抬地板不抬天花板)',
+  resolveEnemy(perfectState, perfectWave).state.heroes
+  === resolveEnemy(perfectState, perfectWave, allElements).state.heroes);
+// 反過來:落後的玩家帶了就有差。
+const behindState: RunState = { ...initialRunState(1), heroes: 20, perHero: 1 };
+const behindWave = { ...perfectWave, power: 400, units: 12 };
+check('落後的玩家帶了就活得比較久(越落後越有用)',
+  resolveEnemy(behindState, behindWave, allElements).state.heroes
+  > resolveEnemy(behindState, behindWave).state.heroes,
+  `裸的 ${resolveEnemy(behindState, behindWave).state.heroes} 人 / 帶滿 ${resolveEnemy(behindState, behindWave, allElements).state.heroes} 人`);
+// 木・再生只補得回「已經失去的」——沒失去就沒得補。
+check('木・再生沒失去就補不了',
+  resolveEnemy(behindState, behindWave, { regen: 9, lostSoFar: 0 }).state.heroes
+  === resolveEnemy(behindState, behindWave).state.heroes);
 
 console.log('\n過關率(列=關卡,欄=選法):');
 console.log('        最佳    隨機    最差');

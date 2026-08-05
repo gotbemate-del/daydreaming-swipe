@@ -226,6 +226,10 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
    * 綁秒的話跑速一變技能強度就跟著變(第 1 關每 4.5 排、第 40 關每 11 排)。
    */
   const wavesSinceRef = useRef<Record<string, number>>({});
+  /** 這一場到目前為止總共失去幾個人。木・再生只補得回這個數字以內。 */
+  const lostSoFarRef = useRef(0);
+  /** 光・復活用過沒。一場只有一次。 */
+  const revivedRef = useRef(false);
   const [lastStrike, setLastStrike] = useState<{ at: number; names: string[]; kills: number } | null>(null);
 
   const paused = skillOffers.length > 0;
@@ -498,19 +502,37 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         const fired: string[] = [];
         if (due.nodes[0]?.kind === 'enemy') {
           const units = due.nodes[0].enemy?.units ?? 0;
-          for (const a of runSkillEffects(runSkills).actives) {
+          const fx = runSkillEffects(runSkills);
+          // 八元素:常駐,不用冷卻(除了土)。全部只在「已經失誤了」的路徑上生效,
+          // 所以完美玩家一個都碰不到——它們因此不進理想路線(見 laneRun 的 WaveBoost)。
+          if (fx.burnKills > 0) boost.kills = (boost.kills ?? 0) + fx.burnKills;
+          if (fx.pierceRatio > 0) boost.killRatio = (boost.killRatio ?? 0) + fx.pierceRatio;
+          if (fx.chainRatio > 0) boost.chainRatio = fx.chainRatio;
+          if (fx.leech > 0) boost.leech = fx.leech;
+          if (fx.regen > 0) { boost.regen = fx.regen; boost.lostSoFar = lostSoFarRef.current; }
+          if (fx.revive > 0 && !revivedRef.current) boost.revive = fx.revive;
+          // 土・護盾:唯一有冷卻的元素。
+          if (Number.isFinite(fx.shieldCooldown)) {
+            const since = (wavesSinceRef.current.earth ?? 99) + 1;
+            if (since >= fx.shieldCooldown) { wavesSinceRef.current.earth = 0; boost.immune = true; fired.push('土・護盾'); }
+            else wavesSinceRef.current.earth = since;
+          }
+          for (const a of fx.actives) {
             const since = (wavesSinceRef.current[a.id] ?? 99) + 1;
             if (since < a.cooldown) { wavesSinceRef.current[a.id] = since; continue; }
             wavesSinceRef.current[a.id] = 0;
             fired.push(a.name);
             if (a.kills) boost.kills = (boost.kills ?? 0) + a.kills;
-            if (a.killRatio) boost.kills = (boost.kills ?? 0) + Math.ceil(units * a.killRatio);
+            if (a.killRatio) boost.killRatio = (boost.killRatio ?? 0) + a.killRatio;
             if (a.heroes) boost.heroes = (boost.heroes ?? 0) + a.heroes;
             if (a.immune) boost.immune = true;
           }
           if (fired.length > 0) setLastStrike({ at: Date.now(), names: fired, kills: boost.kills ?? 0 });
         }
         const r = resolveRow(landed, due, offsetRef.current, boost);
+        // 記帳:失去的人累加起來給木・再生當上限;復活用掉就記起來(一場一次)。
+        if (r.heroDelta < 0) lostSoFarRef.current += -r.heroDelta;
+        if (boost.revive && r.state.phase !== 'dead' && r.state.heroes === boost.revive) revivedRef.current = true;
         feedbackKeyRef.current += 1;
         setFeedback({
           key: feedbackKeyRef.current,

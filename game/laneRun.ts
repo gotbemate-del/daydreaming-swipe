@@ -1177,13 +1177,32 @@ export const MISS_MESSAGE = '沒碰到';
  *
  * **人數在這裡可以歸零**(閘門不行,見 applyGate):死亡發生在「最後一個人被換掉」那一刻。
  */
-/** 主動技能這一波帶來的效果(見 laneRunSkills 的 ActiveTrigger)。 */
+/**
+ * 這一波帶進來的額外效果:主動技能(見 laneRunSkills 的 ActiveTrigger)+ 八元素。
+ *
+ * **八元素刻意全部只在「已經失誤了」的路徑上生效**——燒掉/穿透/連鎖只在你打不完時
+ * 才減少漏接,再生只補「已經失去的」,吸取只吸漏過來的,復活只在歸零時。
+ * 完美玩家全清不漏,八個一個都碰不到,所以它們全部**不進理想路線**:
+ * 敵人不會為了一個沒人用得到的東西變強(跟兌換率、主動技能同一個形狀)。
+ */
 export interface WaveBoost {
-  /** 額外清掉幾隻 */
+  /** 額外清掉幾隻(火・燃燒 + 主動) */
   kills?: number;
-  /** 額外補幾個勇者 */
+  /** 額外清掉整波的幾成(金・穿透 + 貫穿) */
+  killRatio?: number;
+  /** 額外清掉「自己打倒的隻數」的幾成(雷・連鎖) */
+  chainRatio?: number;
+  /** 額外補幾個勇者(號令) */
   heroes?: number;
-  /** 這一波的損失全擋下來 */
+  /** 補回幾個「這一場已經失去的人」(木・再生),上限是實際失去的數量 */
+  regen?: number;
+  /** 這一場到目前為止總共失去幾個人(給 regen 當上限用) */
+  lostSoFar?: number;
+  /** 漏過來的怪有幾成加入你(暗・吸取) */
+  leech?: number;
+  /** 人數歸零時保住幾個(光・復活) */
+  revive?: number;
+  /** 這一波的損失全擋下來(土・護盾 + 壁障) */
   immune?: boolean;
 }
 
@@ -1210,15 +1229,18 @@ export function resolveEnemy(
   }
   // 主動技能加在 kills 上而不是加在戰力上:固定效果才有「越落後越有用」的性質,
   // 而且理想玩家本來就全清,對他等於零——所以它不進理想路線,也就不會把敵人養大。
-  const kills = Math.min(
-    enemy.units,
-    waveKillCount(totalAttack(state), enemy.power, enemy.units) + Math.max(0, boost.kills ?? 0),
-  );
+  const own = waveKillCount(totalAttack(state), enemy.power, enemy.units);
+  const extra = Math.max(0, boost.kills ?? 0)
+    + Math.ceil(enemy.units * Math.max(0, boost.killRatio ?? 0))
+    + Math.ceil(own * Math.max(0, boost.chainRatio ?? 0));
+  const kills = Math.min(enemy.units, own + extra);
   const leaked = Math.max(0, enemy.units - kills);
   const next = { ...state };
   // 打倒的怪有一部分加入隊伍。放在「漏 0」那條路徑上而不是照 kills 給:
   // 半殘的一波已經在扣人了,再補回來會讓「擋不住」這件事變得模糊。
-  const rallied = Math.max(0, boost.heroes ?? 0);
+  // 木・再生:只補得回「已經失去的」,沒失去就沒得補——所以完美玩家拿它等於零。
+  const regen = Math.min(Math.max(0, boost.regen ?? 0), Math.max(0, boost.lostSoFar ?? 0));
+  const rallied = Math.max(0, boost.heroes ?? 0) + regen;
   if (leaked === 0 || boost.immune) {
     const joined = absorbedFrom(kills, enemy.leakCost) + rallied;
     next.coins += enemy.reward;
@@ -1235,16 +1257,25 @@ export function resolveEnemy(
   const cost = Math.max(1, enemy.leakCost ?? 1);
   next.heroes += rallied;
   const lost = Math.ceil((leaked * cost) / Math.max(BASE_TRADE_RATE, next.tradeRate));
+  // 暗・吸取:漏過來的怪有一部分反而加入你。只有漏接時才有東西可吸,所以完美玩家拿它等於零。
+  const leeched = Math.floor(leaked * Math.max(0, boost.leech ?? 0));
   const before = totalAttack(next);
-  next.heroes = next.heroes - lost;
+  next.heroes = next.heroes - lost + leeched;
   if (next.heroes <= 0) {
-    next.heroes = 0;
-    next.phase = 'dead';
+    // 光・復活:歸零的那一刻保住幾個人。一場一次,由外層負責只給一次。
+    const saved = Math.max(0, boost.revive ?? 0);
+    if (saved > 0) {
+      next.heroes = saved;
+    } else {
+      next.heroes = 0;
+      next.phase = 'dead';
+    }
   }
+  const delta = next.heroes - (state.heroes);
   return {
     state: next,
-    message: `漏了 ${leaked} 隻 -${lost} 人`,
-    heroDelta: -lost,
+    message: leeched > 0 ? `漏了 ${leaked} 隻 -${lost} 人(吸收 +${leeched})` : `漏了 ${leaked} 隻 -${lost} 人`,
+    heroDelta: delta,
     attackDelta: totalAttack(next) - before,
   };
 }
