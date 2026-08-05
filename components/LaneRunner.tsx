@@ -6,7 +6,6 @@ import {
   gateLabel,
   isTrapGate,
   gateSpan,
-  GATE_WIDTH,
   LANE_COUNT,
   MAX_GEAR,
   MISS_MESSAGE,
@@ -284,7 +283,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
   const incoming = wave ? upcoming.find((r) => r.index === wave.rowIndex)?.nodes[0].enemy : undefined;
 
   /**
-   * 閘門排。每一格不佔滿整條跑道(見 laneRun 的 GATE_WIDTH),左右都留空隙——
+   * 閘門排。每一格不佔滿整條跑道(見 laneRun 的 gateWidthForStage),左右都留空隙——
    * 沒把勇者拉到框上面就整格漏掉,所以框畫多寬就必須等於判定多寬,不能為了好看畫大一點。
    */
   function renderGateRow(row: RunRow) {
@@ -295,7 +294,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
     const top = bottomYFor(ahead, headY) - GATE_HEIGHT;
     return row.nodes.map((node) => {
       const trap = node.gate ? isTrapGate(node.gate) : false;
-      const span = gateSpan(node.lane);
+      const span = gateSpan(node.lane, stage);
       return (
         <View
           key={`${row.index}-${node.lane}`}
@@ -306,7 +305,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
           style={[
             styles.gate,
             trap ? styles.gateTrap : styles.gateGood,
-            { left: span.from * trackWidth, width: GATE_WIDTH * trackWidth, top, height: GATE_HEIGHT },
+            { left: span.from * trackWidth, width: (span.to - span.from) * trackWidth, top, height: GATE_HEIGHT },
           ]}
         >
           <Text style={styles.gateText} numberOfLines={2}>

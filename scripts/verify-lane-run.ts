@@ -9,7 +9,8 @@ import {
   HITS_PER_MONSTER, moveLane, resolveEnemy, resolveRow, runSpeed, secondsPerRow, waveLength,
   rowsForStage, wavesForStage, stageLabel, chapterOfStage, levelOfStage, enemyPowerRatioForStage,
   LEVELS_PER_CHAPTER, WAVES_PER_LEVEL, LONG_LEVEL_WAVES, EASY_RATIO, lastEnemyRowIndex, isBossStage,
-  GATE_WIDTH, gateSpan, hitsGate, MONSTER_JITTER, SPECIES_PER_WAVE, START_OFFSET, terrainForStage,
+  GATE_WIDTH, GATE_WIDTH_MIN, gateWidthForStage, trapHalveWeightForStage, heroWaveEveryForStage,
+  gateSpan, hitsGate, MONSTER_JITTER, SPECIES_PER_WAVE, START_OFFSET, terrainForStage,
   ENEMY_POWER_RATIO, goodGateGrowthAt, gatesBeforeRow, isTrapGate, runSeconds, ELITE_MASS, ELITE_HITS, absorbedFrom,
   applyGate, gateLabel, DOUBLE_GATES_PER_RUN, GEAR_STEP, doubleGatesForStage, LONG_LEVEL_RATIO_SCALE,
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
@@ -635,6 +636,53 @@ check('落後的玩家帶對屬性明顯更有用',
   > resolveEnemy(behindState, behindWave, allElements).state.heroes,
   `沒剋 ${resolveEnemy(behindState, behindWave, allElements).state.heroes} 人 / 剋中 ${resolveEnemy(behindState, behindWave, counteredAll).state.heroes} 人`);
 
+// --- 第 40 小關之後的難度分段 ---
+// 三顆旋鈕、一段一顆,而且**三顆都不能碰到完美玩家**——碰到就進了理想路線,
+// 敵人戰力會為了它變強,「選對就一定過」當場失效。
+const bandStages = [1, 40, 200, 400, 800, 1200, 2000, 3000];
+console.log('\n難度分段(第 40 小關之後,一段轉一顆):');
+console.log('   小關    閘門寬   腰斬陷阱   勇者波');
+for (const st of bandStages) {
+  console.log(`  ${String(st).padStart(5)}    ${gateWidthForStage(st).toFixed(3)}    `
+    + `${(trapHalveWeightForStage(st) * 100).toFixed(0).padStart(3)}%     每 ${heroWaveEveryForStage(st)} 波`);
+}
+check('閘門只會變窄不會變寬(而且有下限)', (() => {
+  const w = bandStages.map(gateWidthForStage);
+  return w.every((v, i) => i === 0 || v <= w[i - 1] + 1e-9)
+    && w[0] === GATE_WIDTH && w[w.length - 1] >= GATE_WIDTH_MIN - 1e-9;
+})());
+check('陷阱只會變重不會變輕(而且三種都不會消失)', (() => {
+  const t = bandStages.map(trapHalveWeightForStage);
+  return t.every((v, i) => i === 0 || v >= t[i - 1] - 1e-9) && t[t.length - 1] < 1;
+})());
+check('第 40 小關之前完全不動(前 4 個大關的難度只由跑速決定)',
+  gateWidthForStage(1) === gateWidthForStage(40)
+  && trapHalveWeightForStage(1) === trapHalveWeightForStage(40)
+  && heroWaveEveryForStage(1) === heroWaveEveryForStage(40));
+// 一段只轉一顆:任何相鄰的兩關之間,最多只有一顆旋鈕在動。
+check('一段只轉一顆旋鈕(某一段變難了講得出是哪一顆造成的)', (() => {
+  const moving = (a: number, b: number) => [
+    Math.abs(gateWidthForStage(a) - gateWidthForStage(b)) > 1e-9,
+    Math.abs(trapHalveWeightForStage(a) - trapHalveWeightForStage(b)) > 1e-9,
+    heroWaveEveryForStage(a) !== heroWaveEveryForStage(b),
+  ].filter(Boolean).length;
+  for (let st = 1; st < 3000; st += 7) if (moving(st, st + 7) > 1) return false;
+  return true;
+})());
+// 最窄的閘門仍然踩得到:站在跑道中央一定算數,而中間的空隙也一定還在。
+check('閘門窄到底仍然踩得到,而且中間的空隙還在',
+  [0, 1].every((l) => hitsGate(laneCenterOffset(l as Lane), l as Lane, 3000))
+  && !hitsGate(0.5, 0, 3000) && !hitsGate(0.5, 1, 3000));
+// **這一項是分段旋鈕的核心**:完美玩家在最後一關跟第一關一樣是 100% 過關。
+check('三顆旋鈕都碰不到完美玩家(難度分段沒有破壞結構保證)',
+  [400, 1200, 3000].every((st) => clearRate(st, simBest, 120) === 1));
+// 反過來:手不準的人在後段確實比前段慘(閘門變窄真的有作用)。
+const sloppyAt = (st: number) => clearRate(st, simBest, 200, { sloppy: 0.16 });
+const sloppyEarly = sloppyAt(40);
+const sloppyLate = sloppyAt(3000);
+check('手不準的人在後段明顯更慘(閘門變窄有作用)',
+  sloppyLate < sloppyEarly - 0.1, `第40關 ${(sloppyEarly * 100).toFixed(0)}% → 第3000關 ${(sloppyLate * 100).toFixed(0)}%`);
+
 console.log('\n過關率(列=關卡,欄=選法):');
 console.log('        最佳    隨機    最差');
 const rows2: { stage: number; b: number; r: number; w: number }[] = [];
@@ -652,9 +700,9 @@ const accuracyRate = (stage: number, p: number, trials = 400) => clearRate(stage
 const ACCURACIES = [1, 0.95, 0.9, 0.85, 0.8];
 console.log('\n準確率 -> 過關率(每一排有 p 的機率挑對邊):');
 console.log('           ' + ACCURACIES.map((a) => (a * 100).toFixed(0).padStart(5) + '%').join(''));
-const accByStage = [1, 12, 102].map((stage) => {
+const accByStage = [1, 12, 102, 700, 1500, 2900].map((stage) => {
   const r = ACCURACIES.map((a) => accuracyRate(stage, a));
-  console.log(`  第${String(stage).padStart(3)}關  ` + r.map((v) => (v * 100).toFixed(0).padStart(5) + '%').join(''));
+  console.log(`  第${String(stage).padStart(4)}關  ` + r.map((v) => (v * 100).toFixed(0).padStart(5) + '%').join(''));
   return { stage, r };
 });
 check('準確率越高過關率越高(而且是單調的)',
@@ -676,6 +724,15 @@ check('95% 與 80% 之間拉得開(選擇真的有意義)',
 // 加倍長的小關要比同一大關的一般小關硬,但不能硬到變成另一個遊戲。
 const normalAcc = accuracyRate(12, 0.9);
 const longAcc = accuracyRate(15, 0.9);
+// 難度分段最直接的驗收:後面的關卡不能比前面的好過。
+// 這一項在分段旋鈕上線之前是「全部一樣」——第 40 關之後跑速封頂,而其他東西都不動,
+// 所以第 102 關跟第 2900 關的曲線一模一樣,260 個大關在難度上完全是平的。
+check('後面的關卡不會比前面好過(第 40 關之後不再是一條平的)', (() => {
+  const at90 = accByStage.filter((s) => s.stage > 1).map((s) => s.r[2]);
+  const nonIncreasing = at90.every((v, i) => i === 0 || v <= at90[i - 1] + 0.03);
+  const actuallyTightens = at90[at90.length - 1] < at90[0] - 0.1;
+  return nonIncreasing && actuallyTightens;
+})(), accByStage.filter((s) => s.stage > 1).map((s) => `${s.stage}:${(s.r[2] * 100).toFixed(0)}%`).join(' '));
 check('加倍長的小關比較硬,但沒有硬過頭',
   longAcc < normalAcc && longAcc >= normalAcc * 0.6,
   `一般 ${(normalAcc * 100).toFixed(0)}% / 長關 ${(longAcc * 100).toFixed(0)}%`);

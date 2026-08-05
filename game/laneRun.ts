@@ -55,14 +55,15 @@ export function laneFromOffset(offset: number): Lane {
 // 手指得真的把勇者拉到那一格上面。
 export const GATE_WIDTH = 0.34;
 
-export function gateSpan(lane: Lane): { from: number; to: number } {
+export function gateSpan(lane: Lane, stage = 1): { from: number; to: number } {
   const center = laneCenterOffset(lane);
-  return { from: center - GATE_WIDTH / 2, to: center + GATE_WIDTH / 2 };
+  const half = gateWidthForStage(stage) / 2;
+  return { from: center - half, to: center + half };
 }
 
 /** 勇者站在 offset 時有沒有真的踩到這一格的閘門。 */
-export function hitsGate(offset: number, lane: Lane): boolean {
-  const { from, to } = gateSpan(lane);
+export function hitsGate(offset: number, lane: Lane, stage = 1): boolean {
+  const { from, to } = gateSpan(lane, stage);
   const at = clampOffset(offset);
   return at >= from && at <= to;
 }
@@ -168,6 +169,11 @@ export interface RunRow {
 }
 
 export interface RunState {
+  /**
+   * 這是第幾個小關。放進 state 是因為**結算需要它**:閘門寬度隨關卡收窄
+   * (見 gateWidthForStage),而 resolveRow 只拿得到 state 與 row。
+   */
+  stage: number;
   /**
    * 結算時腳下踩的那一格。畫面上的實際橫向位置是連續的、存在 hooks/useLaneRun.ts,
    * 這裡只保留「換算成格子」的結果——純邏輯層不需要知道手指拖到哪個像素。
@@ -297,6 +303,67 @@ export function runSpeed(stage: number): number {
   const t = Math.min(1, Math.max(0, (stage - 1) / (SPEED_MAX_STAGE - 1)));
   return SPEED_START + t * (SPEED_MAX - SPEED_START);
 }
+
+// ---- 第 40 小關之後的難度分段 ----
+//
+// ## 為什麼跑速不能繼續加
+//
+// 跑速在第 40 小關封頂,不是忘了往上調——0.9 秒一排是「看清楚兩個選項 + 決定 + 滑過去」
+// 的下限,再快就變成瞎猜,那不是難度是雜訊。**所以後面 260 個大關的難度不能再靠速度。**
+// 這條走到底之後只剩兩個方向:要求更精準,以及讓失誤更貴。
+//
+// ## 一段只轉一顆旋鈕
+//
+// 三段各自只動一件事,而且各有各的「難在哪」:
+//
+//   小關 41~400     閘門變窄    難在**手要準**(選對邊還不夠,要真的踩上去)
+//   小關 501~1200   陷阱變重    難在**失誤更貴**(踩錯一格掉的更多)
+//   小關 1401 之後  勇者波變密  難在**閃的次數變多**(每 3 波一次 → 每 2 波一次)
+//
+// 混在一起轉的話,某一段變難了也講不出是哪一顆造成的,下次要調就只能整組亂試。
+// **段與段之間刻意留空白**(401~500、1201~1400):兩顆同時在動的那幾關會變成
+// 唯一一段「難度跳兩級」的地方,而那不是設計決定的,是兩條斜坡剛好重疊。
+// verify 有一項在盯這件事(任何相鄰的兩關之間最多只有一顆旋鈕在動)。
+//
+// ## 三顆都不會破壞結構保證
+//
+// 完美玩家踩得準(閘門再窄也踩得到)、不吃陷阱、勇者波全清(全清就沒有武器飛過來),
+// 所以三顆旋鈕對他**全部等於零**——敵人戰力照舊由理想路線推出來,「選對就一定過」不變。
+// 動的只有「失誤的代價」與「要多會操作」,這正是後期該長的東西。
+
+/** 閘門開始變窄的小關,以及窄到底的小關。 */
+const GATE_NARROW_FROM = 41;
+const GATE_NARROW_TO = 400;
+/** 窄到底剩多寬。跑道半邊寬 0.5,所以 0.24 仍然是「站對邊再稍微對準」就踩得到。 */
+export const GATE_WIDTH_MIN = 0.24;
+
+/**
+ * 這一關的閘門多寬。第 40 小關之前維持 GATE_WIDTH,之後線性收到 GATE_WIDTH_MIN。
+ * **只影響「手準不準」**:站對邊而且拉到格子上的玩家永遠踩得到,窄的是容錯不是機率。
+ */
+export function gateWidthForStage(stage: number): number {
+  const t = Math.min(1, Math.max(0, (stage - GATE_NARROW_FROM) / (GATE_NARROW_TO - GATE_NARROW_FROM)));
+  return GATE_WIDTH + t * (GATE_WIDTH_MIN - GATE_WIDTH);
+}
+
+/** 陷阱開始變重的小關,以及重到底的小關。 */
+const TRAP_HARSH_FROM = 501;
+const TRAP_HARSH_TO = 1200;
+/** 一開始/最後,三種陷阱裡最痛的那一種(勇者 x0.5)佔多少。 */
+const TRAP_HALVE_WEIGHT = 0.45;
+const TRAP_HALVE_WEIGHT_MAX = 0.75;
+
+/**
+ * 這一關抽到「勇者 x0.5」的機率。三種陷阱裡它最痛(一次腰斬),所以把它的比重往上推
+ * 就等於把「踩錯一格」的代價往上推,而**完全不踩錯的人一點感覺都沒有**。
+ */
+export function trapHalveWeightForStage(stage: number): number {
+  const t = Math.min(1, Math.max(0, (stage - TRAP_HARSH_FROM) / (TRAP_HARSH_TO - TRAP_HARSH_FROM)));
+  return TRAP_HALVE_WEIGHT + t * (TRAP_HALVE_WEIGHT_MAX - TRAP_HALVE_WEIGHT);
+}
+
+/** 勇者波變密的起點。到這裡之後每 2 波一次(原本每 3 波)。 */
+const HERO_WAVE_DENSE_FROM = 1401;
 
 export function secondsPerRow(stage: number): number {
   return ROW_SPACING / runSpeed(stage);
@@ -510,6 +577,7 @@ export function createRng(seed: number): () => number {
 
 export function initialRunState(stage: number, start: RunStart = DEFAULT_RUN_START): RunState {
   return {
+    stage,
     lane: laneFromOffset(START_OFFSET),
     heroes: start.heroes,
     // 總戰力 = base x 倍率,再除以人數攤到每個人身上——所以起跑幾個人不會讓總戰力變多。
@@ -718,10 +786,14 @@ function makeGateRow(rng: () => number, stage: number, gateDepth: number, isDoub
   // 三種陷阱的痛法不一樣:x0.5 是一次腰斬(最痛)、裝備損壞打的是每人攻擊力、
   // 勇者 -N 是固定值(前期很痛、後期是零頭,自帶追趕)。舊版第三種是「血量 -30」,
   // 血量拿掉之後直接換成扣人——同一件事,少一層抽象。
+  // 最痛的那一種(腰斬)的比重隨關卡往上推,見 trapHalveWeightForStage。
+  // 另外兩種按原本的比例分掉剩下的,所以三種都不會消失。
+  const halve = trapHalveWeightForStage(stage);
+  const gearShare = (1 - halve) * 0.55;
   const bad: GateEffect =
-    badRoll < 0.45
+    badRoll < halve
       ? { stat: 'heroes', op: 'mul', value: 0.5 }
-      : badRoll < 0.75
+      : badRoll < halve + gearShare
         ? { stat: 'gear', op: 'add', value: -1 }
         : { stat: 'heroes', op: 'add', value: -idealStep(gateDepth).addN };
 
@@ -955,11 +1027,19 @@ export const HAZARD_WIDTH = 0.26;
  */
 export const HAZARD_LOSS_RATIO = 0.2;
 
+/**
+ * 幾波來一次勇者波。第三段的旋鈕:到 HERO_WAVE_DENSE_FROM 之後從每 3 波變每 2 波,
+ * 「要閃的次數」多一半。全清的人照樣一發都不用閃,所以它一樣不進理想路線。
+ */
+export function heroWaveEveryForStage(stage: number): number {
+  return stage >= HERO_WAVE_DENSE_FROM ? HERO_WAVE_EVERY - 1 : HERO_WAVE_EVERY;
+}
+
 /** 這一排是不是勇者波(精英與魔王優先,不重疊)。 */
 export function isHeroWaveRow(stage: number, rowIndex: number): boolean {
   if (!isEnemyRowIndex(rowIndex, stage) || isEliteRow(stage, rowIndex) || isBossRow(stage, rowIndex)) return false;
   const waveIndex = Math.floor(rowIndex / enemyEveryForStage(stage));
-  return waveIndex > 0 && waveIndex % HERO_WAVE_EVERY === 0;
+  return waveIndex > 0 && waveIndex % heroWaveEveryForStage(stage) === 0;
 }
 
 /**
@@ -1438,7 +1518,7 @@ export function resolveRow(state: RunState, row: RunRow, offset?: number, boost:
 
   if (node.kind === 'gate' && node.gate) {
     // 站在這一格,但沒踩在閘門上——整格漏掉。好處沒吃到,陷阱也沒踩到。
-    if (!hitsGate(at, node.lane)) {
+    if (!hitsGate(at, node.lane, state.stage)) {
       return { state: advanced, message: MISS_MESSAGE, heroDelta: 0, attackDelta: 0 };
     }
     const after = applyGate(advanced, node.gate);
