@@ -20,12 +20,13 @@
 
 import { LEVELS_PER_CHAPTER, TOTAL_CHAPTERS } from './laneRun';
 import { MAX_SKILL_LEVEL, MAX_SKILL_SLOTS, SKILLS, type SkillId, type SkillState } from './laneSkills';
+import { MAX_SKILL_BOOK_LEVEL } from './laneRunSkills';
 
 /**
  * 存檔格式版本。**改動任何欄位的意義就要 +1,並在 MIGRATIONS 補一條。**
  * 只是新增一個「有預設值的欄位」不必升版:readSave 會幫沒有的欄位補預設值。
  */
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 2;
 
 /** localStorage / AsyncStorage 的 key。改這個等於讓所有人的存檔消失,不要改。 */
 export const SAVE_KEY = 'daydreaming-swipe/save';
@@ -64,6 +65,13 @@ export interface SaveData {
   skills: SkillState[];
   /** 跨場累積的金幣。 */
   coins: number;
+  /**
+   * 技能書等級。生存模式掉的就是這個,**只往上開元素與主動的等級上限與選項保證**
+   * (見 laneRunSkills 的 MAX_SKILL_BOOK_LEVEL)——它碰不到理想路線,所以敵人不會跟著變強。
+   */
+  books: number;
+  /** 生存模式的最佳紀錄:連續過了幾關。純紀錄,不影響數值。 */
+  bestSurvival: number;
 }
 
 export const DEFAULT_SAVE: SaveData = {
@@ -72,6 +80,8 @@ export const DEFAULT_SAVE: SaveData = {
   job: null,
   skills: [],
   coins: 0,
+  books: 0,
+  bestSurvival: 0,
 };
 
 /** 全新的一份存檔。回傳新物件,呼叫端改它不會污染 DEFAULT_SAVE。 */
@@ -128,8 +138,10 @@ function readSkills(value: unknown): SkillState[] {
  * 遷移函式拿到的是**還沒驗證過**的 raw 物件,所以裡面一樣不能假設任何欄位存在。
  */
 const MIGRATIONS: Record<number, (raw: Record<string, unknown>) => Record<string, unknown>> = {
-  // 範例(等 v2 出現時):
-  // 1: (raw) => ({ ...raw, version: 2, newField: raw.oldField ?? 預設值 }),
+  // v1 → v2:生存模式與技能書上線。兩個都是新欄位,舊存檔沒有就是 0,
+  // 所以這一步其實只要改版號——但**還是要留這一條**,不然「v1 存檔」會走到
+  // 「沒有對應遷移就直接跳版」那條路徑,以後真的需要轉換欄位時很容易漏掉。
+  1: (raw) => ({ ...raw, version: 2, books: raw.books ?? 0, bestSurvival: raw.bestSurvival ?? 0 }),
 };
 
 /**
@@ -181,6 +193,8 @@ export function readSave(text: string | null | undefined): { save: SaveData; mig
       job: readJob(raw.job),
       skills: readSkills(raw.skills),
       coins: readInt(raw.coins, 0, 0, Number.MAX_SAFE_INTEGER),
+      books: readInt(raw.books, 0, 0, MAX_SKILL_BOOK_LEVEL),
+      bestSurvival: readInt(raw.bestSurvival, 0, 0, TOTAL_STAGES),
     },
     migrated,
   };

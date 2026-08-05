@@ -7,6 +7,7 @@
 import {
   DEFAULT_SAVE, newSave, readSave, writeSave, SAVE_VERSION, TOTAL_STAGES, type SaveData,
 } from '../game/save';
+import { MAX_SKILL_BOOK_LEVEL } from '../game/laneRunSkills';
 import { MAX_SKILL_LEVEL, MAX_SKILL_SLOTS } from '../game/laneSkills';
 
 let fail = 0;
@@ -31,6 +32,8 @@ const full: SaveData = {
   job: { archetype: 'magicRanged', branch: 'B', tier: 3 },
   skills: [{ id: 'forge', level: 5 }, { id: 'toughen', level: 2 }],
   coins: 98765,
+  books: 3,
+  bestSurvival: 42,
 };
 const round = readSave(writeSave(full)).save;
 check('存進去再讀回來一模一樣', JSON.stringify(round) === JSON.stringify(full), JSON.stringify(round));
@@ -110,9 +113,24 @@ survives('技能是 0 級 -> 當成沒學',
 survives('技能欄位不是陣列 -> 空的',
   JSON.stringify({ version: 1, skills: 'forge' }), (s) => s.skills.length === 0);
 
+survives('技能書被改超過上限 -> 夾回上限',
+  JSON.stringify({ version: 2, books: 999 }), (s) => s.books === MAX_SKILL_BOOK_LEVEL);
+survives('技能書是負數 -> 夾回 0',
+  JSON.stringify({ version: 2, books: -3 }), (s) => s.books === 0);
+
 // --- 版本與遷移 ---
 // CLAUDE.md:改動存檔結構要附遷移邏輯,並模擬一次「舊存檔載入」。
 // v0 = 這款正式格式之前的那些(沒有 version 欄位)。欄位名稱對得上的要留著。
+// v1 存檔:上一版正式格式,沒有 books / bestSurvival(生存模式那時還不存在)。
+const v1 = JSON.stringify({ version: 1, stage: 88, coins: 500, job: null, skills: [{ id: 'craft', level: 2 }] });
+const fromV1 = readSave(v1);
+check('v1 存檔升到 v2 之後進度全留著,新欄位補 0',
+  fromV1.save.stage === 88 && fromV1.save.coins === 500 && fromV1.save.skills[0]?.level === 2
+  && fromV1.save.books === 0 && fromV1.save.bestSurvival === 0 && fromV1.save.version === SAVE_VERSION,
+  JSON.stringify(fromV1.save));
+check('v1 存檔會回報 migrated', fromV1.migrated === true);
+check('v1 升上來之後再讀一次就穩定了', readSave(writeSave(fromV1.save)).migrated === false);
+
 const v0 = JSON.stringify({ stage: 42, coins: 3000, skills: [{ id: 'forge', level: 3 }] });
 const fromV0 = readSave(v0);
 check('舊存檔(沒有 version 欄位)載入後保留得住進度',

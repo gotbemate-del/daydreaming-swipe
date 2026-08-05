@@ -10,6 +10,11 @@ import {
   DEFAULT_RUN_START, initialRunState,
   totalAttack, ENEMY_POWER_RATIO, type RunStart,
 } from '../game/laneRun';
+import {
+  bookPowerScale, MAX_SKILL_BOOK_LEVEL, MAX_RUN_SKILL_LEVEL,
+  ACTIVE_SKILL_IDS, bestRunSkillChoice, learnRunSkill, runSkillOffersAt,
+  runSkillEffects, type RunSkillState,
+} from '../game/laneRunSkills';
 import { clearRate, pickAccurate, pickBest, pickRandom, pickWorst, type LanePicker } from './simRun';
 
 let fail = 0;
@@ -121,6 +126,45 @@ check('養成總倍率不超過容錯緩衝太多',
   fullyLoaded.attackMultiplier <= buffer * 1.2,
   `養成 x${fullyLoaded.attackMultiplier.toFixed(2)} vs 緩衝 ${buffer.toFixed(2)}x`);
 check('全開之後每排都挑最好的仍然一定過關', rate(25, fullyLoaded, pickBest) >= 0.99);
+
+// --- 技能書(生存模式掉的第三層養成)---
+//
+// **它只准動貪心挑不到的東西。** 敵人戰力照「最佳路線」算,而最佳路線是照
+// attackMultiplier x heroMultiplier 貪心挑——只有鋒刃/增殖 會動這兩個值。
+// 所以技能書開的是元素/主動的等級上限,以及「保證選項裡有元素/主動」;
+// 兩條貪心都用不到,理想路線因此一格都不會動。
+check('技能書碰不到鋒刃/增殖(唯二會被理想路線挑到的兩款)',
+  bookPowerScale('edge', MAX_SKILL_BOOK_LEVEL) === 1
+  && bookPowerScale('swarm', MAX_SKILL_BOOK_LEVEL) === 1);
+check('技能書會放大元素與主動',
+  bookPowerScale('fire', MAX_SKILL_BOOK_LEVEL) > 1
+  && bookPowerScale('strike', MAX_SKILL_BOOK_LEVEL) > 1);
+// 技能書一律不出現在選項那一層:加量、換成元素、開等級上限,三種都會改變
+// 「同一顆 seed 抽出哪三個」,玩家側的曲線就會偏離 createRun 假設的那一條。
+check('技能書完全不影響選項(runSkillOffersAt 根本不收它)',
+  runSkillOffersAt.length <= 4);
+// **這一項是技能書設計的核心**:理想路線完全不受影響 ⇒ 敵人不會為了它變強。
+// **這一項是技能書設計的核心**:帶滿書的玩家,戰力曲線跟沒有書時完全一樣,
+// 所以 createRun 算敵人時可以完全忽略它 ⇒ 敵人一格都不會變強。
+check('帶滿技能書也不會改變戰力曲線(所以敵人一格都不會變強)', (() => {
+  let skills: RunSkillState[] = [];
+  for (let k = 0; k < 60; k++) {
+    const offers = runSkillOffersAt(skills, 777, k, ACTIVE_SKILL_IDS.length);
+    if (offers.length === 0) break;
+    skills = learnRunSkill(skills, bestRunSkillChoice(skills, offers));
+    const a = runSkillEffects(skills, undefined, 0);
+    const b = runSkillEffects(skills, undefined, MAX_SKILL_BOOK_LEVEL);
+    if (a.attackMultiplier !== b.attackMultiplier || a.heroMultiplier !== b.heroMultiplier) return false;
+  }
+  return true;
+})());
+// 反過來:對真人是真的變強(元素的效果被放大)。
+check('技能書讓元素明顯更強(對玩家是真的變強)', (() => {
+  const kit: RunSkillState[] = [{ id: 'fire', level: 5 }, { id: 'strike', level: 5 }, { id: 'dark', level: 5 }];
+  const a = runSkillEffects(kit, undefined, 0);
+  const b = runSkillEffects(kit, undefined, MAX_SKILL_BOOK_LEVEL);
+  return b.burnKills > a.burnKills && b.leech > a.leech && b.actives[0].kills! > a.actives[0].kills!;
+})());
 
 console.log(fail === 0 ? '\n全部通過' : `\n${fail} 項失敗`);
 process.exit(fail === 0 ? 0 : 1);

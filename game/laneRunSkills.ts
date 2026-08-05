@@ -139,8 +139,47 @@ export interface RunSkillState {
   level: number;
 }
 
-/** 場內技能最高幾級。之後接技能書的時候,這個值會變成「由技能書決定的上限」。 */
+/** 場內技能的基本上限。技能書只往上開元素與主動,見 runSkillLevelCap。 */
 export const MAX_RUN_SKILL_LEVEL = 5;
+
+/**
+ * 技能書等級(0 = 還沒有)。生存模式掉的就是這個,是這款的第三層養成。
+ *
+ * ## 它只准動「貪心看不到」的東西
+ *
+ * 敵人戰力是照「這一場的最佳路線」算的,而最佳路線(`bestRunSkillChoice`)是照
+ * `attackMultiplier * heroMultiplier` 貪心挑——**只有鋒刃與增殖會動這兩個值**。
+ * 元素與主動對這兩個數字的貢獻是 0,所以放大它們的幅度,理想路線一格都不會動。
+ *
+ * ## 三條試過但不成立的做法(不要再試一次)
+ *
+ * 1. **「選項變多」不行**:選項多了,貪心更容易抽到鋒刃/增殖,理想戰力跟著上升。
+ * 2. **「保證選項裡有幾個元素/主動」也不行**:一次只有三個位置,保證兩個是元素等於
+ *    **擠掉**鋒刃/增殖——實測 60 次選擇裡有 11 次讓貪心走到不同的組合。
+ *    它不是多給玩家東西,是把戰力選項換成元素選項。
+ * 3. **連「提高元素的等級上限」都不行**,而這條最不明顯:上限一開,已經滿級的元素
+ *    **會繼續留在選項池裡**,把池子稀釋掉——同一顆 seed 抽出來的三個就不一樣了。
+ *    「有沒有技能書」不該改變你看到哪三個選項。
+ *
+ * 共同的教訓:**只要動到「選項串」,玩家側的曲線就會偏離 createRun 假設的那一條**,
+ * 而且方向還不固定(有時強有時弱)。所以技能書一律不碰選項,只碰效果的大小。
+ *
+ * 真要做「選項品質」,得做成**玩家自己決定的重抽**(花一次重抽換一個保證的元素):
+ * 那是攤在檯面上的取捨,而不是暗中把選項換掉——留給之後做。
+ */
+export const MAX_SKILL_BOOK_LEVEL = 5;
+/** 每一級技能書把元素與主動的效果放大幾成。 */
+const BOOK_POWER_PER_LEVEL = 0.15;
+
+/**
+ * 技能書把元素/主動的效果放大多少。**只乘在元素與主動上**——
+ * 鋒刃/增殖 是唯二進理想路線的,碰了敵人就會跟著變強。
+ */
+export function bookPowerScale(id: RunSkillId, bookLevel = 0): number {
+  if (!isElement(id) && !isActiveSkill(id)) return 1;
+  return 1 + BOOK_POWER_PER_LEVEL * Math.min(MAX_SKILL_BOOK_LEVEL, Math.max(0, Math.floor(bookLevel)));
+}
+
 /**
  * 一場最多帶幾個技能。
  *
@@ -281,6 +320,8 @@ export function runSkillOffers(
     const j = Math.floor(rng() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];
   }
+  // **技能書刻意完全不出現在這裡。** 加量、換成元素、開等級上限,三種都會改變
+  // 「同一顆 seed 抽出哪三個」,玩家側的曲線就會偏離 createRun 假設的那一條。
   return pool.slice(0, RUN_SKILL_OFFERS);
 }
 
@@ -391,7 +432,9 @@ export interface ActiveTrigger {
  * 不給 waveElement 的地方(理想路線、貪心比較、上限驗證)拿到的就是沒有相剋的基準值,
  * 這正是我們要的:敵人曲線不能跟著相剋跑,不然它就變成「大家都有的東西」而不是選擇。
  */
-export function runSkillEffects(skills: RunSkillState[], waveElement?: RunSkillId): RunSkillEffects {
+export function runSkillEffects(
+  skills: RunSkillState[], waveElement?: RunSkillId, bookLevel = 0,
+): RunSkillEffects {
   let attack = 0;
   let heroes = 0;
   let trade = 0;
@@ -410,7 +453,8 @@ export function runSkillEffects(skills: RunSkillState[], waveElement?: RunSkillI
     if (s.id === 'swarm') heroes += PER_LEVEL.swarmHeroes * level;
     // 八元素:每一款的規則都不一樣,而且全部只在「失誤了」才生效。
     // mx 是這一個元素對上這一波屬性的倍率(剋中放大、被剋削弱),逐元素各算各的。
-    const mx = elementMatchup(s.id, waveElement);
+    // 相剋(逐元素)乘上技能書的放大。兩者都只碰元素/主動,所以都不進理想路線。
+    const mx = elementMatchup(s.id, waveElement) * bookPowerScale(s.id, bookLevel);
     if (s.id === 'fire') burnKills += PER_LEVEL.fireKills * level * mx;
     if (s.id === 'metal') pierceRatio += PER_LEVEL.metalRatio * level * mx;
     if (s.id === 'thunder') chainRatio += PER_LEVEL.thunderRatio * level * mx;
@@ -422,14 +466,16 @@ export function runSkillEffects(skills: RunSkillState[], waveElement?: RunSkillI
     if (s.id === 'light') revive += PER_LEVEL.lightRevive * level * mx;
     if (s.id === 'dark') leech += PER_LEVEL.darkLeech * level * mx;
     if (level <= 0) continue;
+    // 主動技能吃技能書的放大,但**不吃相剋**(相剋只放大元素,見 elementMatchup)。
+    const bk = bookPowerScale(s.id, bookLevel);
     if (s.id === 'strike') {
-      actives.push({ id: s.id, name: '爆裂', cooldown: strikeCooldownWaves(level), kills: PER_LEVEL.strikeKills * level });
+      actives.push({ id: s.id, name: '爆裂', cooldown: strikeCooldownWaves(level), kills: PER_LEVEL.strikeKills * level * bk });
     }
     if (s.id === 'pierce') {
-      actives.push({ id: s.id, name: '貫穿', cooldown: strikeCooldownWaves(level), killRatio: PER_LEVEL.pierceRatio * level });
+      actives.push({ id: s.id, name: '貫穿', cooldown: strikeCooldownWaves(level), killRatio: PER_LEVEL.pierceRatio * level * bk });
     }
     if (s.id === 'rally') {
-      actives.push({ id: s.id, name: '號令', cooldown: strikeCooldownWaves(level), heroes: PER_LEVEL.rallyHeroes * level });
+      actives.push({ id: s.id, name: '號令', cooldown: strikeCooldownWaves(level), heroes: PER_LEVEL.rallyHeroes * level * bk });
     }
     if (s.id === 'aegis') {
       actives.push({ id: s.id, name: '壁障', cooldown: strikeCooldownWaves(level) + 2, immune: true });
