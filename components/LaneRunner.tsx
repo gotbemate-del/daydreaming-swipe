@@ -24,7 +24,7 @@ import {
 import { describeRunSkill, runSkillSpec } from '../game/laneRunSkills';
 import { HIT_NUMBER_MS, useLaneRun, type HitNumber, type Projectile, type WaveView } from '../hooks/useLaneRun';
 import {
-  heroBoxHeight, heroForm, squadForms, monsterArt, weaponArt,
+  heroBoxHeight, heroForm, squadForms, monsterArt, weaponArt, jobHeroArt,
 } from './artAssets';
 
 // 跑道畫面。角色固定在跑道底部、物件由上往下逼近——這是「角色在跑」最省效能的表現方式:
@@ -292,7 +292,28 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
   function renderWave(w: WaveView) {
     if (!ready) return null;
     const size = w.boss ? BOSS_SIZE : w.elite ? ELITE_SIZE : MONSTER_SIZE;
-    return w.monsters.map((m) => {
+    // 勇者波的落點警示:紅色的危險帶,跟著整波一起逼近。
+    // 它是**反過來的閘門**——閘門畫成框是要你踩上去,這個畫成斜線帶是要你離開。
+    const lead = w.monsters.find((m) => !w.down[m.index]);
+    const hazardTop = lead ? bottomYFor(Math.max(0, lead.distance - distance), headY) : headY;
+    const bands = w.heroWave
+      ? w.hazards.map((h, i) => (
+        <View
+          key={`hz-${i}`}
+          pointerEvents="none"
+          style={[
+            styles.hazardBand,
+            {
+              left: h.from * trackWidth,
+              width: (h.to - h.from) * trackWidth,
+              top: Math.min(headY, hazardTop),
+              height: Math.max(24, headY - Math.min(headY, hazardTop)) + GATE_HEIGHT,
+            },
+          ]}
+        />
+      ))
+      : [];
+    return [...bands, ...w.monsters.map((m) => {
       if (w.down[m.index]) return null;
       const ahead = m.distance - distance;
       if (ahead > VISIBLE_AHEAD || ahead < 0) return null;
@@ -303,7 +324,11 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
       const hpLeft = Math.max(0, 1 - w.hitsOn[m.index] / w.hitsPerUnit);
       return (
         <View key={m.index} style={[styles.floating, { left, top, width: size }]} pointerEvents="none">
-          <Image source={monsterArt(species.id)} resizeMode="contain" style={[styles.pixelArt, { width: size, height: size }]} />
+          <Image
+            source={w.heroWave ? jobHeroArt(job?.archetype ?? null, job?.branch ?? 'A', Math.min(4, job?.tier ?? 1)) : monsterArt(species.id)}
+            resizeMode="contain"
+            style={[styles.pixelArt, { width: size, height: size }]}
+          />
           {(w.boss || w.elite) && (
             <View style={styles.bossHpTrack}>
               <View style={[styles.bossHpFill, { width: `${hpLeft * 100}%` }]} />
@@ -311,7 +336,7 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
           )}
         </View>
       );
-    });
+    })];
   }
 
   /**
@@ -393,7 +418,9 @@ export function LaneRunner({ stage, job, start, onFinish }: Props) {
               : incoming.elite
                 // 精英要標出「漏掉一隻抵幾個人」——牠的威脅不在隻數,玩家看不到就不會提早準備。
                 ? `精英 ${incoming.name} · 戰力 ${compact(incoming.power)} · 漏一隻 -${ELITE_MASS} 人`
-                : `來襲 ${incoming.name} x${incoming.units} · 戰力 ${compact(incoming.power)}`}
+                : incoming.heroWave
+                  ? `敵方勇者 x${incoming.units} · 會投擲武器,離開紅色區域`
+                  : `來襲 ${incoming.name} x${incoming.units} · 戰力 ${compact(incoming.power)}`}
           </Text>
         )}
       </View>
@@ -763,6 +790,14 @@ const styles = StyleSheet.create({
   },
   skillName: { color: '#f2f2f2', fontSize: 14, fontWeight: '700' },
   skillDesc: { color: '#8a8a95', fontSize: 12 },
+  hazardBand: {
+    position: 'absolute',
+    backgroundColor: '#e0505022',
+    borderLeftWidth: 2,
+    borderRightWidth: 2,
+    borderColor: '#e05050aa',
+    zIndex: 6,
+  },
   strikeText: {
     color: '#e0a95c', fontSize: 20, fontWeight: '700',
     textShadowColor: '#16161c', textShadowRadius: 4, textShadowOffset: { width: 0, height: 1 },

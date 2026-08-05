@@ -93,6 +93,10 @@ export interface WaveView {
   boss: boolean;
   /** 精英排:一隻大的。畫面要畫大、要有血條(牠要打好幾下才倒)。 */
   elite: boolean;
+  /** 勇者波:敵方是勇者,會投擲武器。畫面要用職業立繪,而且要畫出落點。 */
+  heroWave: boolean;
+  /** 武器落點(offset 區間)。站在裡面就會被砸中。 */
+  hazards: { from: number; to: number }[];
   /** 每隻的血條:已挨幾下 / 要挨幾下。魔王打很久,沒有進度條會不知道打到哪了。 */
   hitsOn: number[];
   hitsPerUnit: number;
@@ -156,6 +160,8 @@ interface WaveRuntime {
   hitsPerUnit: number;
   boss: boolean;
   elite: boolean;
+  heroWave: boolean;
+  hazards: { from: number; to: number }[];
   monsters: WaveMonster[];
   /** 每一隻各自挨了幾下。打不倒的那幾隻也會累加——勇者照樣丟,只是丟不倒。 */
   hitsOn: number[];
@@ -330,6 +336,8 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
         hitsPerUnit: enemy.hitsPerUnit ?? HITS_PER_MONSTER,
         boss: enemy.boss === true,
         elite: enemy.elite === true,
+        heroWave: enemy.heroWave === true,
+        hazards: enemy.hazards ?? [],
         monsters: waveMonsters(
           enemyRow.index, enemy.units, enemyRow.distance, enemy.species.length,
           waveLength(stage, enemy.units),
@@ -442,6 +450,8 @@ export function useLaneRun(stage: number, start: RunStart = DEFAULT_RUN_START): 
             species: current!.species,
             boss: current!.boss,
             elite: current!.elite,
+            heroWave: current!.heroWave,
+            hazards: current!.hazards,
             hitsOn: [...current!.hitsOn],
             hitsPerUnit: current!.hitsPerUnit,
             monsters: current!.monsters,

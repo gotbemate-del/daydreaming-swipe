@@ -131,6 +131,16 @@ export interface EnemyEffect {
   /** 精英排:一隻大的,不是一群小的。畫面要畫大,而且漏掉牠的代價是一整群的份。 */
   elite?: boolean;
   /**
+   * 勇者波:敵方是**勇者**不是怪,會投擲武器。落點就是 hazards,站在裡面才會被砸中。
+   *
+   * 這不是走回頭路(廢掉的「定點閃避」是站著不動、看招式往反方向滑,滑動是**反應**);
+   * 這裡滑動還是**位置管理**,跟閘門同一套連續位置判定,只是反過來用——
+   * 閘門是「要踩上去」,投擲是「不能站在那裡」。
+   */
+  heroWave?: boolean;
+  /** 武器的落點(offset 區間)。站在區間裡就會被砸中,砸中削掉一部分隊伍。 */
+  hazards?: { from: number; to: number }[];
+  /**
    * 每漏掉一隻要換掉幾個勇者。一般小怪是 1,**精英是一整群的份**——
    * 「大」在這個模型裡的意思就是這個:牠一隻抵一群,擋不下來就是一次大額兌換。
    */
@@ -900,6 +910,39 @@ export const ELITE_MASS = 6;
 /** 精英要挨幾下才倒。介於小怪 3 下與魔王 12 下之間。 */
 export const ELITE_HITS = 6;
 
+/** 勇者波:每隔幾波來一次。太密會變成另一個遊戲,太疏又形同不存在。 */
+export const HERO_WAVE_EVERY = 3;
+/** 一次砸幾發。之後可以照大關遞增(1 發 → 2 發分開 → 2 發夾擊只留中間一條縫)。 */
+export const HAZARD_COUNT = 1;
+/** 一發砸多寬(offset 單位)。跑道總寬 1,閘門是 0.34,所以這個要比閘門窄一點才閃得掉。 */
+export const HAZARD_WIDTH = 0.26;
+/** 被砸中削掉隊伍的幾成。刻意不是全滅:勇者是一群、散開有寬度,砸在邊緣只掉一部分。 */
+export const HAZARD_LOSS_RATIO = 0.25;
+
+/** 這一排是不是勇者波(精英與魔王優先,不重疊)。 */
+export function isHeroWaveRow(stage: number, rowIndex: number): boolean {
+  if (!isEnemyRowIndex(rowIndex, stage) || isEliteRow(stage, rowIndex) || isBossRow(stage, rowIndex)) return false;
+  const waveIndex = Math.floor(rowIndex / enemyEveryForStage(stage));
+  return waveIndex > 0 && waveIndex % HERO_WAVE_EVERY === 0;
+}
+
+/**
+ * 這一波的武器落在哪。用雜湊算,不抽亂數——同一排永遠一樣,重播與驗證才對得起來。
+ * **一定留得下閃避空間**:落點寬 HAZARD_WIDTH,跑道寬 1,所以單發永遠閃得掉。
+ */
+export function hazardsFor(rowIndex: number, count = HAZARD_COUNT): { from: number; to: number }[] {
+  return Array.from({ length: count }, (_, i) => {
+    const center = 0.15 + hashFor(rowIndex, i, 7) * 0.7;
+    return { from: center - HAZARD_WIDTH / 2, to: center + HAZARD_WIDTH / 2 };
+  });
+}
+
+/** 站在 offset 會不會被砸中。 */
+export function hitByHazard(offset: number, hazards: { from: number; to: number }[] = []): boolean {
+  const at = clampOffset(offset);
+  return hazards.some((h) => at >= h.from && at <= h.to);
+}
+
 function isBossRow(stage: number, rowIndex: number): boolean {
   return isBossStage(stage) && rowIndex === lastEnemyRowIndex(stage);
 }
@@ -956,6 +999,7 @@ function makeEnemyRow(
     }
   }
   const elite = isEliteRow(stage, rowIndex);
+  const heroWave = isHeroWaveRow(stage, rowIndex);
   // 精英是「同樣的一波戰力,壓縮成少少幾隻」——總戰力不變,所以難度曲線完全不受影響,
   // 變的只有「擋不下來的時候一次掉多少人」以及畫面上的體感。
   const units = elite
@@ -968,6 +1012,7 @@ function makeEnemyRow(
     name: species[0].name,
     units,
     ...(elite ? { elite: true, leakCost: ELITE_MASS, hitsPerUnit: ELITE_HITS } : {}),
+    ...(heroWave ? { heroWave: true, hazards: hazardsFor(rowIndex) } : {}),
   };
   return Array.from({ length: LANE_COUNT }, (_, lane) => ({
     lane: lane as Lane,
@@ -1142,7 +1187,27 @@ export interface WaveBoost {
   immune?: boolean;
 }
 
-export function resolveEnemy(state: RunState, enemy: EnemyEffect, boost: WaveBoost = {}): RowResolution {
+export function resolveEnemy(
+  state: RunState, enemy: EnemyEffect, boost: WaveBoost = {}, offset?: number,
+): RowResolution {
+  // 勇者波:先看有沒有被投擲物砸中。閃掉就完全沒事(所以理想玩家不受影響,
+  // 它也就不進理想路線);沒閃掉就削掉一部分隊伍——不是全滅,勇者是一群、散開有寬度。
+  const at = offset ?? laneCenterOffset(state.lane);
+  if (enemy.heroWave && !boost.immune && hitByHazard(at, enemy.hazards)) {
+    const hit = Math.max(1, Math.round(state.heroes * HAZARD_LOSS_RATIO));
+    const struck = { ...state, heroes: Math.max(0, state.heroes - hit) };
+    if (struck.heroes <= 0) {
+      struck.phase = 'dead';
+      return { state: struck, message: `被武器砸中 -${hit} 人`, heroDelta: -hit, attackDelta: 0 };
+    }
+    // 砸中之後這一波照樣要打——傷害是額外的,不是取代。
+    const after = resolveEnemy(struck, { ...enemy, heroWave: false }, boost, at);
+    return {
+      ...after,
+      message: `被武器砸中 -${hit} 人`,
+      heroDelta: after.heroDelta - hit,
+    };
+  }
   // 主動技能加在 kills 上而不是加在戰力上:固定效果才有「越落後越有用」的性質,
   // 而且理想玩家本來就全清,對他等於零——所以它不進理想路線,也就不會把敵人養大。
   const kills = Math.min(
@@ -1198,7 +1263,7 @@ export function resolveRow(state: RunState, row: RunRow, offset?: number, boost:
   }
 
   if (node.kind === 'enemy' && node.enemy) {
-    const r = resolveEnemy(advanced, node.enemy, boost);
+    const r = resolveEnemy(advanced, node.enemy, boost, at);
     return { ...r, state: { ...r.state, rowIndex: row.index + 1 } };
   }
 
