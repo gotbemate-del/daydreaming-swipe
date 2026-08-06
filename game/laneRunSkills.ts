@@ -301,6 +301,33 @@ export function hasCooldown(id: RunSkillId): boolean {
 export function burnSpreadTargets(level: number): number {
   return level > 0 ? 1 + Math.floor((Math.min(MAX_RUN_SKILL_LEVEL, level) - 1) / 2) : 0;
 }
+
+/**
+ * 燃燒每秒燒掉目標**最大生命的幾成**。
+ *
+ * ## 為什麼是「每秒 5%」而不是「直接補一下」
+ *
+ * 第一版的燃燒擴散是 `hitsOn[j] += 1`——**等於白送一整下攻擊**。單獨看還好,
+ * 配上雷就爆掉:連鎖閃電電到的每一隻會再各自觸發一次擴散(那是刻意設計的交互),
+ * 所以一次命中可能瞬間送出十幾下,打得倒的那一批**同一瞬間全部消失**,
+ * 畫面上看起來就是「一波怪憑空不見」——使用者說的「跟雷屬性搭配會無解」。
+ *
+ * 改成持續傷害之後,燃燒是**慢慢啃**:5%/秒表示光靠燒要 20 秒才燒得死一隻,
+ * 而一整波的戰鬥段只有 13~17 秒。所以它永遠不會自己收掉一隻,只會把血條磨掉一截,
+ * 跟雷疊起來也只是「燒到的目標變多」,不是「傷害翻十幾倍」。
+ *
+ * **注意這一直都不影響難度。** 能多打倒幾隻由 `burnKills`(每級每波 1 隻)經
+ * laneRun 的 `extraKills` 決定,跟這裡的 DPS 一點關係都沒有——這裡調的是
+ * 「血條掉得多快看起來像什麼」。兩組數字分開的理由見上面 burnSpreadTargets 那一段。
+ */
+export const BURN_DPS_RATIO = 0.05;
+/**
+ * 一次點燃燒多久。燒完就滅,除非又被燒到一次(重新計時)。
+ *
+ * 3 秒 x 5%/秒 = 一次點燃啃掉 15% 血量。太短會變成「看得到火但血條沒動」,
+ * 太長則整波都在燒、火焰特效變成背景雜訊。
+ */
+export const BURN_DURATION_MS = 3000;
 /** 雷・連鎖:每幾下攻擊觸發一次連鎖閃電(0 = 沒點)。 */
 export function chainEveryHits(level: number): number {
   return level > 0 ? Math.max(3, 9 - Math.min(MAX_RUN_SKILL_LEVEL, level)) : 0;
@@ -345,7 +372,7 @@ export const RUN_SKILLS: RunSkillSpec[] = [
   {
     id: 'fire',
     name: '火・燃燒',
-    describe: (l) => `命中後火焰燒到旁邊 ${burnSpreadTargets(l)} 隻,每波多帶走 ${PER_LEVEL.fireKills * l} 隻`,
+    describe: (l) => `命中後火焰燒到旁邊 ${burnSpreadTargets(l)} 隻(每秒 ${Math.round(BURN_DPS_RATIO * 100)}% 生命),每波多帶走 ${PER_LEVEL.fireKills * l} 隻`,
   },
   { id: 'metal', name: '金・穿透', describe: (l) => `每波多清掉整波的 ${Math.round(PER_LEVEL.metalRatio * l * 100)}%` },
   {

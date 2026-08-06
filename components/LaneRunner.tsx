@@ -15,6 +15,7 @@ import {
   totalAttack,
   ELITE_MASS,
   VISIBLE_AHEAD,
+  type WaveMonster,
   type RunRow,
   type RunStart,
   type TerrainId,
@@ -108,6 +109,19 @@ const HAZARD_FLASH_MS = 420;
  */
 const THROW_POSE_MS = 260;
 /**
+ * 一波最多同時畫幾隻。**這是繪製上限,不是玩法上限**——
+ * 結算、擊殺數、漏接數一律照完整的隻數算(見 laneRun 的 MAX_WAVE_SIZE 已經開到 400)。
+ *
+ * 為什麼需要它:隻數解除上限之後,第 1 關最後一波是 152 隻擠在 549 的距離裡,
+ * 換算到畫面上**每隻只相隔 5.6px,而圖是 42px 寬**——牠們 87% 互相重疊,
+ * 玩家看到的是一堵牆而不是 152 隻怪,但瀏覽器仍然要老實地畫 300 多張圖
+ *(實測掉到 9 fps)。畫最近的 64 隻視覺上完全一樣,因為多的那些本來就被蓋住了。
+ *
+ * **挑最近的**而不是平均取樣:前面那幾隻才是正在倒下、以及即將撞上你的那幾隻,
+ * 視線本來就在那裡。
+ */
+const MAX_DRAWN_MONSTERS = 64;
+/**
  * 生存模式一關接一關之間的過場時間。
  * 太短(< 500ms)會變成畫面自己閃了一下,玩家不知道發生什麼事;
  * 太長就變成「還是有中斷」,而不中斷正是生存模式改版的重點。
@@ -120,6 +134,8 @@ const FROST_COLOR = '#9fd8e8';
 const BURN_SIZE = 34;
 /** 凍結那一下炸開的圈多大。 */
 const FROST_BURST = 28;
+/** 燃燒中的怪疊什麼顏色。跟 artAssets 的火屬性同色系但更亮(它要蓋過屬性染色)。 */
+const BURN_COLOR = '#e8814a';
 /** 土・遲滯疊在怪身上的咖啡色。跟 artAssets 的土屬性同色。 */
 const EARTH_COLOR = '#a8865e';
 /** 光・護盾的光圈顏色(淺黃)。跟 artAssets 的光屬性同色。 */
@@ -404,10 +420,18 @@ export function LaneRunner({
     const tint = elementColor(w.element);
     const enemyLook = enemyHeroLookForRow(stage, w.rowIndex);
     const now = Date.now();
-    return [...renderEnemyShots(w), ...w.monsters.map((m) => {
-      if (w.down[m.index]) return null;
+    // 只畫最近的那幾隻(見 MAX_DRAWN_MONSTERS)。先篩再畫,不是畫了再丟——
+    // 篩掉的那些連 View 都不要建,不然省不到東西。
+    const drawable: WaveMonster[] = [];
+    for (const m of w.monsters) {
+      if (w.down[m.index]) continue;
       const ahead = m.distance - distance;
-      if (ahead > VISIBLE_AHEAD || ahead < 0) return null;
+      if (ahead > VISIBLE_AHEAD || ahead < 0) continue;
+      drawable.push(m);
+      if (drawable.length >= MAX_DRAWN_MONSTERS) break;
+    }
+    return [...renderEnemyShots(w), ...drawable.map((m) => {
+      const ahead = m.distance - distance;
       const species = w.species[m.speciesIndex] ?? w.species[0];
       // 魔王固定站在跑道正中央:牠佔滿兩條跑道,躲不掉,也不該讓玩家以為躲得掉。
       const centerX = (w.boss ? 0.5 : m.offset) * trackWidth;
@@ -433,7 +457,19 @@ export function LaneRunner({
       // 而原地跑步在這個畫面上跟「這一隻的移動壞掉了」長得一模一樣。
       // 停在哪一格用「凍住的那一刻」反推(frozenUntil - FREEZE_MS),所以不會突然跳格。
       const frozen = w.frozenUntil[m.index] > now;
+      const burning = w.burningUntil[m.index] > now;
       const frameClock = frozen ? w.frozenUntil[m.index] - FREEZE_MS : now;
+      // 一隻怪同時只疊一層顏色(見下面的說明)。優先序 = 誰最需要被看見。
+      const statusTint = frozen
+        ? { color: FROST_COLOR, opacity: 0.55 }
+        : burning
+          // 火焰用 sin 呼吸,不然一層固定的橘色看起來像換了顏色而不是在燒。
+          ? { color: BURN_COLOR, opacity: 0.32 + 0.2 * (0.5 + 0.5 * Math.sin(now / 90 + m.index)) }
+          : w.slow > 0
+            ? { color: EARTH_COLOR, opacity: 0.28 + w.slow * 0.64 }
+            : tint
+              ? { color: tint, opacity: ELEMENT_TINT_OPACITY }
+              : null;
       const art = anim
         ? anim.frames[throwing ? 2 : animFrameIndex(frameClock, m.index * 0.37)]
         : w.heroWave
@@ -449,48 +485,26 @@ export function LaneRunner({
         <View key={m.index} style={[styles.floating, { left: boxLeft, top: boxTop, width: boxW }]} pointerEvents="none">
           <Image source={art} resizeMode="contain" style={[styles.pixelArt, { width: boxW, height: boxH }]} />
           {/*
-            屬性染色:同一張圖再疊一層 tintColor 的複本。tintColor 會把整張圖壓成單色剪影,
-            單獨用會看不出造型,所以壓到 ELEMENT_TINT_OPACITY 疊在原圖上——造型還在,
-            色相整個偏過去。這是不動素材檔就能上色的做法(逐張染色是 build-time 管線,還沒做)。
+            狀態染色:同一張圖再疊**一層** tintColor 的複本。tintColor 會把整張圖壓成單色剪影,
+            單獨用會看不出造型,所以壓低透明度疊在原圖上——造型還在,色相整個偏過去。
+            (逐張染色是 build-time 產圖的管線,還沒做;CSS filter 在 RNW 上會被丟掉,見 CLAUDE.md。)
+
+            **同時只畫一層,照優先序挑**,不是四種狀態各疊一張:
+            隻數解除上限之後畫面上同時可以有 89 隻,一隻四層就是 356 張圖——
+            實測掉到 6 fps。而且疊起來的顏色是混濁的,玩家反而分不出「牠現在是什麼狀態」。
+            優先序 = 誰最需要被看見:凍結(牠停住了)> 燃燒(正在掉血)> 遲滯(整波變慢)> 屬性。
           */}
-          {tint && (
+          {statusTint && (
             <Image
               source={art}
               resizeMode="contain"
               style={[
                 styles.pixelArt, styles.floating,
-                { width: boxW, height: boxH, tintColor: tint, opacity: ELEMENT_TINT_OPACITY },
+                { width: boxW, height: boxH, tintColor: statusTint.color, opacity: statusTint.opacity },
               ]}
             />
           )}
-          {/* 土・遲滯:整波疊一層咖啡色,表示「這一波被拖慢了」。
-              疊在屬性色之上、冰色之下——它是全波共用的狀態,而凍結是單隻的,
-              單隻的那一層要壓在最上面才看得出「這一隻不只是慢,是完全停住」。 */}
-          {w.slow > 0 && (
-            <Image
-              source={art}
-              resizeMode="contain"
-              style={[
-                styles.pixelArt, styles.floating,
-                { width: boxW, height: boxH, tintColor: EARTH_COLOR, opacity: 0.28 + w.slow * 0.64 },
-              ]}
-            />
-          )}
-          {/* 冰・凍結:凍住的那一隻整個罩上一層冰色,而且**停在原地不再逼近**
-              (位置與動畫幀都由 frozenUntil 推)。只染色不停住的話玩家會以為只是換了顏色。 */}
-          {frozen && (
-            <>
-              <Image
-                source={art}
-                resizeMode="contain"
-                style={[
-                  styles.pixelArt, styles.floating,
-                  { width: boxW, height: boxH, tintColor: FROST_COLOR, opacity: 0.55 },
-                ]}
-              />
-              <View style={[styles.frostRing, { width: boxW, height: boxH }]} pointerEvents="none" />
-            </>
-          )}
+          {frozen && <View style={[styles.frostRing, { width: boxW, height: boxH }]} pointerEvents="none" />}
           {(w.boss || w.elite) && (
             <View style={styles.bossHpTrack}>
               <View style={[styles.bossHpFill, { width: `${hpLeft * 100}%` }]} />

@@ -44,7 +44,7 @@ import {
 } from '../game/laneRun';
 import {
   applyRunSkillPick, ELEMENT_COUNTERS, isElement, learnRunSkill, runSkillEffects, runSkillOffersAt, runSkillPicksForWave,
-  runSkillSpec, hasCooldown, skillCooldownSeconds, FREEZE_MS,
+  runSkillSpec, hasCooldown, skillCooldownSeconds, FREEZE_MS, BURN_DPS_RATIO, BURN_DURATION_MS,
   type CollectionScales,
   type RunSkillState, type RunSkillId, type RunSkillEffects, type ActiveTrigger,
 } from '../game/laneRunSkills';
@@ -187,6 +187,8 @@ export interface WaveView {
    * 有了截止時間就能反推凍住的那一刻是哪一格,畫面直接凍在那一格。
    */
   frozenUntil: number[];
+  /** 每一隻燒到什麼時候(0 = 沒燒)。畫面拿它畫身上的火。 */
+  burningUntil: number[];
   /** 這一波的怪被土・遲滯拖慢幾成(0 = 沒點)。畫面拿它疊咖啡色。 */
   slow: number;
 }
@@ -285,6 +287,12 @@ interface WaveRuntime {
   lastFireAt: number;
   /** 每一隻被凍到什麼時候(0 = 沒凍)。 */
   frozenUntil: number[];
+  /**
+   * 每一隻燒到什麼時候(0 = 沒燒)。燃燒是**持續傷害**不是一次補一下:
+   * 每秒啃掉 BURN_DPS_RATIO 的最大生命,所以 hitsOn 會有小數。
+   * (為什麼不是一次補一下:見 laneRunSkills 的 BURN_DPS_RATIO——配上雷會爆掉。)
+   */
+  burningUntil: number[];
   /** 這一波總共命中幾下。雷・連鎖是「每 N 下觸發一次」,靠的就是它。 */
   hitCount: number;
   /**
@@ -553,12 +561,14 @@ export function useLaneRun(
       current.frozenUntil[i] = now + FREEZE_MS;
       pushElementEvent('freeze', i, now);
     }
-    // 火・燃燒:火焰跳到後面還站著的那幾隻身上。
+    // 火・燃燒:火焰跳到後面還站著的那幾隻身上,**點燃**而不是直接補一下傷害。
+    // 直接補一下(hitsOn += 1)配上雷會爆掉:連鎖電到的每一隻會再各自觸發一次擴散,
+    // 一次命中可能瞬間送出十幾下,打得倒的那一批同一瞬間全部消失。
     if (fx.burnSpread > 0) {
       let spread = 0;
       for (let j = i + 1; j < current.monsters.length && spread < fx.burnSpread; j++) {
         if (current.hitsOn[j] >= current.hitsPerUnit) continue;
-        current.hitsOn[j] += 1;
+        current.burningUntil[j] = now + BURN_DURATION_MS;
         pushElementEvent('burn', j, now, i);
         spread += 1;
       }
@@ -639,6 +649,7 @@ export function useLaneRun(
         hitsOn: new Array(enemy.units).fill(0),
         lastFireAt: 0,
         frozenUntil: new Array(enemy.units).fill(0),
+        burningUntil: new Array(enemy.units).fill(0),
         hitCount: 0,
         fired: { kills: 0, killRatio: 0, immune: false },
       };
@@ -667,6 +678,18 @@ export function useLaneRun(
     if (movedBy > 0 && (fx.slow > 0 || current.frozenUntil.some((t) => t > now))) {
       for (let i = 0; i < current.monsters.length; i++) {
         current.monsters[i].distance += current.frozenUntil[i] > now ? movedBy : movedBy * fx.slow;
+      }
+    }
+
+    // 火・燃燒的持續傷害:每個 tick 把「這段時間燒掉的血」加進去。
+    // 5%/秒 表示光靠燒要 20 秒才燒得死一隻,而一整波只有 13~17 秒——所以它永遠不會
+    // 自己收掉一隻,只會把血條磨掉一截(那正是它跟雷疊起來也不會爆掉的原因)。
+    if (current.burningUntil.some((t) => t > now)) {
+      const tick = (BURN_DPS_RATIO * current.hitsPerUnit * TICK_MS) / 1000;
+      for (let i = 0; i < current.monsters.length; i++) {
+        if (current.burningUntil[i] > now) {
+          current.hitsOn[i] = Math.min(current.hitsPerUnit, current.hitsOn[i] + tick);
+        }
       }
     }
 
@@ -750,7 +773,9 @@ export function useLaneRun(
           applyOnHit(current, p.targetIndex, now, fx);
           // 命中就跳一個傷害數字。是不是暴擊由「第幾排/第幾隻/第幾下」的雜湊決定,不是亂數——
           // 這個 tick 迴圈每 33ms 跑一次,用亂數的話同一下會一直重抽,數字會閃爍。
-          const ordinal = current.hitsOn[p.targetIndex];
+          // hitsOn 現在會有小數(燃燒是持續傷害),而雜湊要吃整數——
+              // 不取整的話同一下的暴擊判定會隨著燒到哪個小數而閃爍。
+          const ordinal = Math.floor(current.hitsOn[p.targetIndex]);
           const crit = isCritHit(current.rowIndex, p.targetIndex, ordinal);
           hitNumberIdRef.current += 1;
           newHits.push({
@@ -874,6 +899,7 @@ export function useLaneRun(
             monsters: current!.monsters,
             down,
             frozenUntil,
+            burningUntil: current!.monsters.map((m) => current!.burningUntil[m.index]),
             slow: fx.slow,
           },
     );
