@@ -16,7 +16,7 @@ import {
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
   TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane, MIN_WAVE_SIZE,
   HERO_WAVE_ELEMENT_SALT, waveElementsForStage, hazardsFor, hitByHazard, HAZARD_WIDTH, HAZARD_LOSS_HEROES, expectedHazardHits, ENEMY_THROW_INTERVAL_MS,
-  battleSecondsPerWave,
+  battleSecondsPerWave, engageRange, FIRE_RANGE_RATIO,
   type Lane, type RunState, type WaveBoost,
 } from '../game/laneRun';
 import {
@@ -396,6 +396,27 @@ check('一隻要挨好幾下才倒(投擲才會連續)', HITS_PER_MONSTER >= 2);
 check('丟得完:剩越多下要丟就丟越快',
   fireIntervalMs(1000, 5) === 200 && fireIntervalMs(1000, 10) === 100);
 check('連射有下限(不會變成雷射)', fireIntervalMs(10, 9) === MIN_FIRE_INTERVAL_MS);
+// --- 接戰距離:怪要在畫面「中段」倒下,不能一冒出來就死 ---
+//
+// 這是**演出**參數(擊殺數由 waveKillCount 算,跟射程無關),但它有一條硬底線:
+// **從進入射程到走到你面前的時間,要夠打完 hitsPerUnit 下**。不夠的話,
+// 明明該倒的那幾隻會直接走過你面前才消失——畫面演的跟結算算的就對不起來了。
+const engageBand = [1, 40, 3000].map((st) => {
+  const near = Math.min(...[0, 1, 2, 3, 4, 5, 6, 7].map((i) => engageRange(0, i)));
+  return { st, seconds: near / runSpeed(st) };
+});
+const worstKillSeconds = (HITS_PER_MONSTER * MAX_FIRE_INTERVAL_MS) / 1000;
+check('進入射程之後還來得及把牠打完(不然該倒的會走到你面前)',
+  engageBand.every((b) => b.seconds > worstKillSeconds),
+  engageBand.map((b) => `第${b.st}關 ${b.seconds.toFixed(2)}s`).join(' / ') + ` vs 最慢打完 ${worstKillSeconds.toFixed(2)}s`);
+check('接戰距離落在畫面中段(怪不會一冒出來就死)',
+  FIRE_RANGE_RATIO >= 0.35 && FIRE_RANGE_RATIO <= 0.65,
+  `視野的 ${Math.round(FIRE_RANGE_RATIO * 100)}%`);
+// 每一隻各自抖動,不然整波會在同一條水平線上倒下,看起來像有一道看不見的牆。
+const engageSpread = new Set([...Array(24).keys()].map((i) => Math.round(engageRange(3, i))));
+check('每一隻的接戰距離不一樣(倒下的位置散開)', engageSpread.size >= 8,
+  `24 隻裡有 ${engageSpread.size} 種距離`);
+
 check('間隔有上限(不會久到看起來沒在打)', fireIntervalMs(99999, 1) === MAX_FIRE_INTERVAL_MS);
 check('沒有要打的目標就不丟', fireIntervalMs(3000, 0) === Number.POSITIVE_INFINITY);
 

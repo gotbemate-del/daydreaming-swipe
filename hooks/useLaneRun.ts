@@ -34,6 +34,7 @@ import {
   isCritHit,
   procRoll,
   extraKills,
+  engageRange,
   type Lane,
   type RunRow,
   type RunStart,
@@ -58,8 +59,6 @@ const SNAP_EPSILON = 0.002;
 
 /** 丟出去的武器相對於勇者往前飛的速度(距離單位/秒)。夠快才看得出是「擲出去」而不是飄走。 */
 const PROJECTILE_SPEED = 420;
-/** 進到這個距離內才開始丟。太遠就開丟的話,武器會在畫面外飛很久,看起來像亂丟。 */
-const FIRE_RANGE = 260;
 
 /** 敵人擲出的武器飛多快。比玩家的慢一點,才有時間看到它過來並閃開。 */
 const ENEMY_SHOT_SPEED = 260;
@@ -695,7 +694,11 @@ export function useLaneRun(
       if (isDown(i)) continue;
       if (current.monsters[i].distance <= travelled) continue; // 已經越過勇者,不用再丟
       if (i < kills) remainingDoomedShots += Math.max(0, current.hitsPerUnit - current.hitsOn[i] - inFlightOn[i]);
-      if (targetIndex < 0 && current.monsters[i].distance - travelled <= FIRE_RANGE) targetIndex = i;
+      // 接戰距離由 laneRun 給(每一隻各自抖動),不是一個寫死的常數:
+      // 寫死的話整波會在同一條水平線上倒下,而且舊值 260 等於「一進畫面就死」。
+      if (targetIndex < 0 && current.monsters[i].distance - travelled <= engageRange(current.rowIndex, i)) {
+        targetIndex = i;
+      }
     }
 
     if (targetIndex >= 0) {

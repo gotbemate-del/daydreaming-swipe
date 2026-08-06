@@ -69,6 +69,8 @@ export default function HomeScreen() {
   /** 生存模式:這一輪從第幾關開始、已經連過幾關。 */
   const [survivalFrom, setSurvivalFrom] = useState(1);
   const [survivalStreak, setSurvivalStreak] = useState(0);
+  /** 這一輪累計撐過幾波。**生存模式的分數就是它**(關數只是拿來顯示的刻度)。 */
+  const [survivalWaves, setSurvivalWaves] = useState(0);
   const [survivalStage, setSurvivalStage] = useState(1);
   const [promotionTier, setPromotionTier] = useState<JobTier | null>(null);
   const [offers, setOffers] = useState<SkillState[]>([]);
@@ -118,23 +120,28 @@ export default function HomeScreen() {
     });
   }
 
-  function onRunFinish(result: 'cleared' | 'dead', earned: number) {
+  function onRunFinish(result: 'cleared' | 'dead', earned: number, waves: number) {
     update((prev) => ({ ...prev, coins: prev.coins + earned }));
     rollRunDrops(result === 'cleared');
     if (mode === 'survival') {
       setSurvivalCoins((c) => c + earned);
+      const totalWaves = survivalWaves + waves;
+      setSurvivalWaves(totalWaves);
       if (result === 'dead') {
         // 生存模式**不給重試**,死了就結算——壓力就在這裡。
+        // 分數的單位是**波**不是關:生存模式是一條連續的跑圖,關卡只是中途換難度的刻度,
+        // 而玩家心裡數的是「我撐過幾波」。
         // 技能書照「歷史最好的那一次」給,不是這一次:不然玩家可以刷短輪湊次數。
         update((prev) => {
-          const best = Math.max(prev.bestSurvival, survivalStreak);
+          const best = Math.max(prev.bestSurvival, totalWaves);
           return { ...prev, bestSurvival: best, books: Math.max(prev.books, booksForSurvival(best)) };
         });
         setScreen('survivalOver');
         return;
       }
-      // 過關就直接接下一關,中間不回主介面、不選永久技能、不轉職——
-      // 那三件事都是「整備」,而生存模式的核心就是沒有整備的機會。
+      // 過關就直接接下一關,中間不回主介面、不選永久技能、不轉職,**也不停下來等玩家按鈕**
+      // (交棒由 LaneRunner 的 HANDOFF_MS 自己觸發)。那三件事都是「整備」,
+      // 而生存模式的核心就是沒有整備的機會。
       setSurvivalStreak((n) => n + 1);
       setSurvivalStage((st) => Math.min(TOTAL_STAGES, st + 1));
       setRunKey((k) => k + 1);
@@ -172,6 +179,7 @@ export default function HomeScreen() {
     return (
       <View style={styles.screen}>
         <SurvivalResult
+          waves={survivalWaves}
           streak={survivalStreak}
           previousBest={save.bestSurvival}
           diedAt={survivalStage}
@@ -238,6 +246,7 @@ export default function HomeScreen() {
             setSurvivalFrom(stage);
             setSurvivalStage(stage);
             setSurvivalStreak(0);
+            setSurvivalWaves(0);
             setSurvivalCoins(0);
             setRunKey((k) => k + 1);
             setScreen('run');
@@ -256,7 +265,7 @@ export default function HomeScreen() {
         start={applySkills(runStartFor(job), skills)}
         bookLevel={save.books}
         collection={collectionScales(decodeCollection(save.collected))}
-        survivalStreak={mode === 'survival' ? survivalStreak : null}
+        survivalWavesBefore={mode === 'survival' ? survivalWaves : null}
         onFinish={onRunFinish}
       />
     </View>

@@ -5,12 +5,14 @@ import { booksForSurvival, SURVIVAL_BOOK_THRESHOLDS } from '../game/save';
 import { COIN_ICON } from './artAssets';
 import { PixelFrame } from './PixelFrame';
 
-// 生存模式的結算畫面。**它的重點是「下一級技能書還差幾關」**——
-// 生存模式沒有進度可以推(關卡進度是一般模式的事),所以如果只顯示「你撐了 4 關」,
+// 生存模式的結算畫面。**它的重點是「下一級技能書還差幾波」**——
+// 生存模式沒有進度可以推(關卡進度是一般模式的事),所以如果只顯示「你撐了 40 波」,
 // 玩家不會知道自己離下一個東西有多遠,也就沒有再來一次的理由。
 
 interface Props {
-  /** 這一輪連過幾關 */
+  /** 這一輪累計撐過幾波。**這才是分數**——生存模式是一條連續的跑圖。 */
+  waves: number;
+  /** 這一輪連過幾關(附註用的刻度,不是分數) */
   streak: number;
   /** 這一輪之前的最佳紀錄。用來標示有沒有破紀錄。 */
   previousBest: number;
@@ -21,8 +23,8 @@ interface Props {
   onDone: () => void;
 }
 
-export function SurvivalResult({ streak, previousBest, diedAt, coins, onDone }: Props) {
-  const best = Math.max(streak, previousBest);
+export function SurvivalResult({ waves, streak, previousBest, diedAt, coins, onDone }: Props) {
+  const best = Math.max(waves, previousBest);
   const booksNow = booksForSurvival(best);
   const gained = booksNow - booksForSurvival(previousBest);
   const nextThreshold = SURVIVAL_BOOK_THRESHOLDS.find((t) => t > best);
@@ -32,9 +34,9 @@ export function SurvivalResult({ streak, previousBest, diedAt, coins, onDone }: 
       <Text style={styles.title}>生存結束</Text>
       <PixelFrame style={styles.card}>
         <View style={styles.cardInner}>
-        <Text style={styles.streak}>連過 {streak} 關</Text>
-        <Text style={styles.sub}>倒在 {stageLabel(diedAt)}</Text>
-        {streak > previousBest && <Text style={styles.record}>新紀錄!(前一次 {previousBest} 關)</Text>}
+        <Text style={styles.streak}>撐過 {waves} 波</Text>
+        <Text style={styles.sub}>連過 {streak} 關 · 倒在 {stageLabel(diedAt)}</Text>
+        {waves > previousBest && <Text style={styles.record}>新紀錄!(前一次 {previousBest} 波)</Text>}
 
         <View style={styles.row}>
           <Image source={COIN_ICON} resizeMode="contain" style={styles.coinIcon} />
@@ -47,7 +49,7 @@ export function SurvivalResult({ streak, previousBest, diedAt, coins, onDone }: 
           <Text style={styles.sub}>技能書 {booksNow} 級</Text>
         )}
         {nextThreshold !== undefined ? (
-          <Text style={styles.next}>再撐到 {nextThreshold} 關就能拿下一級</Text>
+          <Text style={styles.next}>再撐到 {nextThreshold} 波就能拿下一級</Text>
         ) : (
           <Text style={styles.next}>技能書已經滿級了</Text>
         )}

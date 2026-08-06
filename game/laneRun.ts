@@ -383,6 +383,40 @@ export const LEAD_IN_DISTANCE = 140;
  */
 export const VISIBLE_AHEAD = ROW_SPACING * 3.2;
 
+/**
+ * 勇者從多遠開始朝一隻怪丟武器(佔視野的幾成)。
+ *
+ * ## 這是**演出**參數,不是難度旋鈕
+ *
+ * 打得倒幾隻完全由 `waveKillCount(戰力, 敵人戰力, 隻數)` 決定,跟射程、跟丟得多快
+ * 一點關係都沒有。射程只決定「牠在畫面的哪個高度倒下」。
+ *
+ * ## 為什麼從 0.81 降到 0.5
+ *
+ * 舊值是寫死的 260(= 視野的 81%),意思是怪一進到畫面最上緣就進入射程;而滿隊齊射
+ * 打倒一隻只要 3 下 x 22ms = 67ms——**牠在冒出來的那個位置就死了**。
+ * 玩家回報的「怪物永遠只顯示在畫面上方,一出現就都被消滅了」就是這個。
+ *
+ * 降到 0.5 之後怪要先走完一半的畫面才會挨第一下,倒下的位置落在畫面中段,
+ * 「牠正在衝過來、我把牠打下來」這件事才看得到。**緊張感變高但難度沒變**——
+ * 真要調難度只有 `ENEMY_POWER_RATIO`。
+ */
+export const FIRE_RANGE_RATIO = 0.5;
+/**
+ * 每一隻各自的接戰距離抖動幅度(±15%)。
+ * 沒有抖動的話整波會在同一條水平線上一隻一隻倒下,看起來像有一道看不見的牆。
+ */
+export const FIRE_RANGE_JITTER = 0.3;
+
+/**
+ * 這一隻要靠多近才會挨打。用雜湊不用亂數:這個判斷在每 33ms 的 tick 裡,
+ * 用亂數的話同一隻會一下進射程一下出射程,武器會忽丟忽停。
+ */
+export function engageRange(rowIndex: number, index: number): number {
+  const jitter = 1 - FIRE_RANGE_JITTER / 2 + hashFor(rowIndex, index, 41) * FIRE_RANGE_JITTER;
+  return VISIBLE_AHEAD * FIRE_RANGE_RATIO * jitter;
+}
+
 // ---- 地形 ----
 // 每一關換一種地面。純粹是視覺,不影響任何數值——但少了它整條跑道就是一塊深色底,
 // 玩家沒有「我在往前跑」以外的任何場景感,關卡之間也長得一模一樣。

@@ -39,7 +39,7 @@ interface Props {
   lastResult: 'cleared' | 'dead' | null;
   /** 技能書等級。生存模式掉的,顯示在狀態列讓玩家看得到自己的第三層養成。 */
   books: number;
-  /** 生存模式最好撐過幾關。 */
+  /** 生存模式最好撐過幾波(單位是波不是關,見 game/save.ts 的 SURVIVAL_BOOK_THRESHOLDS)。 */
   bestSurvival: number;
   /** 這一場剛撿到幾件裝備。主介面閃一下,不然玩家不會發現圖鑑有在長。 */
   justFound: number[];
@@ -81,7 +81,7 @@ export function MainMenu({
       <Text style={styles.jobLine}>
         第 {chapterOfStage(stage)} 大關 · {jobTitle(job)}
         {books > 0 ? ` · 技能書 ${books}` : ''}
-        {bestSurvival > 0 ? ` · 生存 ${bestSurvival} 關` : ''}
+        {bestSurvival > 0 ? ` · 生存 ${bestSurvival} 波` : ''}
       </Text>
 
       {/* 中間:勇者站在正中央。這裡刻意什麼都不做——沒有跑道、沒有敵人,

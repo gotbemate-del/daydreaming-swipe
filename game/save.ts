@@ -18,7 +18,7 @@
 // 不是整份丟掉**——整份丟掉的話,一個手滑的 coins 欄位會讓玩家失去 300 關的進度。
 // 反過來,驗證失敗也絕對不能丟例外:存檔壞掉的症狀應該是「回到預設值」,不是白畫面。
 
-import { LEVELS_PER_CHAPTER, TOTAL_CHAPTERS } from './laneRun';
+import { LEVELS_PER_CHAPTER, LONG_LEVEL_WAVES, TOTAL_CHAPTERS, WAVES_PER_LEVEL } from './laneRun';
 import { MAX_SKILL_LEVEL, MAX_SKILL_SLOTS, SKILLS, type SkillId, type SkillState } from './laneSkills';
 import { MAX_SKILL_BOOK_LEVEL } from './laneRunSkills';
 import { decodeCollection, encodeCollection } from './collection';
@@ -27,7 +27,7 @@ import { decodeCollection, encodeCollection } from './collection';
  * 存檔格式版本。**改動任何欄位的意義就要 +1,並在 MIGRATIONS 補一條。**
  * 只是新增一個「有預設值的欄位」不必升版:readSave 會幫沒有的欄位補預設值。
  */
-export const SAVE_VERSION = 3;
+export const SAVE_VERSION = 4;
 
 /** localStorage / AsyncStorage 的 key。改這個等於讓所有人的存檔消失,不要改。 */
 export const SAVE_KEY = 'daydreaming-swipe/save';
@@ -151,7 +151,20 @@ const MIGRATIONS: Record<number, (raw: Record<string, unknown>) => Record<string
   1: (raw) => ({ ...raw, version: 2, books: raw.books ?? 0, bestSurvival: raw.bestSurvival ?? 0 }),
   // v2 → v3:裝備圖鑑上線。舊存檔沒收過任何東西,所以是空字串。
   2: (raw) => ({ ...raw, version: 3, collected: raw.collected ?? '' }),
+  // v3 → v4:生存模式改成「一條連續的跑圖」,分數的單位從**關**變成**波**。
+  // 舊存檔的 bestSurvival 是關數,乘上一關的波數才是等值的波數——不換算的話,
+  // 撐過 21 關的老玩家會突然變成「撐過 21 波」,技能書等級當場從 5 級掉到 0 級。
+  3: (raw) => ({
+    ...raw,
+    version: 4,
+    bestSurvival: Math.round(readNumber(raw.bestSurvival, 0) * WAVES_PER_LEVEL),
+  }),
 };
+
+/** 遷移用的寬鬆數字讀取。遷移函式拿到的是還沒驗證過的 raw,所以不能假設型別。 */
+function readNumber(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
 
 /**
  * 把存進去的字串讀回來。**任何情況都會回傳一份可用的存檔,不會丟例外。**
@@ -203,7 +216,8 @@ export function readSave(text: string | null | undefined): { save: SaveData; mig
       skills: readSkills(raw.skills),
       coins: readInt(raw.coins, 0, 0, Number.MAX_SAFE_INTEGER),
       books: readInt(raw.books, 0, 0, MAX_SKILL_BOOK_LEVEL),
-      bestSurvival: readInt(raw.bestSurvival, 0, 0, TOTAL_STAGES),
+      // 上限是「全部小關 x 一關最多幾波」——改過的存檔會被夾回來。
+      bestSurvival: readInt(raw.bestSurvival, 0, 0, TOTAL_STAGES * LONG_LEVEL_WAVES),
       // 圖鑑走 decode → encode 一圈:壞掉的字串會變成空圖鑑,超出總數的 bit 也會被清掉。
       collected: encodeCollection(decodeCollection(raw.collected)),
     },
@@ -213,16 +227,20 @@ export function readSave(text: string | null | undefined): { save: SaveData; mig
 
 /** 存檔轉成要寫進去的字串。 */
 /**
- * 生存模式撐過幾關換到幾級技能書。
+ * 生存模式撐過幾**波**換到幾級技能書。
  *
- * 門檻刻意用「連續過幾關」而不是「累積打了幾關」:生存模式的壓力就在**不能失手**,
+ * 單位是波不是關:生存模式改成一條連續的跑圖之後,「關」只是中途換難度的刻度,
+ * 玩家心裡數的是「我撐過幾波」——分數的單位要跟玩家數的東西一致。
+ * 門檻是舊版關數門檻 [3, 6, 10, 15, 21] x 一關 10 波,難度完全沒動。
+ *
+ * 而且刻意用「一輪連續撐過幾波」而不是「累積打了幾波」:生存模式的壓力就在**不能失手**,
  * 用累積的話它會退化成「多打幾次就有」,跟一般模式沒兩樣。
  */
-export const SURVIVAL_BOOK_THRESHOLDS = [3, 6, 10, 15, 21];
+export const SURVIVAL_BOOK_THRESHOLDS = [30, 60, 100, 150, 210];
 
-/** 撐過 streak 關對應到的技能書等級(取歷史最好的那次,不是這一次)。 */
-export function booksForSurvival(bestStreak: number): number {
-  return SURVIVAL_BOOK_THRESHOLDS.filter((t) => bestStreak >= t).length;
+/** 撐過 waves 波對應到的技能書等級(取歷史最好的那次,不是這一次)。 */
+export function booksForSurvival(bestWaves: number): number {
+  return SURVIVAL_BOOK_THRESHOLDS.filter((t) => bestWaves >= t).length;
 }
 
 export function writeSave(save: SaveData): string {

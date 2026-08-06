@@ -5,8 +5,10 @@
 // 丟例外就等於白畫面,而白畫面在 web 上意味著玩家再也進不去,連清存檔的入口都沒有。
 
 import {
-  DEFAULT_SAVE, newSave, readSave, writeSave, SAVE_VERSION, TOTAL_STAGES, type SaveData,
+  booksForSurvival, DEFAULT_SAVE, newSave, readSave, writeSave, SAVE_VERSION, TOTAL_STAGES,
+  type SaveData,
 } from '../game/save';
+import { WAVES_PER_LEVEL } from '../game/laneRun';
 import { MAX_SKILL_BOOK_LEVEL } from '../game/laneRunSkills';
 import {
   addItem, collectedCount, decodeCollection, emptyCollection, encodeCollection, hasItem,
@@ -162,10 +164,23 @@ check('掉落優先給還沒收到的(不然 5668 件會一直掉重複的)', ((
 // v1 存檔:上一版正式格式,沒有 books / bestSurvival(生存模式那時還不存在)。
 const v2 = JSON.stringify({ version: 2, stage: 120, coins: 9, job: null, skills: [], books: 2, bestSurvival: 7 });
 const fromV2 = readSave(v2);
-check('v2 存檔升到 v3 之後進度全留著,圖鑑是空的',
-  fromV2.save.stage === 120 && fromV2.save.books === 2 && fromV2.save.bestSurvival === 7
+check('v2 存檔一路升上來之後進度全留著,圖鑑是空的',
+  fromV2.save.stage === 120 && fromV2.save.books === 2
   && collectedCount(decodeCollection(fromV2.save.collected)) === 0
   && fromV2.save.version === SAVE_VERSION);
+// v3 → v4:生存模式的分數從**關**換成**波**。不換算的話,撐過 21 關的老玩家會變成
+// 「撐過 21 波」,技能書等級當場從 5 級掉到 0 級——那是看得見的進度損失。
+const v3 = JSON.stringify({
+  version: 3, stage: 120, coins: 9, job: null, skills: [], books: 5, bestSurvival: 21, collected: '',
+});
+const fromV3 = readSave(v3);
+check('v3 → v4:生存紀錄從「關」換算成「波」,技能書等級不會掉',
+  fromV3.save.bestSurvival === 21 * WAVES_PER_LEVEL
+  && booksForSurvival(fromV3.save.bestSurvival) === 5,
+  `21 關 → ${fromV3.save.bestSurvival} 波,技能書 ${booksForSurvival(fromV3.save.bestSurvival)} 級`);
+check('v2 的生存紀錄也一路換算得到(跨兩級遷移)',
+  fromV2.save.bestSurvival === 7 * WAVES_PER_LEVEL,
+  `7 關 → ${fromV2.save.bestSurvival} 波`);
 
 const v1 = JSON.stringify({ version: 1, stage: 88, coins: 500, job: null, skills: [{ id: 'craft', level: 2 }] });
 const fromV1 = readSave(v1);

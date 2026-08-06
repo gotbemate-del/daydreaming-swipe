@@ -107,6 +107,12 @@ const HAZARD_FLASH_MS = 420;
  * 不然輪到的那個人會一直卡在投擲的姿勢,看起來像定格而不是「丟了一下」。
  */
 const THROW_POSE_MS = 260;
+/**
+ * 生存模式一關接一關之間的過場時間。
+ * 太短(< 500ms)會變成畫面自己閃了一下,玩家不知道發生什麼事;
+ * 太長就變成「還是有中斷」,而不中斷正是生存模式改版的重點。
+ */
+const HANDOFF_MS = 900;
 
 /** 凍住的怪疊什麼顏色。跟 artAssets 的冰屬性同色系,但更亮——它要蓋過原本的屬性染色。 */
 const FROST_COLOR = '#9fd8e8';
@@ -187,16 +193,26 @@ interface Props {
   start: RunStart;
   /** 技能書等級。只放大元素與主動的效果(見 laneRunSkills 的 MAX_SKILL_BOOK_LEVEL)。 */
   bookLevel?: number;
-  /** 生存模式:已經連過幾關(不是生存模式就是 null)。畫面拿它顯示連勝數。 */
-  survivalStreak?: number | null;
+  /**
+   * 生存模式:這一輪在**這一關之前**已經撐過幾波(不是生存模式就是 null)。
+   *
+   * 生存模式是**一條連續的跑圖**:通關不畫結果卡、不等玩家按鈕,直接接下一關,
+   * 所以畫面上的分數必須是「累計波數」而不是這一關的第幾波——後者每十波歸零,
+   * 玩家會以為自己重新開始了。
+   */
+  survivalWavesBefore?: number | null;
   /** 裝備圖鑑給的放大倍率(技能 id → 倍率;只放大元素與主動)。 */
   collection?: CollectionScales;
-  /** 這一場結束(通關或陣亡)。coins 是這一場賺到的,由 app 層累加起來帶回主介面。 */
-  onFinish: (result: 'cleared' | 'dead', coins: number) => void;
+  /**
+   * 這一場結束(通關或陣亡)。coins 是這一場賺到的,由 app 層累加起來帶回主介面。
+   * waves 是這一關實際打完幾波——生存模式的分數是**累計波數**,而死在第 3 波跟
+   * 死在第 9 波差很多,只回傳「過了沒」會把那個差別整個丟掉。
+   */
+  onFinish: (result: 'cleared' | 'dead', coins: number, waves: number) => void;
 }
 
 export function LaneRunner({
-  stage, job, start, onFinish, bookLevel = 0, survivalStreak = null, collection = {},
+  stage, job, start, onFinish, bookLevel = 0, survivalWavesBefore = null, collection = {},
 }: Props) {
   const run = useLaneRun(stage, start, bookLevel, collection);
   const {
@@ -207,6 +223,24 @@ export function LaneRunner({
     elementEvents, carriedSkills, shields, lastShieldAt,
   } = run;
   const attack = totalAttack(state);
+  /** 生存模式:一條連續的跑圖,通關不停下來等玩家按鈕。 */
+  const continuous = survivalWavesBefore !== null;
+
+  /**
+   * 生存模式的交棒:通關之後**自動**接下一關。
+   *
+   * 為什麼留一小段延遲而不是立刻交棒:玩家剛打完最後一波,畫面上還有屍體與飛行中的武器,
+   * 瞬間換場等於「我做了什麼?」。HANDOFF_MS 剛好夠看完那一行「1-3 通過」。
+   *
+   * **陣亡不走這條**——那是這一輪的結束,要停下來給玩家看分數。
+   */
+  const finishRef = useRef(onFinish);
+  finishRef.current = onFinish;
+  useEffect(() => {
+    if (!continuous || state.phase !== 'cleared') return;
+    const id = setTimeout(() => finishRef.current('cleared', state.coins, totalWaves), HANDOFF_MS);
+    return () => clearTimeout(id);
+  }, [continuous, state.phase, state.coins]);
 
   // 跑道的實際尺寸由 onLayout 回報(寬跟高都是)。高度沒量到之前不畫任何物件,
   // 免得用 0 去算位置、東西全部擠在最上面閃一下。
@@ -875,10 +909,18 @@ export function LaneRunner({
           </View>
         )}
 
+        {/* 生存模式通關:**不畫結果卡、不等玩家按鈕**,直接交棒給下一關(見 useEffect)。
+            這裡只畫一行過場字,讓玩家知道自己過了一關而不是畫面卡住。 */}
+        {continuous && state.phase === 'cleared' && (
+          <View style={styles.resultOverlay} pointerEvents="none">
+            <Text style={styles.handoffText}>{stageLabel(stage)} 通過</Text>
+          </View>
+        )}
+
         {/* 結果 toast:浮在跑道上,不佔版面高度。
             先前是畫面最下面獨立的一列,在矮螢幕會被切到畫面外,玩家按不到「下一關」就卡死。
             浮起來之後不管螢幕多矮都一定看得到,跑道也多拿回那一列的高度。 */}
-        {state.phase !== 'running' && (
+        {!(continuous && state.phase === 'cleared') && state.phase !== 'running' && (
           <View style={styles.resultOverlay}>
             <PixelFrame style={styles.resultCard}>
               <Text style={state.phase === 'cleared' ? styles.resultWin : styles.resultLose}>
@@ -892,7 +934,11 @@ export function LaneRunner({
               <Pressable
                 style={styles.againButton}
                 accessibilityLabel={state.phase === 'cleared' ? '繼續' : '回主介面'}
-                onPress={() => onFinish(state.phase === 'cleared' ? 'cleared' : 'dead', state.coins)}
+                onPress={() => onFinish(
+                  state.phase === 'cleared' ? 'cleared' : 'dead',
+                  state.coins,
+                  state.phase === 'cleared' ? totalWaves : waveNumber,
+                )}
               >
                 <Text style={styles.againLabel}>{state.phase === 'cleared' ? '繼續' : '回主介面'}</Text>
               </Pressable>
@@ -978,7 +1024,9 @@ export function LaneRunner({
       <Text style={styles.hint}>
         {stageLabel(stage)},第 {waveNumber} 波,共 {totalWaves} 波
         {/* 生存模式:連勝數要一直看得到——它是這個模式唯一的分數,藏起來就沒有壓力了。 */}
-        {survivalStreak !== null ? ` · 生存連過 ${survivalStreak} 關(死了就結束)` : ' · 拖著史萊姆左右移動'}
+        {survivalWavesBefore !== null
+          ? ` · 生存累計 ${survivalWavesBefore + waveNumber} 波(死了就結束)`
+          : ' · 拖著史萊姆左右移動'}
       </Text>
     </View>
   );
@@ -1141,6 +1189,11 @@ const styles = StyleSheet.create({
     left: 0, right: 0, top: 0, bottom: 0,
     backgroundColor: '#e05050',
     zIndex: 9,
+  },
+  /** 生存模式的過場字。只有一行,不畫框——畫框就變回「結果卡」了。 */
+  handoffText: {
+    color: '#5ec26a', fontSize: 22, fontWeight: '700',
+    textShadowColor: '#16161c', textShadowRadius: 4, textShadowOffset: { width: 0, height: 1 },
   },
   strikeText: {
     color: '#e0a95c', fontSize: 20, fontWeight: '700',
