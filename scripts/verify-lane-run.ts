@@ -409,8 +409,11 @@ const worstKillSeconds = (HITS_PER_MONSTER * MAX_FIRE_INTERVAL_MS) / 1000;
 check('進入射程之後還來得及把牠打完(不然該倒的會走到你面前)',
   engageBand.every((b) => b.seconds > worstKillSeconds),
   engageBand.map((b) => `第${b.st}關 ${b.seconds.toFixed(2)}s`).join(' / ') + ` vs 最慢打完 ${worstKillSeconds.toFixed(2)}s`);
-check('接戰距離落在畫面中段(怪不會一冒出來就死)',
-  FIRE_RANGE_RATIO >= 0.35 && FIRE_RANGE_RATIO <= 0.65,
+// 上界 0.75 而不是 1:視野最上緣那一段是「剛冒出來」,在那裡就開打等於怪永遠只出現在
+// 畫面頂端(最初寫死 260 = 81% 就是這個問題)。下界 0.35 則是另一頭——太短的話
+// 勇者有很長一段時間看起來像沒在打。
+check('接戰距離落在看得到的範圍內(不會一冒出來就死,也不會很久都不出手)',
+  FIRE_RANGE_RATIO >= 0.35 && FIRE_RANGE_RATIO <= 0.75,
   `視野的 ${Math.round(FIRE_RANGE_RATIO * 100)}%`);
 // 每一隻各自抖動,不然整波會在同一條水平線上倒下,看起來像有一道看不見的牆。
 const engageSpread = new Set([...Array(24).keys()].map((i) => Math.round(engageRange(3, i))));

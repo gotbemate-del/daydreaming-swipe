@@ -93,6 +93,7 @@ x-10 同時是魔王關。第一大關的容錯係數由鬆到緊,是新手教�
 - [x] 技能書:只放大元素與主動的效果(**不碰選項串**,見下方的坑)
 - [x] 裝備圖鑑(裝備分頁):**501 個條目**(= 501 張美術圖),5668 件裝備當碎片;
       每件顯示圖示/名稱/碎片 n/m/等級/該屬性加成,八屬性各自累積、各自封頂 +100%
+- [x] 背景音樂:既有的 `assets/sounds/bgm.wav` 循環播放,右上角「設定」可以關掉(存進存檔)
 - [ ] 下方分頁列剩下八個功能仍然未開放(只畫出來並鎖住,見下方「裝備為什麼還沒接」)
 - [x] `game/equipment.ts` 的 5668 件接上了,但**是當圖鑑不是當裝備**(見下)。
       跑圖裡的「裝備」仍然只是 1~5 階的抽象等級,那是兩件事。
@@ -140,7 +141,8 @@ x-10 同時是魔王關。第一大關的容錯係數由鬆到緊,是新手教�
 ```
 app/          Expo Router 頁面層(只做組裝)
 components/   UI 元件
-  MainMenu.tsx    主介面(勇者站中間 + 開始闖關 + 下方分頁列)
+  MainMenu.tsx    主介面(勇者站中間 + 開始闖關 + 下方分頁列 + 右上角設定)
+  Settings.tsx    設定面板(目前只有背景音樂開關)
   LaneRunner.tsx  跑道畫面(拖曳、閘門、波次、投擲演出、傷害數字、場內技能面板)
   JobChoice.tsx   轉職畫面
   SkillChoice.tsx 技能選擇畫面
@@ -159,6 +161,7 @@ game/         遊戲核心邏輯(純函式,禁止 import React)
   monsters.ts     120 種怪物(自姊妹作搬入,未改)
 hooks/        自訂 hooks
   useSave.ts      存檔讀寫(AsyncStorage;web 上就是 localStorage)
+  useBgm.ts       背景音樂(**掛在 app 層,不能掛進 LaneRunner**,見下方的坑)
 assets/       圖片、音效
 scripts/      驗證腳本
   simRun.ts       跑一場的模擬器 ← 三份 verify 共用,不要各自複製一份迴圈
@@ -210,6 +213,19 @@ scripts/      驗證腳本
 - **只存跨場留下來的東西。** 跑到一半的那一場、正在挑的技能、正在轉職的畫面都不存——
   存了就會有「復原到一半的一場」這種永遠測不完的狀態。代價是挑技能時關掉分頁要重打那一關,
   但金幣已經進帳(`onRunFinish` 先加),不是整場白跑。
+
+**音效**
+- **背景音樂的播放器不能掛在 `LaneRunner` 裡。** 那個元件每一關都換 key 重新掛載
+  (生存模式是一關接一關),掛在裡面音樂會每十波從頭播一次。掛在 `app/index.tsx`
+  才跨得過主介面 / 跑圖 / 圖鑑 / 轉職。
+- **`expo-audio` 的 web 版 `play()` 不回傳 promise**(`AudioPlayerWeb.play()` 裡面是
+  `this.media.play()`,沒有 return),所以**呼叫端接不到自動播放被擋的那個錯**——
+  它會變成一行 unhandled rejection 紅字(`play() failed because the user didn't
+  interact with the document first`)。解法不是「呼叫了再接錯」,是**在網頁上根本不要
+  在互動之前呼叫**:掛一次性的 pointerdown/keydown,玩家第一次碰畫面才開播。
+  那個「有沒有互動過」的旗標要放模組層,中途關掉音樂再打開時才會立刻出聲。
+- **音樂開關一定要存進存檔。** 關掉之後每次重開又自己播起來,比沒有音樂還糟。
+  它是唯一一個不是「進度」的存檔欄位,而壞掉的值要退回**開著**(那是預設的體驗)。
 
 **素材轉檔**
 - **`img.convert('RGBA')` 會把 GIF 的 `transparency` 索引一起套用。** GIF frame 的 `info` 帶著

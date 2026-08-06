@@ -8,6 +8,7 @@ import { SkillChoice } from '../components/SkillChoice';
 import { isPromotionStage, runStartFor, tierAfter, type JobTier, type LaneJob } from '../game/laneJobs';
 import { applySkills, learnSkill, skillOffers, type SkillState } from '../game/laneSkills';
 import { useSave } from '../hooks/useSave';
+import { useBgm } from '../hooks/useBgm';
 import { booksForSurvival, TOTAL_STAGES, type SavedJob } from '../game/save';
 import {
   addItem, bookDropChance, collectionScales, decodeCollection, dropCountForRun,
@@ -62,6 +63,10 @@ export default function HomeScreen() {
   const { stage, coins } = save;
   const job = toLaneJob(save.job);
   const skills = save.skills;
+
+  // 背景音樂掛在這一層,**不能掛進 LaneRunner**:那個元件每一關都換 key 重新掛載,
+  // 音樂會每十波從頭播一次(生存模式尤其明顯)。
+  useBgm(loaded && !save.bgmOff);
 
   const [screen, setScreen] = useState<Screen>('menu');
   const [runKey, setRunKey] = useState(0);
@@ -239,6 +244,8 @@ export default function HomeScreen() {
             setScreen('run');
           }}
           justFound={justFound}
+          bgmOff={save.bgmOff}
+          onToggleBgm={() => update((prev) => ({ ...prev, bgmOff: !prev.bgmOff }))}
           onCodex={() => setScreen('codex')}
           onSurvival={() => {
             // 從目前進度的關卡開始:生存模式不是另一條難度曲線,是同一條的「不能失手」版本。
@@ -266,6 +273,8 @@ export default function HomeScreen() {
         bookLevel={save.books}
         collection={collectionScales(decodeCollection(save.collected))}
         survivalWavesBefore={mode === 'survival' ? survivalWaves : null}
+        bgmOff={save.bgmOff}
+        onToggleBgm={() => update((prev) => ({ ...prev, bgmOff: !prev.bgmOff }))}
         onFinish={onRunFinish}
       />
     </View>

@@ -204,6 +204,12 @@ interface Props {
   /** 裝備圖鑑給的放大倍率(技能 id → 倍率;只放大元素與主動)。 */
   collection?: CollectionScales;
   /**
+   * 背景音樂關掉了沒 + 切換。**跑圖中也要有這顆**:一場長關 6 分鐘、生存模式更久,
+   * 只放在主介面等於「想關音樂就得先死一次」。
+   */
+  bgmOff?: boolean;
+  onToggleBgm?: () => void;
+  /**
    * 這一場結束(通關或陣亡)。coins 是這一場賺到的,由 app 層累加起來帶回主介面。
    * waves 是這一關實際打完幾波——生存模式的分數是**累計波數**,而死在第 3 波跟
    * 死在第 9 波差很多,只回傳「過了沒」會把那個差別整個丟掉。
@@ -213,6 +219,7 @@ interface Props {
 
 export function LaneRunner({
   stage, job, start, onFinish, bookLevel = 0, survivalWavesBefore = null, collection = {},
+  bgmOff = false, onToggleBgm,
 }: Props) {
   const run = useLaneRun(stage, start, bookLevel, collection);
   const {
@@ -1021,13 +1028,24 @@ export function LaneRunner({
 
       {/* 「現在打到第幾波」是玩家判斷「還剩多久」的唯一依據——只寫總波數的話,
           一場三分鐘裡完全不知道自己在哪個位置。 */}
-      <Text style={styles.hint}>
+      <View style={styles.hintRow}>
+        <Text style={styles.hint}>
         {stageLabel(stage)},第 {waveNumber} 波,共 {totalWaves} 波
         {/* 生存模式:連勝數要一直看得到——它是這個模式唯一的分數,藏起來就沒有壓力了。 */}
         {survivalWavesBefore !== null
           ? ` · 生存累計 ${survivalWavesBefore + waveNumber} 波(死了就結束)`
           : ' · 拖著史萊姆左右移動'}
-      </Text>
+        </Text>
+        {onToggleBgm && (
+          <Pressable
+            accessibilityLabel={bgmOff ? '音樂 關' : '音樂 開'}
+            style={styles.bgmToggle}
+            onPress={onToggleBgm}
+          >
+            <Text style={[styles.bgmLabel, bgmOff && styles.bgmLabelOff]}>音樂 {bgmOff ? '關' : '開'}</Text>
+          </Pressable>
+        )}
+      </View>
     </View>
   );
 }
@@ -1232,6 +1250,14 @@ const styles = StyleSheet.create({
   skillGlyph: { fontSize: 14, fontWeight: '700', lineHeight: 16 },
   skillSlotSub: { color: '#8a8a95', fontSize: 9, lineHeight: 10 },
   skillBarEmpty: { color: '#8a8a95', fontSize: 11 },
+  hintRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  // 音樂開關用文字不用圖示:ui/ 沒有喇叭圖,而圖示鐵則禁止拿 emoji 頂替。
+  bgmToggle: {
+    paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5,
+    backgroundColor: '#2a2a35', borderWidth: 1, borderColor: '#3a3448',
+  },
+  bgmLabel: { color: '#e0a95c', fontSize: 10, fontWeight: '700' },
+  bgmLabelOff: { color: '#8a8a95' },
   /** 光・護盾的光圈。畫在勇者群外面,不填色(填了會蓋掉勇者)。 */
   shieldRing: { position: 'absolute', borderWidth: 2, borderColor: SHIELD_COLOR, zIndex: 19 },
 });

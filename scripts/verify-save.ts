@@ -40,11 +40,18 @@ const full: SaveData = {
   coins: 98765,
   books: 3,
   bestSurvival: 42,
+  bgmOff: true,
   collected: encodeCollection((() => { const b = emptyCollection(); addItem(b, 0); addItem(b, 5000); return b; })()),
 };
 const round = readSave(writeSave(full)).save;
 check('存進去再讀回來一模一樣', JSON.stringify(round) === JSON.stringify(full), JSON.stringify(round));
 check('讀回一份現行版本的存檔不算遷移', readSave(writeSave(full)).migrated === false);
+// 音樂開關是唯一一個「不是進度」的欄位,而它非存不可:關掉之後每次重開又自己播起來,
+// 那比沒有音樂還糟。壞掉的值要退回「開著」(那是預設的體驗),不是退回「關著」。
+check('音樂開關存得住,而且壞掉的值退回「開著」',
+  readSave(writeSave(full)).save.bgmOff === true
+  && readSave(JSON.stringify({ version: SAVE_VERSION, bgmOff: 'yes' })).save.bgmOff === false
+  && readSave(JSON.stringify({ version: SAVE_VERSION })).save.bgmOff === false);
 
 // --- 壞掉的東西 ---
 // 每一項的重點都是「不丟例外」而且「退回合法值」。

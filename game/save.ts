@@ -71,8 +71,16 @@ export interface SaveData {
    * (見 laneRunSkills 的 MAX_SKILL_BOOK_LEVEL)——它碰不到理想路線,所以敵人不會跟著變強。
    */
   books: number;
-  /** 生存模式的最佳紀錄:連續過了幾關。純紀錄,不影響數值。 */
+  /** 生存模式的最佳紀錄:一輪連續撐過幾**波**。純紀錄,不影響數值。 */
   bestSurvival: number;
+  /**
+   * 背景音樂關掉了沒。
+   *
+   * **這是唯一一個「不是進度」的存檔欄位**,而它非存不可:玩家關掉音樂之後
+   * 每次重開又自己播起來,那比沒有音樂還糟。新增有預設值的欄位不必升版號
+   *(readSave 會幫沒有的欄位補預設),所以舊存檔進來就是「開著」。
+   */
+  bgmOff: boolean;
   /**
    * 裝備圖鑑:5668 個 bit 壓成 base64(見 game/collection.ts)。
    * 存 id 陣列的話滿收會是幾萬個字,bitset 壓完約 950 字。
@@ -88,6 +96,7 @@ export const DEFAULT_SAVE: SaveData = {
   coins: 0,
   books: 0,
   bestSurvival: 0,
+  bgmOff: false,
   collected: '',
 };
 
@@ -218,6 +227,8 @@ export function readSave(text: string | null | undefined): { save: SaveData; mig
       books: readInt(raw.books, 0, 0, MAX_SKILL_BOOK_LEVEL),
       // 上限是「全部小關 x 一關最多幾波」——改過的存檔會被夾回來。
       bestSurvival: readInt(raw.bestSurvival, 0, 0, TOTAL_STAGES * LONG_LEVEL_WAVES),
+      // 不是 true 就一律當成「開著」——壞掉的欄位要退回「有音樂」,那是預設的體驗。
+      bgmOff: raw.bgmOff === true,
       // 圖鑑走 decode → encode 一圈:壞掉的字串會變成空圖鑑,超出總數的 bit 也會被清掉。
       collected: encodeCollection(decodeCollection(raw.collected)),
     },
