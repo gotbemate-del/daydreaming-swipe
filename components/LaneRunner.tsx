@@ -486,7 +486,15 @@ export function LaneRunner({
       const boxLeft = anim ? centerX - boxW * anim.anchor : left;
       const boxTop = anim ? groundY - boxH : top;
       return (
-        <View key={m.index} style={[styles.floating, { left: boxLeft, top: boxTop, width: boxW }]} pointerEvents="none">
+        <View
+          key={m.index}
+          style={[styles.floating, { left: boxLeft, top: boxTop, width: boxW }]}
+          pointerEvents="none"
+          // 自動化測試要量小怪的橫向分佈,就得抓得到牠們本人。靠「img 寬度剛好是 42」去猜
+          // 會抓到石頭(同尺寸),量出來的分佈是石頭的落點範圍而不是怪的——實測過一次。
+          // 而且動畫版的框寬是 size x wRatio,本來就不等於 MONSTER_SIZE。
+          accessibilityLabel={`敵人 ${m.index} ${m.offset.toFixed(3)}`}
+        >
           <Image source={art} resizeMode="contain" style={[styles.pixelArt, { width: boxW, height: boxH }]} />
           {/*
             狀態染色:同一張圖再疊**一層** tintColor 的複本。tintColor 會把整張圖壓成單色剪影,

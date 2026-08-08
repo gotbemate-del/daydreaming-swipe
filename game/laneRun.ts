@@ -952,18 +952,31 @@ export interface WaveMonster {
   distance: number;
 }
 
-// 每隻散到哪一條跑道用雜湊算,不存也不抽:同一排永遠長一樣(重播、驗證都對得起來),
-// 又不會出現「整波都在同一條」這種一眼看破的規律。
-// 乘數要用 Math.imul(32 位元繞回)並且做一次位移混合,不能只是「兩個大數相加再取餘數」——
-// 常數只要含有 LANE_COUNT 的因數,取餘數之後每一隻就會算出同一條跑道,整波擠成一直線。
-function laneForWaveMonster(rowIndex: number, index: number): Lane {
-  let h = Math.imul(rowIndex + 1, 374761393) ^ Math.imul(index + 1, 668265263);
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
-  return (((h ^ (h >>> 16)) >>> 0) % LANE_COUNT) as Lane;
-}
+/**
+ * 小怪離跑道左右邊緣至少留多遠(offset 單位)。留這一段是為了整隻圖都在跑道內,
+ * 不是為了難度——小怪畫 42px,在一般手機寬度上約佔 0.11,所以半個身體是 0.055。
+ */
+export const MONSTER_EDGE = 0.08;
 
-/** 小怪可以偏離跑道中心多遠(offset 單位)。太大會跑到隔壁跑道上,看起來像站錯格。 */
-export const MONSTER_JITTER = 0.11;
+/**
+ * 這一隻站在跑道的哪個橫向位置。
+ *
+ * **不再是「挑一條跑道 + 抖動」。** 舊版是 `laneCenterOffset(lane) ± MONSTER_JITTER(0.11)`,
+ * 兩條跑道的中心是 0.25 與 0.75,所以整波永遠只落在 [0.14, 0.36] 與 [0.64, 0.86] 兩塊,
+ * **中間 [0.36, 0.64] 一隻都不會有**。玩家看到的是「怪明顯站左右兩側」,而且站在其中一側
+ * 就能一直打同一個位置——使用者回報的「攻擊位置很單一」就是這個。
+ *
+ * 現在改成整條跑道均勻散開。用**黃金比例低差異序列**而不是純雜湊:
+ * 純雜湊在隻數少的時候會結塊(3 隻可能全擠在左邊),而低差異序列保證任何隻數都鋪得開,
+ * 同時仍然是確定值(同一排永遠長一樣,重播與驗證都對得起來)。
+ * 每一排的起點由排號的雜湊決定,所以排跟排之間不會出現同一組位置。
+ */
+const GOLDEN_RATIO_CONJUGATE = 0.6180339887498949;
+function offsetForWaveMonster(rowIndex: number, index: number): number {
+  const base = hashFor(rowIndex, 0, 5);
+  const t = (base + index * GOLDEN_RATIO_CONJUGATE) % 1;
+  return MONSTER_EDGE + t * (1 - 2 * MONSTER_EDGE);
+}
 
 // 同一個雜湊源再取不同的位元,拿來決定抖動量與怪種——不另外開亂數,重播才對得起來。
 function hashFor(rowIndex: number, index: number, salt: number): number {
@@ -976,12 +989,12 @@ export function waveMonsters(
   rowIndex: number, size: number, rowDistance: number, speciesCount = 1, spread = 150,
 ): WaveMonster[] {
   return Array.from({ length: size }, (_, index) => {
-    const lane = laneForWaveMonster(rowIndex, index);
-    const jitter = (hashFor(rowIndex, index, 1) * 2 - 1) * MONSTER_JITTER;
+    const offset = offsetForWaveMonster(rowIndex, index);
     return {
       index,
-      lane,
-      offset: clampOffset(laneCenterOffset(lane) + jitter),
+      // 跑道編號現在是**從位置推回來的**,不是先挑跑道再算位置(見 offsetForWaveMonster)。
+      lane: laneFromOffset(offset),
+      offset,
       speciesIndex: Math.min(speciesCount - 1, Math.floor(hashFor(rowIndex, index, 2) * speciesCount)),
       distance: rowDistance - (spread * (size - 1 - index)) / size,
     };

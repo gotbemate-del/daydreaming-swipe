@@ -10,7 +10,7 @@ import {
   rowsForStage, wavesForStage, stageLabel, chapterOfStage, levelOfStage, enemyPowerRatioForStage,
   LEVELS_PER_CHAPTER, WAVES_PER_LEVEL, LONG_LEVEL_WAVES, EASY_RATIO, lastEnemyRowIndex, isBossStage,
   GATE_WIDTH, GATE_WIDTH_MIN, gateWidthForStage, trapHalveWeightForStage, heroWaveEveryForStage,
-  gateSpan, hitsGate, MONSTER_JITTER, SPECIES_PER_WAVE, START_OFFSET, terrainForStage,
+  gateSpan, hitsGate, MONSTER_EDGE, SPECIES_PER_WAVE, START_OFFSET, terrainForStage,
   ENEMY_POWER_RATIO, ENEMY_UNITS_PER_HERO, goodGateGrowthAt, gatesBeforeRow, isTrapGate, runSeconds, ELITE_MASS, ELITE_HITS, absorbedFrom,
   applyGate, gateLabel, DOUBLE_GATES_PER_RUN, GEAR_STEP, doubleGatesForStage, LONG_LEVEL_RATIO_SCALE,
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
@@ -316,9 +316,19 @@ check('同一波每次算出來都一樣(重播對得起來)',
   JSON.stringify(waveMonsters(waveRow.index, 9, waveRow.distance, SPECIES_PER_WAVE, SPREAD)) === JSON.stringify(wave));
 check('小怪不會站成一直線(橫向位置各自偏移)',
   new Set(wave.map((m) => m.offset.toFixed(4))).size >= wave.length - 1);
-check('偏移不會把小怪推出跑道', wave.every((m) => m.offset >= 0 && m.offset <= 1));
-check('偏移幅度不超過設定值', wave.every((m) =>
-  Math.abs(m.offset - laneCenterOffset(m.lane)) <= MONSTER_JITTER + 1e-9));
+check('偏移不會把小怪推出跑道', wave.every((m) =>
+  m.offset >= MONSTER_EDGE - 1e-9 && m.offset <= 1 - MONSTER_EDGE + 1e-9));
+// 這一項是這次改版的重點:舊版把小怪釘在兩條跑道中心 ±0.11,中間 [0.36, 0.64] 永遠是空的,
+// 玩家站在其中一側就能一直打同一個位置。現在要求整條跑道都鋪得到,中央帶不能空。
+{
+  const wide = waveMonsters(waveRow.index, 12, waveRow.distance, 1, SPREAD);
+  const inMiddle = wide.filter((m) => m.offset > 0.4 && m.offset < 0.6).length;
+  check('小怪鋪滿整條跑道,中央帶不是空的(不再只站左右兩側)',
+    inMiddle >= 1, `12 隻裡有 ${inMiddle} 隻站在中央帶`);
+  // 覆蓋度:把跑道切成 6 段,一波 12 隻應該幾乎每一段都踩得到。
+  const bins = new Set(wide.map((m) => Math.min(5, Math.floor(m.offset * 6))));
+  check('橫向覆蓋夠廣(6 等分至少踩到 5 段)', bins.size >= 5, `踩到 ${bins.size}/6 段`);
+}
 // 一波只有一種怪(SPECIES_PER_WAVE = 1),所以整波的造型索引都該是 0——
 // 提示列寫哪一隻,衝過來的就是哪一隻。這一項以前是反過來檢查「有沒有混到好幾種」。
 check('同一波所有隻都是同一種造型(提示列的名字才對得上畫面)',
