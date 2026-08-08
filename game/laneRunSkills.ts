@@ -255,20 +255,53 @@ export function bookPowerScale(id: RunSkillId, bookLevel = 0, collection: Collec
 }
 
 /**
- * 一場最多帶幾個技能。
+ * 一場最多帶幾個技能。**10 格**。
  *
- * **格數必須少於技能總數**,不然「要不要拿新的」根本不是決策——反正全部都帶得下。
- * 鋒刃/增殖 移除之後只剩六元素,所以格數再從 6 降到 4:帶得下 4 款、有 6 款可挑,
- * 每一次「拿新的」都還是在放棄另一款。**留 6 格的話 6 款全部帶得下,取捨當場消失**
- *(這正是主動移除時把 10 降到 6 的同一個理由,少算一次就會重犯)。
+ * 「格數必須少於技能總數」這條仍然成立:18 款、10 格,每一次「拿新的」還是在放棄別的。
+ * 之前一度降到 4,是因為當時只有 6 款(6 格就全帶得下,取捨當場消失);
+ * 現在六元素各三階共 18 款,10 格剛好是「三個元素湊滿(9 格)再多一格」——
+ * 這個數字是為了 ELEMENT_SET_BONUS 挑的,見下面。
  *
- * 核心決策因此仍然是**廣度 vs 深度**:每次都拿新的 = 4 個各 1 級,
- * 拿升級 = 例如 2 個各 2 級。一般小關 10 次選擇、長關 20 次,兩種走法都走得完。
+ * 核心決策因此是**廣度 vs 深度**,而且深度這一邊現在有明確的獎勵:
+ * 湊滿同一個元素的三階會拿到額外傷害加成(ELEMENT_SET_BONUS)。
+ * 沒有那個加成的話 10 格會讓「每次都拿新的」變成無腦最佳解——格數一多,
+ * 廣度的機會成本就消失了,是集齊獎勵把取捨補回來的。
  *
- * 而且元素之間有相剋(見 ELEMENT_COUNTERS),關卡前又公開整關的屬性順序——
- * 4 格逼玩家真的照那串順序去押注,6 格則是全帶了就不必看。
+ * 容量 10 x 5 = 50,而長關只給 20 次選擇,所以選項池永遠不會枯竭
+ *(4 格的時候剛好卡在 20 = 20,一格餘裕都沒有;verify 有一項在盯這個)。
  */
-export const MAX_RUN_SKILL_SLOTS = 4;
+export const MAX_RUN_SKILL_SLOTS = 10;
+
+/**
+ * 同一個元素**三階全部帶著**的時候,那一族的主動傷害額外加成多少。
+ *
+ * ## 為什麼要有它
+ *
+ * 10 格配 18 款,如果「拿新的」永遠不虧,玩家就沒有理由專精——每一次選擇都變成
+ * 「挑一個還沒有的」,那不是決策是排序。集齊獎勵讓「把一個元素做滿」成為一條路線,
+ * 而 10 格剛好放得下三族(9 格)+1,所以最多專精三個元素,仍然要放棄另外三個。
+ *
+ * ## 為什麼仍然不進理想路線
+ *
+ * 它放大的是**主動技能的傷害**,而傷害對理想玩家的價值是 0(他每一波全清,
+ * `extraKills` 還會被夾在整波隻數上)。跟二三階本身同一個道理,第五次用同一條規則。
+ *
+ * ## 為什麼是乘在傷害上,不是給戰力
+ *
+ * 給戰力就會被貪心看到,敵人立刻跟著長(鋒刃/增殖 就是為此被拿掉的)。
+ */
+export const ELEMENT_SET_BONUS = 0.5;
+
+/** 這一組技能裡,某個元素的三階是不是都帶著了。 */
+export function hasElementSet(skills: RunSkillState[], element: RunSkillId): boolean {
+  const tiers = skills.filter((s) => s.level > 0 && elementOf(s.id) === element).map((s) => skillTier(s.id));
+  return tiers.includes(1) && tiers.includes(2) && tiers.includes(3);
+}
+
+/** 湊滿三階的元素有哪些。畫面拿它標出「已集齊」。 */
+export function completedElementSets(skills: RunSkillState[]): RunSkillId[] {
+  return ELEMENTS.filter((el) => hasElementSet(skills, el));
+}
 /** 一次給幾個選項。 */
 export const RUN_SKILL_OFFERS = 3;
 
@@ -774,7 +807,10 @@ export function runSkillEffects(
     // 為什麼仍然不進理想路線:理想玩家每一波全清,多給他清怪的能力等於 0(見上面的長註解)。
     const tier = skillTier(s.id);
     if (tier > 1 && level > 0) {
-      const kills = (tier === 2 ? tier2Kills(level) : tier3Kills(level)) * mx;
+      // 集齊同元素三階 → 那一族的主動傷害額外加成(見 ELEMENT_SET_BONUS)。
+      // 乘在傷害上不是給戰力:給戰力就會被貪心看到,敵人立刻跟著長。
+      const set = hasElementSet(skills, elementOf(s.id)) ? 1 + ELEMENT_SET_BONUS : 1;
+      const kills = (tier === 2 ? tier2Kills(level) : tier3Kills(level)) * mx * set;
       actives.push({
         id: s.id,
         name: runSkillSpec(s.id).name,

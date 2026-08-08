@@ -27,6 +27,7 @@ import {
 } from './simRun';
 import {
   runSkillPicksForWave, totalRunSkillPicks, MAX_RUN_SKILL_LEVEL, RUN_SKILLS, maxRunSkillAttackMultiplier,
+  ELEMENT_SET_BONUS, hasElementSet, tier2Kills, tier3Kills,
   MAX_RUN_SKILL_SLOTS, runSkillEffects, skillCooldownSeconds, bestRunSkillChoice, runSkillOffersAt,
   ACTIVE_SKILL_IDS, ELEMENTS, runSkillSpec, ELEMENT_COUNTERS, COUNTER_BONUS, COUNTERED_PENALTY,
   elementMatchup, elementForRow, learnRunSkill, elementOf, skillTier, previousTier,
@@ -571,6 +572,31 @@ check('一波的秒數在 3000 關之間幾乎不變(這是「冷卻可以綁秒
   }
   check('把最長的一場走完,每一次都開得出選項', dry === -1,
     dry === -1 ? `走完 ${longest} 次,最後帶著 ${carried.length} 格` : `第 ${dry + 1} 次開不出來`);
+}
+
+// 集齊同元素三階 → 那一族的主動傷害加成。放大的是傷害不是戰力,所以照樣不進理想路線。
+{
+  const full = (el: RunSkillId): RunSkillState[] =>
+    [el, `${el}2` as RunSkillId, `${el}3` as RunSkillId].map((id) => ({ id, level: MAX_RUN_SKILL_LEVEL }));
+  const partial = (el: RunSkillId): RunSkillState[] => full(el).slice(0, 2);
+  const killsOf = (sk: RunSkillState[], id: RunSkillId) =>
+    runSkillEffects(sk).actives.find((a) => a.id === id)?.kills ?? 0;
+  check('湊滿同元素三階 -> 那一族的主動傷害變大',
+    ELEMENTS.every((el) => {
+      const id = `${el}3` as RunSkillId;
+      return killsOf(full(el), id) > killsOf([...partial(el), { id, level: MAX_RUN_SKILL_LEVEL }].slice(0, 2).concat({ id, level: MAX_RUN_SKILL_LEVEL }), id) * 0.99;
+    }));
+  check('集齊加成剛好是 ELEMENT_SET_BONUS,而且只加在集齊的那一族',
+    Math.abs(killsOf(full('fire'), 'fire3') / (1 + ELEMENT_SET_BONUS) - tier3Kills(MAX_RUN_SKILL_LEVEL)) < 1e-9
+    && Math.abs(killsOf([...full('fire'), { id: 'ice2', level: MAX_RUN_SKILL_LEVEL }], 'ice2')
+      - tier2Kills(MAX_RUN_SKILL_LEVEL)) < 1e-9,
+    `火集齊 ${killsOf(full('fire'), 'fire3')} 隻 vs 基準 ${tier3Kills(MAX_RUN_SKILL_LEVEL)}`);
+  check('沒集齊就沒有加成(缺一階也不算)',
+    Math.abs(killsOf([...partial('fire'), { id: 'ice', level: 1 }], 'fire2') - tier2Kills(MAX_RUN_SKILL_LEVEL)) < 1e-9);
+  check('10 格剛好放得下三族(9 格)再多一格',
+    MAX_RUN_SKILL_SLOTS === 10 && Math.floor(MAX_RUN_SKILL_SLOTS / 3) === 3);
+  check('集齊加成沒有讓技能加到戰力(照樣不進敵人曲線)',
+    maxRunSkillAttackMultiplier() === 1);
 }
 
 check('場內技能一點戰力都沒加(所以技能完全不進敵人曲線)',

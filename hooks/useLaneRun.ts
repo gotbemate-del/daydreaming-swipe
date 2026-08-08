@@ -255,7 +255,11 @@ export interface LaneRunView {
   /** 正在加速趕路(前方沒東西)。畫面拿它做視覺回饋。 */
   dashing: boolean;
   /** 主動技能剛觸發(時間戳 + 清掉幾隻)。畫面拿它播特效。 */
-  lastStrike: { at: number; names: string[]; kills: number } | null;
+  /**
+   * 剛剛放出去的主動技能。**要帶 id 不能只帶名字**:畫面要照 id 挑特效
+   * (12 款各有各的),拿名字去反查等於把「顯示用的字」變成 key,改個名字特效就消失。
+   */
+  lastStrike: { at: number; ids: RunSkillId[]; names: string[]; kills: number } | null;
   /** 命中那一刻的元素演出(燃燒擴散 / 連鎖閃電 / 凍結)。 */
   elementEvents: ElementEvent[];
   /**
@@ -421,7 +425,7 @@ export function useLaneRun(
   /** 目前帶的技能。tick 迴圈(每 33ms)要讀,走 ref 才不用把整個迴圈綁進相依陣列。 */
   const runSkillsRef = useRef<RunSkillState[]>([]);
   runSkillsRef.current = runSkills;
-  const [lastStrike, setLastStrike] = useState<{ at: number; names: string[]; kills: number } | null>(null);
+  const [lastStrike, setLastStrike] = useState<{ at: number; ids: RunSkillId[]; names: string[]; kills: number } | null>(null);
 
   /**
    * 挑技能的時候**跑圖暫停**。
@@ -547,6 +551,7 @@ export function useLaneRun(
    */
   function fireActives(current: WaveRuntime, fx: RunSkillEffects, now: number) {
     const fired: string[] = [];
+    const firedIds: RunSkillId[] = [];
     let killsNow = 0;
     let heroesNow = 0;
     const ready = (id: string, cooldownSeconds: number) => {
@@ -558,13 +563,14 @@ export function useLaneRun(
     for (const a of fx.actives as ActiveTrigger[]) {
       if (!ready(a.id, a.cooldown)) continue;
       fired.push(a.name);
+      firedIds.push(a.id);
       if (a.kills) { current.fired.kills += a.kills; killsNow += a.kills; }
       if (a.killRatio) current.fired.killRatio += a.killRatio;
       if (a.heroes) heroesNow += Math.round(a.heroes);
       if (a.immune) current.fired.immune = true;
     }
     if (fired.length === 0) return;
-    setLastStrike({ at: now, names: fired, kills: Math.floor(killsNow) });
+    setLastStrike({ at: now, ids: firedIds, names: fired, kills: Math.floor(killsNow) });
     if (heroesNow > 0) {
       setState((prev) => (prev.phase === 'running' ? { ...prev, heroes: prev.heroes + heroesNow } : prev));
     }
@@ -1014,7 +1020,7 @@ export function useLaneRun(
             ? boostFor(current.heroWave, current.fired, fx, current.covered.size)
             : boostFor(due.nodes[0].enemy?.heroWave === true, NO_FIRED, fx);
           if (runSkills.some((s) => s.level > 0 && ELEMENT_COUNTERS[s.id] === waveElement)) {
-            setLastStrike({ at: Date.now(), names: ['剋'], kills: 0 });
+            setLastStrike({ at: Date.now(), ids: [], names: ['剋'], kills: 0 });
           }
         }
         const r = resolveRow(landed, due, offsetRef.current, boost);

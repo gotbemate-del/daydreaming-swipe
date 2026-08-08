@@ -25,6 +25,7 @@ import {
 } from '../game/laneRun';
 import { STAGE_BACKDROPS } from './stageBackdrops';
 import { SkillIcon } from './SkillIcon';
+import { SkillFx, SKILL_FX_MS } from './SkillFx';
 import { Settings, type AudioSettings } from './Settings';
 import { MapDrawToast } from './MapDrawToast';
 import { playSfx } from '../hooks/useSfx';
@@ -998,22 +999,37 @@ export function LaneRunner({
 
         {/* 主動技能「爆裂」的特效。素材用既有的武器圖放大(圖示鐵則:一律用 assets/sprites 的 PNG),
             畫在怪物之上、HUD 之下,而且**同一時間只會有一個**——冷卻以波計,不可能重疊。 */}
+        {/*
+          主動技能的特效。12 款各一種(components/SkillFx.tsx),疊在跑道上。
+
+          舊版是「一行字 + 一張通用的武器圖」——四款主動共用同一張圖,所以放出去
+          只看得出「有東西發動了」,看不出是哪一款,也對不上技能列上剛歸零的那一顆。
+
+          文字留著但退到上方:特效告訴你「發生了什麼」,文字補上「清掉幾隻」,
+          兩者位置錯開才不會在同一秒互相蓋住(那一刻畫面上還有「擊倒… +N 人」)。
+        */}
         {ready && lastStrike && Date.now() - lastStrike.at < STRIKE_FX_MS && (
-          <View
-            pointerEvents="none"
-            // 往上拉到勇者與結算回饋之上:壓在判定線附近的話,劍會蓋住勇者,
-            // 而「爆裂 -N 隻」會跟同一時間跳出來的「擊倒… +N 人」疊在一起,兩行都看不清楚。
-            style={[styles.floating, { left: 0, right: 0, top: Math.max(4, headY - 250), alignItems: 'center' }]}
-          >
-            <Text style={styles.strikeText}>
-              {lastStrike.names.join(' + ')}{lastStrike.kills > 0 ? ` -${lastStrike.kills} 隻` : ''}
-            </Text>
-            <Image
-              source={weaponArt(job?.archetype ?? null, MAX_GEAR)}
-              resizeMode="contain"
-              style={[styles.pixelArt, { width: 128, height: 128, opacity: 0.92 }]}
-            />
-          </View>
+          <>
+            {lastStrike.ids.map((fxId) => (
+              <SkillFx
+                key={fxId}
+                id={fxId}
+                t={Math.min(1, (Date.now() - lastStrike.at) / SKILL_FX_MS)}
+                width={trackWidth}
+                height={trackHeight}
+                heroX={heroLeft + leadSize.w / 2}
+                headY={headY}
+              />
+            ))}
+            <View
+              pointerEvents="none"
+              style={[styles.floating, { left: 0, right: 0, top: Math.max(4, headY - 250), alignItems: 'center' }]}
+            >
+              <Text style={styles.strikeText}>
+                {lastStrike.names.join(' + ')}{lastStrike.kills > 0 ? ` -${lastStrike.kills} 隻` : ''}
+              </Text>
+            </View>
+          </>
         )}
 
         {/* 場內技能:打完一波就跳出來,跑圖同時暫停(見 useLaneRun 的 paused)。
