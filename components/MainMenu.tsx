@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, ScrollView, StyleSheet, Text, View, type TextStyle } from 'react-native';
 
 import { jobTitle, type LaneJob } from '../game/laneJobs';
 import { Settings, type AudioSettings } from './Settings';
@@ -87,6 +87,20 @@ export function MainMenu({
   // 教學關(1-1 ~ 1-5)才有。null 的時候整列不畫——不是教學關的人不需要多一行字,
   // 而多出來的那一行在 640 高的螢幕上正好會把「開始闖關」往下推。
   const tutorial = tutorialRulesFor(stage);
+
+  // 上一場的結果合成**一行**(見下方 resultRow 的說明)。null = 這一列留白。
+  const resultLine: { text: string; style: TextStyle } | null = dungeonNote !== null
+    ? { text: dungeonNote, style: styles.dungeonNote }
+    : lastResult !== null
+      ? {
+          text: [
+            lastResult === 'cleared' ? `${stageLabel(stage - 1)} 通關` : `${stageLabel(stage)} 失敗,再挑戰一次`,
+            justFound.length > 0 ? `裝備 +${justFound.length}` : '',
+            justBooks > 0 ? `技能書 +${justBooks}` : '',
+          ].filter(Boolean).join(' · '),
+          style: lastResult === 'cleared' ? styles.resultWin : styles.resultLose,
+        }
+      : null;
 
   useEffect(() => {
     const id = setInterval(() => setHeroStep((s) => (s + 1) % HERO_SEQUENCE.length), HERO_FRAME_MS);
@@ -180,22 +194,20 @@ export function MainMenu({
         </View>
       </View>
 
+      {/*
+        上一場的結果。**永遠只有一行。**
+
+        這一列的高度是寫死的(不寫死的話,有沒有掉落會讓底下整組按鈕上下跳一格),
+        所以兩段訊息一定要合成一個 Text ——分成兩個 Text 疊起來的話,第二個會被
+        整個裁掉,而畫面上看起來只是「那則訊息沒出現」,完全不像版面問題。
+        (實測就是這樣:副本通關的訊息一直沒顯示,因為它排在掉落那一行後面。)
+
+        副本的結果優先:剛跑完副本的人要看的是「拿到什麼」,而它本身已經寫了拿到多少,
+        所以不再重複掉落那一段。
+      */}
       <View style={styles.resultRow}>
-        {(justFound.length > 0 || justBooks > 0) && (
-          <Text style={styles.found}>
-            {[
-              justFound.length > 0 ? `撿到 ${justFound.length} 件裝備` : '',
-              justBooks > 0 ? `技能書 +${justBooks}` : '',
-            ].filter(Boolean).join(' · ')}
-          </Text>
-        )}
-        {/* 副本的結果優先:剛跑完副本的人要看的是「拿到什麼」,不是主線關卡編號。 */}
-        {dungeonNote !== null ? (
-          <Text style={styles.dungeonNote} numberOfLines={1}>{dungeonNote}</Text>
-        ) : lastResult !== null && (
-          <Text style={lastResult === 'cleared' ? styles.resultWin : styles.resultLose}>
-            {lastResult === 'cleared' ? `${stageLabel(stage - 1)} 通關` : `${stageLabel(stage)} 失敗,再挑戰一次`}
-          </Text>
+        {resultLine !== null && (
+          <Text style={resultLine.style} numberOfLines={1}>{resultLine.text}</Text>
         )}
       </View>
 
@@ -393,7 +405,6 @@ const styles = StyleSheet.create({
   tabIcon: { width: TAB_SIZE, height: TAB_SIZE },
   // 鎖頭壓在圖示右下角。不用 opacity 壓掉,鎖頭本身要看得清楚才讀得出「這是鎖住的」。
   tabLock: { position: 'absolute', right: -2, bottom: -2, width: 15, height: 15, opacity: 1 },
-  found: { color: '#5ec26a', fontSize: 12 },
   tabLabelOpen: { color: '#e0a95c' },
   tabLabel: { color: '#8a8a95', fontSize: 10 },
 });
