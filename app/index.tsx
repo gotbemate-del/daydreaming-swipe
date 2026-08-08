@@ -9,11 +9,12 @@ import { useSave } from '../hooks/useSave';
 import { useBgm } from '../hooks/useBgm';
 import { useNoContextMenu } from '../hooks/useNoContextMenu';
 import { playSfx, useSfxVolume } from '../hooks/useSfx';
-import { BACKDROPS, type BackdropId } from '../game/laneRun';
+import { BACKDROPS, wavesForStage, LONG_LEVEL_WAVES, type BackdropId } from '../game/laneRun';
 import type { AudioSettings } from '../components/Settings';
 import { booksForSurvival, TOTAL_STAGES, type SavedJob } from '../game/save';
 import {
-  addItem, bookDropChance, collectedCount, collectionScales, decodeCollection, dropCountForRun,
+  addItem, bookDropChance, BOOKS_PER_CLEAR, BOOKS_PER_LONG_CLEAR,
+  collectedCount, collectionScales, decodeCollection, dropCountForRun,
   encodeCollection, rollDrops,
 } from '../game/collection';
 import { MAX_SKILL_BOOK_LEVEL } from '../game/laneRunSkills';
@@ -250,17 +251,20 @@ function Game() {
       const rng = () => Math.random();
       // 裝備副本就是「掉落量的副本」:它不改難度、不改規則,只把這一項乘上去。
       // 這是副本之間唯一該有的差別(見 game/dungeons.ts 的鐵則)。
+      // 加倍長的小關(x-5 / x-10,20 波)掉雙倍:它花的時間是一般小關的兩倍,
+      // 獎勵不跟著走的話,玩家會學到「跳過長關比較划算」。
+      const longLevel = wavesForStage(mode === 'endless' ? survivalStage : stage) === LONG_LEVEL_WAVES;
       const count = runMode === 'armory'
         ? (cleared ? ARMORY_DROPS : ARMORY_DROPS_FAILED)
-        : dropCountForRun(cleared);
+        : dropCountForRun(cleared, longLevel);
       const found = rollDrops(bits, count, rng);
       for (const index of found) addItem(bits, index);
       setJustFound(found);
-      // **通關一定給一本技能書**,圖鑑的掉落率則變成「再多一本」的機率(2%~12%)。
+      // **通關一定給技能書**(一般關 BOOKS_PER_CLEAR 本、長關雙倍),
+      // 圖鑑的掉落率則變成「再多一本」的機率(2%~12%)。
       //
-      // 從「機率掉一本」改成「保證給一本」,是因為上限從 5 級開到 100 級:
-      // 照舊的 2%~12% 要練滿得打上千場,那條線等於不存在。現在是一關一本,
-      // 100 關練滿一輪——而總共有 3000 個小關,所以它是一條長期但走得完的線。
+      // 從「機率掉一本」改成「保證給好幾本」,是因為上限從 5 級開到 100 級:
+      // 照舊的 2%~12% 要練滿得打上千場,那條線等於不存在。
       //
       // 陣亡不給:技能書是**通關的獎勵**。陣亡照樣掉圖鑑碎片(那是給卡關的人的),
       // 兩者分工不同——碎片讓卡關的人有進展,技能書讓過關的人變強。
@@ -271,7 +275,7 @@ function Game() {
       const bonusBook = cleared && Math.random() < bookDropChance(bits);
       const gained = runMode === 'grimoire'
         ? (cleared ? GRIMOIRE_BOOKS : 0)
-        : (cleared ? 1 : 0) + (bonusBook ? 1 : 0);
+        : (cleared ? (longLevel ? BOOKS_PER_LONG_CLEAR : BOOKS_PER_CLEAR) : 0) + (bonusBook ? 1 : 0);
       return {
         ...prev,
         collected: encodeCollection(bits),
