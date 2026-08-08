@@ -172,6 +172,16 @@ export function collectionScales(bits: Uint8Array): Partial<Record<RunSkillId, n
   return out;
 }
 
+/**
+ * 通關給幾本技能書。長關(20 波)雙倍——它花的時間也是兩倍。
+ *
+ * **這個數字可以放心調大**:技能書只放大元素與主動,兩樣都在理想路線之外,
+ * 敵人一格都不會跟著長(見 laneRunSkills 的 bookBonus)。所以它調的是
+ * 「多久練滿一輪」這條節奏,不是難度。3 本 / 關 ≈ 三十幾關練滿 100 級。
+ */
+export const BOOKS_PER_CLEAR = 3;
+export const BOOKS_PER_LONG_CLEAR = BOOKS_PER_CLEAR * 2;
+
 /** 沒有圖鑑時,一場跑圖掉到技能書的機率。 */
 export const BASE_BOOK_DROP = 0.02;
 /** 圖鑑收滿時的機率。 */
@@ -186,9 +196,16 @@ export function bookDropChance(bits: Uint8Array): number {
  *
  * 通關掉得多、陣亡也掉得到(只是少)——**陣亡完全不掉的話,卡關的人會完全沒有進展**,
  * 而圖鑑正是拿來讓卡關的人有事做的(它抬地板)。
+ *
+ * 加倍長的小關(x-5 / x-10,20 波)掉雙倍:它花的時間是一般小關的兩倍,
+ * 獎勵不跟著走的話,玩家會學到「跳過長關比較划算」——而那兩關正是段落的中點與魔王關。
+ *
+ * **調高這個數字不會動到難度。** 圖鑑給的是元素加成與技能書掉落率,兩樣都在
+ * 理想路線之外(理想玩家每一波全清,元素對他等於 0),敵人不會跟著長。
  */
-export function dropCountForRun(cleared: boolean): number {
-  return cleared ? 3 : 1;
+export function dropCountForRun(cleared: boolean, longLevel = false): number {
+  const base = cleared ? 8 : 3;
+  return longLevel ? base * 2 : base;
 }
 
 /**

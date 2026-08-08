@@ -9,11 +9,12 @@ import { useSave } from '../hooks/useSave';
 import { useBgm } from '../hooks/useBgm';
 import { useNoContextMenu } from '../hooks/useNoContextMenu';
 import { playSfx, useSfxVolume } from '../hooks/useSfx';
-import { BACKDROPS, type BackdropId } from '../game/laneRun';
+import { BACKDROPS, wavesForStage, LONG_LEVEL_WAVES, type BackdropId } from '../game/laneRun';
 import type { AudioSettings } from '../components/Settings';
 import { booksForSurvival, TOTAL_STAGES, type SavedJob } from '../game/save';
 import {
-  addItem, bookDropChance, collectedCount, collectionScales, decodeCollection, dropCountForRun,
+  addItem, bookDropChance, BOOKS_PER_CLEAR, BOOKS_PER_LONG_CLEAR,
+  collectedCount, collectionScales, decodeCollection, dropCountForRun,
   encodeCollection, rollDrops, rollDropsForElement,
 } from '../game/collection';
 import { addBooks, totalBookLevels } from '../game/laneRunSkills';
@@ -265,13 +266,16 @@ function Game() {
     // 裝備副本只從那個屬性的碎片裡抽:整個 5668 件的圈上過濾會退化成繞幾千步,
     // 所以走 rollDropsForElement(它先把候選攤成清單再抽)。
     const today = elementOfDay();
+    // 加倍長的小關(x-5 / x-10,20 波)掉雙倍:它花的時間是一般小關的兩倍,
+    // 獎勵不跟著走的話,玩家會學到「跳過長關比較划算」——而那兩關正是段落的中點與魔王關。
+    const longLevel = wavesForStage(mode === 'endless' ? survivalStage : stage) === LONG_LEVEL_WAVES;
     const items = runMode === 'armory'
       ? (cleared ? rollDropsForElement(bits, rollDungeonReward(rng), today, rng) : [])
-      : rollDrops(bits, dropCountForRun(cleared), rng);
+      : rollDrops(bits, dropCountForRun(cleared, longLevel), rng);
 
     // 技能書。三條來源各自不同,而且**全部給當日屬性**:
     //
-    //   一般跑圖   通關保證 1 本 + 圖鑑機率再一本
+    //   一般跑圖   通關保證 BOOKS_PER_CLEAR 本(長關雙倍)+ 圖鑑機率再一本
     //   技能書副本 通關 5~15 本
     //   裝備副本   不給書(它產的是碎片)
     //
@@ -283,7 +287,7 @@ function Game() {
       ? (cleared ? rollDungeonReward(rng) : 0)
       : runMode === 'armory'
         ? 0
-        : (cleared ? 1 : 0) + (bonusBook ? 1 : 0);
+        : (cleared ? (longLevel ? BOOKS_PER_LONG_CLEAR : BOOKS_PER_CLEAR) : 0) + (bonusBook ? 1 : 0);
 
     setJustFound(items);
     setJustBooks(books);
