@@ -46,8 +46,6 @@ export type QuestCounter =
   | 'misses'
   /** 挑過幾次場內技能。 */
   | 'runSkillPicks'
-  /** 學過幾個永久技能(每關通關三選一)。 */
-  | 'skillsLearned'
   /** 閃過幾顆石頭(路上有、而且沒撞到)。 */
   | 'rocksDodged'
   /** 打倒過幾隻大魔王。 */
@@ -195,11 +193,15 @@ const QUESTS: Quest[] = [
     from: 1,
   },
   {
-    id: 'learn-skill',
-    name: '學會第一個永久技能',
-    hint: '每通關一關就能三選一,選完永遠帶著',
+    // 永久技能整組移除之後,「學會第一個永久技能」永遠達不成——**不能留著**:
+    // 一個永遠亮不起來的任務比沒有那個任務更糟(玩家會一直找它的觸發條件)。
+    // 換成同一個位置、同一個獎勵的技能書任務:技能書現在是通關的主要獎勵,
+    // 第一本一定拿得到,所以它接得住這一格「教玩家有這條養成」的功能。
+    id: 'first-book',
+    name: '拿到第一本技能書',
+    hint: '通關就給一本,放大**當日屬性**那一系的效果',
     target: 1,
-    progress: (c) => count(c, 'skillsLearned'),
+    progress: (c) => c.books,
     coins: 120,
     from: 1,
   },
@@ -389,7 +391,9 @@ export function isQuestId(id: string): boolean {
 
 /** 存檔驗證用:這個 key 是現存的計數器嗎。 */
 const COUNTER_KEYS = new Set<string>([
-  'goodGates', 'misses', 'runSkillPicks', 'skillsLearned', 'rocksDodged', 'bossKills',
+  // 'skillsLearned' 已隨永久技能一起移除。**舊存檔裡殘留的那個 key 會被 readQuestCounters
+  // 直接丟掉**,那是對的:留著它等於留一個沒人讀的計數器,而那是「以後會有人以為它有用」的陷阱。
+  'goodGates', 'misses', 'runSkillPicks', 'rocksDodged', 'bossKills',
   'settingsOpened', 'codexViewed', 'endlessRuns', 'grimoireRuns', 'armoryRuns',
 ] satisfies QuestCounter[]);
 
