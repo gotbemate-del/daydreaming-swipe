@@ -1825,14 +1825,35 @@ export function resolveEnemy(
   // 模擬器則用覆蓋率估。沒給就是不限制(舊行為),這樣單元測試與既有呼叫都不受影響。
   const covered = Math.min(enemy.units, Math.max(0, boost.coveredUnits ?? enemy.units));
   const kills = Math.min(covered, own + Math.floor(extraKills(enemy, boost, own)));
-  const leaked = Math.max(0, enemy.units - kills);
+  //
+  // **打不到的那幾隻不算漏接。**
+  //
+  // 它們既不扣人也不給吸收,就是從旁邊跑掉了——懲罰是「少賺」不是「掉人」。
+  // 算成漏接的話會做出一道懸崖而不是斜坡:吸收是全有全無的(下面的 leaked === 0),
+  // 所以只要有一隻打不到,「擊倒 +2 人」當場變成「漏了 1 隻 -1 人」,一波三個人的落差,
+  // 十幾波複利下來就是死。實測覆蓋率 98% 還有 98% 過關,95% 直接掉到 0%——
+  // 那不是「掃得越勤越好」,是「覆蓋 99% 以上否則死」。
+  //
+  // 現在 leaked 只算**打得到卻沒打掉的**(戰力壓不過的那部分),那才是真正的失誤。
+  const leaked = Math.max(0, covered - kills);
+  const missed = Math.max(0, enemy.units - covered);
   const next = { ...state };
   // 打倒的怪有一部分加入隊伍。放在「漏 0」那條路徑上而不是照 kills 給:
   // 半殘的一波已經在扣人了,再補回來會讓「擋不住」這件事變得模糊。
   // 木・再生:只補得回「已經失去的」,沒失去就沒得補——所以完美玩家拿它等於零。
   const regen = Math.min(Math.floor(Math.max(0, boost.regen ?? 0)), Math.max(0, boost.lostSoFar ?? 0));
   const rallied = Math.max(0, boost.heroes ?? 0) + regen;
-  if (leaked === 0 || boost.immune) {
+  // **吸收要求「整波都清掉」,不是「射程內的都清掉」。**
+  //
+  // 中間試過「射程內清完就給吸收」,結果方向整個反了:打不到的怪不扣人,所以掃得越少
+  // 反而越安全,實測覆蓋率 0.5 的過關率(72%)比全掃(55%)還高——站著不動變成最優解,
+  // 那跟這一整條規則要達成的事正好相反。
+  //
+  // 現在是:掃不到的那幾隻**不扣你人,但會讓這一波不算全清**,所以整波的吸收都拿不到。
+  // 懲罰因此是「成長變慢」而不是「當場掉人」——斜坡不是懸崖,而且方向是對的:
+  // 掃得越勤,滾出來的隊伍越大。
+  const sweptAll = covered >= enemy.units;
+  if ((leaked === 0 && sweptAll) || boost.immune) {
     const joined = absorbedFrom(kills, enemy.leakCost) + rallied;
     next.coins += enemy.reward;
     next.heroes += joined;
@@ -1866,7 +1887,9 @@ export function resolveEnemy(
   const delta = next.heroes - (state.heroes);
   return {
     state: next,
-    message: `漏了 ${leaked} 隻 -${lost} 人`,
+    message: missed > 0
+      ? `漏了 ${leaked} 隻 -${lost} 人(${missed} 隻沒掃到)`
+      : `漏了 ${leaked} 隻 -${lost} 人`,
     heroDelta: delta,
     attackDelta: totalAttack(next) - before,
   };
