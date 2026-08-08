@@ -61,11 +61,72 @@ export function gateSpan(lane: Lane, stage = 1): { from: number; to: number } {
   return { from: center - half, to: center + half };
 }
 
-/** 勇者站在 offset 時有沒有真的踩到這一格的閘門。 */
-export function hitsGate(offset: number, lane: Lane, stage = 1): boolean {
-  const { from, to } = gateSpan(lane, stage);
+// ---- 勇者的身體寬度 ----
+//
+// 判定是**身體碰到就算**,不是「中心點落在框裡」。舊版把勇者當成一個點,所以畫面上
+// 明明半個身體壓在閘門上卻什麼都沒吃到——那是玩家看得見、但規則說不通的一種落空。
+//
+// ## 為什麼橫向隊形放在這一層
+//
+// 隊伍越多人站得越寬,而**判定寬度就是隊伍寬度**,所以「這一隻畫在哪」不再只是美術問題,
+// 它直接決定吃不吃得到。畫面與判定各留一份座標的話,改了其中一份就會出現
+// 「看起來碰到了但沒反應」——這款最不能有的那種 bug。所以橫向位置在這裡定義一次,
+// 畫面照這一份畫(dy 與 scale 純視覺,留在 components)。
+//
+// 單位是 offset(0~1 的跑道寬度)不是像素:像素會隨螢幕寬變,難度就跟著螢幕變
+//(窄螢幕的人判定框相對更寬)。距離與像素是兩個座標系,這個坑 CLAUDE.md 記過。
+/** 隊形的橫向位置,相對於隊伍中心。索引 = 第幾隻(畫面上最多畫這麼多隻)。 */
+export const SQUAD_DX: number[] = [
+  0, -0.058, 0.058, -0.111, 0.111, -0.037, 0.037,
+  -0.164, 0.164, -0.090, 0.090, 0, -0.138, 0.138,
+];
+
+/**
+ * 一隻勇者自己的半寬。
+ *
+ * 0.075 是上限不是隨便挑的:**一個人站在起跑位置(0.5,兩格中間的空隙)必須兩邊都碰不到**。
+ * 第 1 關的閘門左緣在 0.75 - 0.34/2 = 0.58,所以半寬要小於 0.08。
+ * 「不動的話什麼都吃不到」是這款的第一課,守不住的話開場那一排就沒有在教任何東西了。
+ *
+ * 附帶結果是判定框比畫出來的史萊姆窄了約兩成。方向是對的——**寧可窄一點**:
+ * 寬過頭會讓玩家吃到他覺得沒碰到的格子(包含陷阱),那比漏接更難接受。
+ */
+export const HERO_BODY_HALF = 0.075;
+
+/** 畫面上最多畫幾隻(也是隊伍寬度的上限)。 */
+export const MAX_DRAWN_HEROES = SQUAD_DX.length;
+
+/**
+ * 這麼多人的時候隊伍有多寬(半寬,offset 單位)。
+ *
+ * 人數超過 MAX_DRAWN_HEROES 就不再變寬:畫面上本來就只畫這麼多隻,再寬下去
+ * 判定框會超出玩家看得到的身體——而「看不見的判定」正是這次要修掉的東西的反面。
+ */
+export function heroHalfSpan(heroes: number): number {
+  const drawn = Math.min(MAX_DRAWN_HEROES, Math.max(1, Math.floor(heroes)));
+  let spread = 0;
+  for (let i = 0; i < drawn; i++) spread = Math.max(spread, Math.abs(SQUAD_DX[i]));
+  return spread + HERO_BODY_HALF;
+}
+
+/** 隊伍現在佔住跑道的哪一段。畫面拿它畫隊形,判定拿它算重疊——同一個數字。 */
+export function heroSpan(offset: number, heroes: number): { from: number; to: number } {
   const at = clampOffset(offset);
-  return at >= from && at <= to;
+  const half = heroHalfSpan(heroes);
+  return { from: at - half, to: at + half };
+}
+
+/**
+ * 有沒有踩到這一格的閘門。**身體碰到就算**(兩段重疊),不是中心點落在框裡。
+ *
+ * 只會判到 `lane` 這一格:結算前 resolveRow 已經先用 laneFromOffset 挑好腳下那一格了,
+ * 所以隊伍再寬也不可能同時吃到兩邊——寬度買到的是「站得偏一點也吃得到自己這一格」,
+ * 不是「兩格通吃」。
+ */
+export function hitsGate(offset: number, lane: Lane, stage = 1, heroes = 1): boolean {
+  const gate = gateSpan(lane, stage);
+  const body = heroSpan(offset, heroes);
+  return body.to >= gate.from && body.from <= gate.to;
 }
 
 export type NodeKind = 'gate' | 'enemy' | 'coin';
@@ -1989,7 +2050,8 @@ export function resolveRow(state: RunState, row: RunRow, offset?: number, boost:
 
   if (node.kind === 'gate' && node.gate) {
     // 站在這一格,但沒踩在閘門上——整格漏掉。好處沒吃到,陷阱也沒踩到。
-    if (!hitsGate(at, node.lane, state.stage)) {
+    // 人數要傳進去:判定寬度就是隊伍寬度(見 heroHalfSpan)。
+    if (!hitsGate(at, node.lane, state.stage, state.heroes)) {
       return { state: advanced, message: MISS_MESSAGE, heroDelta: 0, attackDelta: 0 };
     }
     const after = applyGate(advanced, node.gate);

@@ -10,7 +10,7 @@ import {
   rowsForStage, wavesForStage, stageLabel, chapterOfStage, levelOfStage, enemyPowerRatioForStage,
   LEVELS_PER_CHAPTER, WAVES_PER_LEVEL, LONG_LEVEL_WAVES, EASY_RATIO, lastEnemyRowIndex, isBossStage,
   GATE_WIDTH, GATE_WIDTH_MIN, gateWidthForStage, trapHalveWeightForStage, heroWaveEveryForStage,
-  gateSpan, hitsGate, MONSTER_EDGE, SPECIES_PER_WAVE, START_OFFSET, backdropForStage,
+  gateSpan, hitsGate, heroHalfSpan, HERO_BODY_HALF, MAX_DRAWN_HEROES, MONSTER_EDGE, SPECIES_PER_WAVE, START_OFFSET, backdropForStage,
   ENEMY_POWER_RATIO, ENEMY_UNITS_PER_HERO, goodGateGrowthAt, gatesBeforeRow, isTrapGate, runSeconds, ELITE_MASS, ELITE_HITS, absorbedFrom,
   applyGate, gateLabel, DOUBLE_GATES_PER_RUN, GEAR_STEP, doubleGatesForStage, LONG_LEVEL_RATIO_SCALE,
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
@@ -346,8 +346,19 @@ check('兩格中間有空隙(站在那裡兩邊都碰不到)', !hitsGate(0.5, 0)
 check('起跑位置就在空隙上(不動就什麼都吃不到,一定得自己拉)',
   !hitsGate(START_OFFSET, 0) && !hitsGate(START_OFFSET, 1));
 check('跑道最外緣也碰不到閘門', !hitsGate(0, 0) && !hitsGate(1, 1));
-check('閘門邊界內外剛好一線之隔',
-  hitsGate(gateSpan(0).to, 0) && !hitsGate(gateSpan(0).to + 0.001, 0));
+// 判定是「身體碰到就算」,所以邊界在**閘門邊緣 + 身體半寬**那一點,不是閘門邊緣本身。
+check('閘門邊界內外剛好一線之隔(邊界含身體半寬)',
+  hitsGate(gateSpan(0).to + HERO_BODY_HALF - 0.001, 0, 1, 1)
+  && !hitsGate(gateSpan(0).to + HERO_BODY_HALF + 0.001, 0, 1, 1));
+// 身體寬度是**畫面上那一團人**,不是另外發明的一個數字:兩邊共用 SQUAD_DX,
+// 所以這一項同時是在盯「畫面跟判定沒有各走各的」。
+check('隊伍越多人站得越寬,判定也跟著寬',
+  heroHalfSpan(1) < heroHalfSpan(4) && heroHalfSpan(4) < heroHalfSpan(MAX_DRAWN_HEROES),
+  [1, 2, 4, 8, 14].map((n) => `${n}人 ${heroHalfSpan(n).toFixed(3)}`).join(' / '));
+check('人數超過畫得出來的上限就不再變寬(判定不會超出看得見的身體)',
+  heroHalfSpan(MAX_DRAWN_HEROES) === heroHalfSpan(9999));
+check('一個人的時候身體仍然塞得進兩格中間的空隙(起跑什麼都吃不到)',
+  !hitsGate(START_OFFSET, 0, 1, 1) && !hitsGate(START_OFFSET, 1, 1, 1));
 const gateRow = gateRows[0];
 const missState = initialRunState(5);
 const missed = resolveRow({ ...missState, lane: 0 }, gateRow, 0.5);
@@ -795,12 +806,20 @@ check('閘門窄到底仍然踩得到,而且中間的空隙還在',
 // **這一項是分段旋鈕的核心**:完美玩家在最後一關跟第一關一樣是 100% 過關。
 check('三顆旋鈕都碰不到完美玩家(難度分段沒有破壞結構保證)',
   [400, 1200, 3000].every((st) => clearRate(st, simBest, 120) === 1));
-// 反過來:手不準的人在後段確實比前段慘(閘門變窄真的有作用)。
-const sloppyAt = (st: number) => clearRate(st, simBest, 200, { sloppy: 0.16 });
+// 反過來:手不準的人在後段確實比前段慘。
+//
+// **注意這裡量的幅度比舊版小很多,而且是刻意的。** 判定改成「身體碰到就算」之後,
+// 隊伍長到八九隻時半寬就有 0.239,比最窄的閘門(半寬 0.12)還寬——所以
+// 「閘門變窄」(第 41~400 關那一段)對**已經滾出一支隊伍的玩家幾乎不再有作用**,
+// 它只咬得到前幾排還只有一兩個人的時候。這是身體判定的直接代價,不是調參調壞了:
+// 一團十四隻的史萊姆本來就蓋滿自己那一格。
+// 要讓「手要準」重新變成後段的難度來源,得改的是別的東西(例如讓閘門的**位置**在
+// 跑道上左右浮動,而不是只把它變窄)——那是一次獨立的設計決定。
+const sloppyAt = (st: number) => clearRate(st, simBest, 200, { sloppy: 0.45 });
 const sloppyEarly = sloppyAt(40);
 const sloppyLate = sloppyAt(3000);
-check('手不準的人在後段明顯更慘(閘門變窄有作用)',
-  sloppyLate < sloppyEarly - 0.1, `第40關 ${(sloppyEarly * 100).toFixed(0)}% → 第3000關 ${(sloppyLate * 100).toFixed(0)}%`);
+check('手不準的人在後段還是比前段慘',
+  sloppyLate < sloppyEarly, `第40關 ${(sloppyEarly * 100).toFixed(0)}% → 第3000關 ${(sloppyLate * 100).toFixed(0)}%`);
 
 console.log('\n過關率(列=關卡,欄=選法):');
 console.log('        最佳    隨機    最差');
@@ -871,13 +890,15 @@ const sloppyRate = (stage: number, sloppy: number, trials = 300) =>
   clearRate(stage, simBest, trials, { sloppy });
 console.log('\n選對邊但手不準(漏接率隨手抖幅度上升):');
 console.log('          第20關  第100關');
-for (const sloppy of [0, 0.08, 0.16, 0.25]) {
+for (const sloppy of [0, 0.16, 0.25, 0.35, 0.45, 0.5]) {
   console.log(`  ±${sloppy.toFixed(2)}   ${(sloppyRate(20, sloppy) * 100).toFixed(0).padStart(4)}%`
     + `  ${(sloppyRate(100, sloppy) * 100).toFixed(0).padStart(5)}%`);
 }
 check('選對邊而且拉得準 -> 一定過關', sloppyRate(12, 0) >= 0.99);
 check('手抖一點還過得去(漏接有代價但不是死刑)', sloppyRate(12, 0.08) >= 0.55);
-check('隨便亂拉就會開始漏接', sloppyRate(12, 0.25) < sloppyRate(12, 0.08));
+// 門檻拉到 ±0.45 才咬得動:身體判定讓容錯整條變寬(見上面那段長註解)。
+// 這一項證明的是「漏接還存在」,不是「漏接還是主要的難度來源」——後者已經不成立了。
+check('拉得離譜還是會開始漏接', sloppyRate(12, 0.5) < sloppyRate(12, 0.08));
 
 check('每排都挑最好的 -> 一定過關', rows2.every((x) => x.b >= 0.99));
 check('每排都挑最爛的 -> 幾乎必死', rows2.every((x) => x.w <= 0.05));

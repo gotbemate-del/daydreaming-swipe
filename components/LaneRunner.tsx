@@ -6,6 +6,7 @@ import {
   gateLabel,
   isTrapGate,
   gateSpan,
+  SQUAD_DX,
   LANE_COUNT,
   MAX_GEAR,
   MISS_MESSAGE,
@@ -179,21 +180,27 @@ function bottomYFor(ahead: number, headY: number): number {
 // 隊形:主角在最前面(畫面最下),其他人往後往兩側散開成一團。人數再多只加數字——
 // 真的畫 64 個人的話一格會被塞滿、看不出跑道,而且每個 tick 要重排 64 個絕對定位的圖。
 // 後排刻意畫小一點(scale)並且各自用不同的相位晃動,看起來才像一群人在跑而不是貼圖陣列。
-const SQUAD_SLOTS = [
-  { dx: 0, dy: 0, scale: 1 },
-  { dx: -22, dy: -12, scale: 0.94 },
-  { dx: 22, dy: -12, scale: 0.94 },
-  { dx: -42, dy: -22, scale: 0.88 },
-  { dx: 42, dy: -22, scale: 0.88 },
-  { dx: -14, dy: -26, scale: 0.86 },
-  { dx: 14, dy: -26, scale: 0.86 },
-  { dx: -62, dy: -34, scale: 0.8 },
-  { dx: 62, dy: -34, scale: 0.8 },
-  { dx: -34, dy: -38, scale: 0.78 },
-  { dx: 34, dy: -38, scale: 0.78 },
-  { dx: 0, dy: -42, scale: 0.76 },
-  { dx: -52, dy: -50, scale: 0.72 },
-  { dx: 52, dy: -50, scale: 0.72 },
+//
+// **橫向位置(dx)不在這裡,在 game/laneRun.ts 的 SQUAD_DX。** 那不是為了分層漂亮:
+// 閘門判定改成「身體碰到就算」之後,隊伍畫多寬就等於判定多寬——「這一隻畫在哪」
+// 直接決定吃不吃得到。兩邊各留一份座標的話,改了其中一份就會出現
+// 「看起來碰到了但沒反應」,而那是這款最不能有的一種 bug。
+// 這裡只留純視覺的 dy 與 scale。
+const SQUAD_DEPTH = [
+  { dy: 0, scale: 1 },
+  { dy: -12, scale: 0.94 },
+  { dy: -12, scale: 0.94 },
+  { dy: -22, scale: 0.88 },
+  { dy: -22, scale: 0.88 },
+  { dy: -26, scale: 0.86 },
+  { dy: -26, scale: 0.86 },
+  { dy: -34, scale: 0.8 },
+  { dy: -34, scale: 0.8 },
+  { dy: -38, scale: 0.78 },
+  { dy: -38, scale: 0.78 },
+  { dy: -42, scale: 0.76 },
+  { dy: -50, scale: 0.72 },
+  { dy: -50, scale: 0.72 },
 ];
 
 /*
@@ -395,7 +402,6 @@ export function LaneRunner({
   // 血條整條拿掉了:人數就是血量,螢幕上那一群人本身就是生命條(見 laneRun 的 RunState.heroes)。
   // 留一條抽象的橫槓等於把「看得見的東西」再翻譯回「看不懂的數字」,那正是這次改版要修掉的。
   const progress = Math.min(1, distance / runLength(stage));
-  const laneWidth = trackWidth / LANE_COUNT;
 
   /**
    * 進化只換貼圖尺寸,**不動 HERO_HEIGHT**。
@@ -406,7 +412,7 @@ export function LaneRunner({
    * 都會移位。所以布局常數固定用基本型,國王只是貼圖畫大一點,一樣靠 HERO_BOTTOM 對齊底部。
    */
   // 畫面上要畫哪些(國王 + 湊不滿一隻國王的餘數)。橫向定位用「最前面那一隻」的寬度。
-  const units = squadForms(state.heroes, SQUAD_SLOTS.length);
+  const units = squadForms(state.heroes, SQUAD_DX.length);
   const sizeOf = (f: ReturnType<typeof heroForm>) => {
     const h = heroBoxHeight(HERO_BODY_HEIGHT * f.scale, f.bodyRatio);
     return { h, w: Math.round(h * f.aspect) };
@@ -433,7 +439,15 @@ export function LaneRunner({
   const bob = state.phase === 'running' ? Math.round(Math.sin(distance / 7) * 2) : 0;
   // 由後往前畫(slice 之後 reverse),主角才會蓋在隊友上面而不是被壓在後面。
   // 由後往前畫,最前面那一隻才會蓋在後排上面。
-  const drawn = units.map((form, i) => ({ form, slot: SQUAD_SLOTS[i], spiking: isSpiking(i) })).reverse();
+  // dx 是 offset 單位,乘上跑道寬度才是像素——所以隊伍在任何螢幕上佔住的
+  // **相對**寬度都一樣,判定也就跟螢幕寬無關(見 laneRun 的 SQUAD_DX)。
+  const drawn = units
+    .map((form, i) => ({
+      form,
+      slot: { dx: SQUAD_DX[i] * trackWidth, dy: SQUAD_DEPTH[i].dy, scale: SQUAD_DEPTH[i].scale },
+      spiking: isSpiking(i),
+    }))
+    .reverse();
   const backdrop = STAGE_BACKDROPS[backdropOverride ?? backdropForStage(stage)];
   /**
    * 底圖一格畫多高,以及這一刻捲到哪裡。
@@ -929,39 +943,20 @@ export function LaneRunner({
           </View>
         )}
 
-        <View style={styles.laneLines} pointerEvents="none">
-          {Array.from({ length: LANE_COUNT }, (_, i) => (
-            <View
-              key={i}
-              style={[styles.laneLine, { borderRightColor: backdrop.edge }, state.lane === i && styles.laneLineActive]}
-            />
-          ))}
-        </View>
+        {/*
+          這裡曾經有三樣東西,**全部拿掉了**:
 
-        {/* 判定線:所有物件的底邊碰到這條線就結算。畫出來玩家才知道要把勇者拉到哪裡去接,
-            而且它是畫面上唯一靜止的東西——動的是物件,不是線。 */}
-        <View style={[styles.contactLine, { top: headY }]} pointerEvents="none" />
+            - 當前跑道的反白(整格套一層 #ffffff10)
+            - 兩格之間的分隔線與往下流動的虛線
+            - 判定線(所有物件底邊碰到就結算的那條橫線)
 
-        {/* 往下流動的路面虛線:標出兩條跑道的界線。底圖上線之前它還兼著「角色正在前進」的
-            唯一線索,現在那件事由底圖捲動負責,但界線本身仍然是**判定**的一部分——
-            玩家要知道自己站在哪一格,不能只靠底圖的紋理去猜。 */}
-        <View style={styles.laneLines} pointerEvents="none">
-          {Array.from({ length: LANE_COUNT - 1 }, (_, i) =>
-            DASH_PHASES.map((phase) => (
-              <View
-                key={`${i}-${phase}`}
-                style={[
-                  styles.dash,
-                  {
-                    backgroundColor: backdrop.edge,
-                    left: laneWidth * (i + 1) - 1,
-                    top: ((groundScroll + phase) % (trackHeight + DASH_LENGTH)) - DASH_LENGTH,
-                  },
-                ]}
-              />
-            )),
-          )}
-        </View>
+          三個都是在替「規則」畫輔助線,而規則本身已經改成**看得懂的東西**了:
+          判定改成「史萊姆的身體碰到閘門就算」(見 laneRun 的 hitsGate),
+          所以玩家要看的是自己那一團人跟框有沒有疊到——那不需要任何輔助線,
+          而畫著這三條反而在跟它搶注意力,還會讓人以為判定是「中心點越線」。
+
+          唯一被它們兼著做的事是「地面在動」的線索,現在由底圖捲動負責。
+        */}
 
         {upcoming.map(renderGateRow)}
         {/* 石頭畫在小怪下面:牠們是跑過來的,會從石頭旁邊經過,壓在石頭上面才對 */}
@@ -1211,9 +1206,6 @@ export function LaneRunner({
   );
 }
 
-const DASH_LENGTH = 26;
-const DASH_PHASES = [0, 70, 140, 210, 280, 350, 420, 490];
-
 /**
  * 大數字壓成中文計數單位。跑道加長到 20 排之後,全選最佳的戰力會到六位數
  * (第 10 關實測 115808),原樣印會把 HUD 那一列擠爆——390 寬的手機上
@@ -1257,10 +1249,8 @@ const styles = StyleSheet.create({
     borderColor: '#3a3a45',
     overflow: 'hidden',
   },
-  laneLines: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, flexDirection: 'row' },
-  laneLine: { flex: 1, borderRightWidth: 1 },
-  laneLineActive: { backgroundColor: '#ffffff10' },
-  dash: { position: 'absolute', width: 2, height: DASH_LENGTH, borderRadius: 1, backgroundColor: '#46465a' },
+  /** 滿版的絕對定位圖層(底圖、飛行物、演出)。分隔線與判定線拿掉之後只剩這一個用途。 */
+  laneLines: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
   gate: {
     position: 'absolute',
     borderRadius: 8,
@@ -1299,13 +1289,6 @@ const styles = StyleSheet.create({
   bossHpFill: { height: '100%', backgroundColor: '#e05050' },
   pixelArt: Platform.OS === 'web' ? ({ imageRendering: 'pixelated' } as object) : {},
   hero: { position: 'absolute' },
-  contactLine: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    height: 1,
-    backgroundColor: '#f2f2f230',
-  },
   feedbackFloat: {
     position: 'absolute',
     width: 140,
