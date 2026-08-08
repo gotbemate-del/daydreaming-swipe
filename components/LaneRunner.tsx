@@ -31,7 +31,7 @@ import { MapDrawToast } from './MapDrawToast';
 import { playSfx } from '../hooks/useSfx';
 import {
   describeRunSkill, runSkillSpec, ELEMENT_COUNTERS, isActiveSkill, FREEZE_MS,
-  type CollectionScales, type RunSkillId,
+  type CollectionScales, type RunSkillId, type ElementBooks,
 } from '../game/laneRunSkills';
 import {
   HIT_NUMBER_MS, ELEMENT_FX_MS, FEEDBACK_MS, useLaneRun,
@@ -244,8 +244,8 @@ interface Props {
   job: LaneJob;
   /** 起跑數值(轉職 + 技能算完的結果)。畫面不自己算養成,由 app 層算好傳進來。 */
   start: RunStart;
-  /** 技能書等級。只放大元素與主動的效果(見 laneRunSkills 的 MAX_SKILL_BOOK_LEVEL)。 */
-  bookLevel?: number;
+  /** 技能書等級,**六個元素各自一份**。只放大元素的效果,不進理想路線。 */
+  books?: ElementBooks;
   /**
    * 生存模式:這一輪在**這一關之前**已經撐過幾波(不是生存模式就是 null)。
    *
@@ -295,7 +295,7 @@ interface Props {
 }
 
 export function LaneRunner({
-  stage, job, start, onFinish, bookLevel = 0, survivalWavesBefore = null, collection = {},
+  stage, job, start, onFinish, books = {}, survivalWavesBefore = null, collection = {},
   audio, onChangeAudio, backdropOverride = null, mapDraw = null, onRestart, onQuit,
 }: Props) {
   /**
@@ -316,7 +316,7 @@ export function LaneRunner({
   const [tipVisible, setTipVisible] = useState(tutorial !== null);
   // 抽地圖的面板也要停:它蓋在跑道上面,不停的話玩家在讀地圖名稱的那幾秒會漏掉第一排閘門。
   const drawing = mapDraw !== null;
-  const run = useLaneRun(stage, start, bookLevel, collection, settingsOpen || drawing);
+  const run = useLaneRun(stage, start, books, collection, settingsOpen || drawing);
   const {
     state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers, rocks, readStats,
     lastShotAt, lastShotId, feedback, steer, dragTo,

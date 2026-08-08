@@ -5,7 +5,7 @@ import {
   maxRunSkillAttackMultiplier,
   bookPowerScale, MAX_SKILL_BOOK_LEVEL, MAX_RUN_SKILL_LEVEL,
   ACTIVE_SKILL_IDS, bestRunSkillChoice, learnRunSkill, runSkillOffersAt,
-  runSkillEffects, ELEMENTS, type RunSkillState,
+  runSkillEffects, ELEMENTS, type RunSkillState, type ElementBooks,
 } from '../game/laneRunSkills';
 
 import {
@@ -35,7 +35,10 @@ const rng = (() => { let x = 20260729; return () => { x = (x * 1103515245 + 1234
 // 哪天要加回類似的東西,那條約束要一起加回來——現在剩下的三條養成
 // (轉職、技能書、圖鑑)裡,只有轉職進理想路線,而 verify-lane-jobs 在盯它。
 
-// --- 技能書(生存模式掉的第三層養成)---
+/** 六個元素全部練滿的技能書。逐屬性之後「滿書」不再是一個數字,要自己組一份。 */
+const FULL_BOOKS: ElementBooks = Object.fromEntries(ELEMENTS.map((id) => [id, MAX_SKILL_BOOK_LEVEL]));
+
+// --- 技能書(副本掉的第三層養成)---
 //
 // **它只准動貪心挑不到的東西。** 敵人戰力照「最佳路線」算,而最佳路線是照
 // attackMultiplier x heroMultiplier 貪心挑。鋒刃/增殖 移除之後**沒有任何技能會動這兩個值**,
@@ -44,8 +47,13 @@ const rng = (() => { let x = 20260729; return () => { x = (x * 1103515245 + 1234
 check('技能書放大的東西全部不進理想路線(全點滿的戰力倍率仍然是 1)',
   maxRunSkillAttackMultiplier() === 1);
 // 主動技能已全部移除,所以技能書現在只放大元素。
-check('技能書會放大元素',
-  ELEMENTS.every((id) => bookPowerScale(id, MAX_SKILL_BOOK_LEVEL) > 1));
+// 逐屬性之後這一項要**逐個元素各給各的**:給 fire 的書不該讓 thunder 變強,
+// 而那正是「每天開一個屬性」能成立的前提(不然屬性只是門票顏色)。
+check('技能書會放大元素,而且只放大它自己那一個', ELEMENTS.every((id) => {
+  const only = { [id]: MAX_SKILL_BOOK_LEVEL };
+  const others = ELEMENTS.filter((e) => e !== id);
+  return bookPowerScale(id, only) > 1 && others.every((e) => bookPowerScale(e, only) === 1);
+}));
 // 技能書一律不出現在選項那一層:加量、換成元素、開等級上限,三種都會改變
 // 「同一顆 seed 抽出哪三個」,玩家側的曲線就會偏離 createRun 假設的那一條。
 check('技能書完全不影響選項(runSkillOffersAt 根本不收它)',
@@ -59,8 +67,8 @@ check('帶滿技能書也不會改變戰力曲線(所以敵人一格都不會變
     const offers = runSkillOffersAt(skills, 777, k, ACTIVE_SKILL_IDS.length);
     if (offers.length === 0) break;
     skills = learnRunSkill(skills, bestRunSkillChoice(skills, offers));
-    const a = runSkillEffects(skills, undefined, 0);
-    const b = runSkillEffects(skills, undefined, MAX_SKILL_BOOK_LEVEL);
+    const a = runSkillEffects(skills, undefined, {});
+    const b = runSkillEffects(skills, undefined, FULL_BOOKS);
     if (a.attackMultiplier !== b.attackMultiplier || a.heroMultiplier !== b.heroMultiplier) return false;
   }
   return true;
@@ -72,8 +80,8 @@ check('裝備圖鑑碰不到鋒刃/增殖', (() => {
     const offers = runSkillOffersAt(skills, 999, k, ACTIVE_SKILL_IDS.length);
     if (offers.length === 0) break;
     skills = learnRunSkill(skills, bestRunSkillChoice(skills, offers));
-    const a = runSkillEffects(skills, undefined, 0, {});
-    const b = runSkillEffects(skills, undefined, 0, FULL_CODEX);
+    const a = runSkillEffects(skills, undefined, {}, {});
+    const b = runSkillEffects(skills, undefined, {}, FULL_CODEX);
     if (a.attackMultiplier !== b.attackMultiplier || a.heroMultiplier !== b.heroMultiplier) return false;
   }
   return true;
@@ -81,16 +89,16 @@ check('裝備圖鑑碰不到鋒刃/增殖', (() => {
 check('裝備圖鑑會放大元素(對玩家是真的變強)', (() => {
   // 火已經完全退出擊殺數,改用金驗:圖鑑放大的是 pierceRatio。
   const kit: RunSkillState[] = [{ id: 'metal', level: 5 }];
-  return runSkillEffects(kit, undefined, 0, FULL_CODEX).pierceRatio
-    > runSkillEffects(kit, undefined, 0, {}).pierceRatio;
+  return runSkillEffects(kit, undefined, {}, FULL_CODEX).pierceRatio
+    > runSkillEffects(kit, undefined, {}, {}).pierceRatio;
 })());
 // 圖鑑改成「一個條目綁一個屬性」之後,加成是**逐屬性**的:收滿火的那幾件只有火變強。
 // 這一項在盯那個隔離性——沒有隔離的話它就退化回「一條收集率把八個一起拉」,
 // 蒐集的方向感(「我還差雷的那幾件」)就不存在了。
 check('圖鑑的加成是逐屬性的(收火不會順便把雷拉起來)', (() => {
   const kit: RunSkillState[] = [{ id: 'metal', level: 5 }, { id: 'thunder', level: 5 }];
-  const onlyMetal = runSkillEffects(kit, undefined, 0, { metal: 1 + MAX_ELEMENT_BONUS });
-  const none = runSkillEffects(kit, undefined, 0, {});
+  const onlyMetal = runSkillEffects(kit, undefined, {}, { metal: 1 + MAX_ELEMENT_BONUS });
+  const none = runSkillEffects(kit, undefined, {}, {});
   return onlyMetal.pierceRatio > none.pierceRatio && onlyMetal.chainRatio === none.chainRatio;
 })());
 check(`單一屬性的加成封頂在 +${Math.round(MAX_ELEMENT_BONUS * 100)}%`, (() => {
@@ -112,10 +120,18 @@ check('六個屬性分到的條目數夠平均(沒有哪個屬性特別難收)',
 // 反過來:對真人是真的變強(元素的效果被放大)。
 check('技能書讓元素明顯更強(對玩家是真的變強)', (() => {
   const kit: RunSkillState[] = [{ id: 'metal', level: 5 }, { id: 'ice', level: 5 }, { id: 'thunder', level: 5 }];
-  const a = runSkillEffects(kit, undefined, 0);
-  const b = runSkillEffects(kit, undefined, MAX_SKILL_BOOK_LEVEL);
+  const a = runSkillEffects(kit, undefined, {});
+  const b = runSkillEffects(kit, undefined, FULL_BOOKS);
   return b.pierceRatio > a.pierceRatio && b.chainRatio > a.chainRatio
     && b.tradeMultiplier > a.tradeMultiplier;
+})());
+// 逐屬性的隔離性:只練金的書,金變強而雷完全不動。
+// 這一項跟圖鑑那一項是同一個形狀——沒有隔離的話,「今天開哪個屬性」就沒有意義了。
+check('技能書的加成是逐屬性的(只練金不會順便把雷拉起來)', (() => {
+  const kit: RunSkillState[] = [{ id: 'metal', level: 5 }, { id: 'thunder', level: 5 }];
+  const onlyMetal = runSkillEffects(kit, undefined, { metal: MAX_SKILL_BOOK_LEVEL });
+  const none = runSkillEffects(kit, undefined, {});
+  return onlyMetal.pierceRatio > none.pierceRatio && onlyMetal.chainRatio === none.chainRatio;
 })());
 
 console.log(fail === 0 ? '\n全部通過' : `\n${fail} 項失敗`);

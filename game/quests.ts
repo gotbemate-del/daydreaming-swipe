@@ -199,7 +199,7 @@ const QUESTS: Quest[] = [
     // 第一本一定拿得到,所以它接得住這一格「教玩家有這條養成」的功能。
     id: 'first-book',
     name: '拿到第一本技能書',
-    hint: '通關就給一本,用來放大元素與主動的效果',
+    hint: '通關就給一本,放大**當日屬性**那一系的效果',
     target: 1,
     progress: (c) => c.books,
     coins: 120,

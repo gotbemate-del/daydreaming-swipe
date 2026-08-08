@@ -19,7 +19,11 @@
 // 反過來,驗證失敗也絕對不能丟例外:存檔壞掉的症狀應該是「回到預設值」,不是白畫面。
 
 import { LEVELS_PER_CHAPTER, LONG_LEVEL_WAVES, TOTAL_CHAPTERS, WAVES_PER_LEVEL } from './laneRun';
-import { MAX_SKILL_BOOK_LEVEL, rescaleLegacyBookLevel } from './laneRunSkills';
+import {
+  ELEMENTS, MAX_SKILL_BOOK_LEVEL, isElement, rescaleLegacyBookLevel,
+  type ElementBooks, type RunSkillId,
+} from './laneRunSkills';
+import { DUNGEON_DAILY_CLEARS, DUNGEON_IDS, type DungeonId } from './dungeons';
 import { decodeCollection, encodeCollection } from './collection';
 import { isQuestCounter, isQuestId, type QuestCounters } from './quests';
 
@@ -27,7 +31,7 @@ import { isQuestCounter, isQuestId, type QuestCounters } from './quests';
  * 存檔格式版本。**改動任何欄位的意義就要 +1,並在 MIGRATIONS 補一條。**
  * 只是新增一個「有預設值的欄位」不必升版:readSave 會幫沒有的欄位補預設值。
  */
-export const SAVE_VERSION = 7;
+export const SAVE_VERSION = 8;
 
 /** localStorage / AsyncStorage 的 key。改這個等於讓所有人的存檔消失,不要改。 */
 export const SAVE_KEY = 'daydreaming-swipe/save';
@@ -65,13 +69,16 @@ export interface SaveData {
   /** 跨場累積的金幣。 */
   coins: number;
   /**
-   * 技能書等級(0 ~ 100)。**放大元素與主動的效果幅度**,見 laneRunSkills 的 bookBonus。
+   * 技能書等級,**六個元素各自一份**(各自 0 ~ 100)。
    *
-   * 主要來源是「每通一關給一本」,生存模式的門檻再給前面幾級當助跑。
-   * 它碰不到理想路線(元素與主動全部在理想路線之外),所以敵人不會跟著變強——
-   * 這也是它敢開到 100 級的原因,而永久技能只敢給 +45%。
+   * 放大該元素三階的效果幅度,見 laneRunSkills 的 bookBonus / bookPowerScale。
+   * 逐屬性是因為技能書副本改成「每天固定開一個屬性」——單一等級的話那個屬性只是
+   * 門票顏色,今天開火還開雷拿到的東西一模一樣,玩家沒有理由在意。
+   *
+   * 它碰不到理想路線(元素全部在理想路線之外),所以敵人不會跟著變強——
+   * 這也是它敢開到每個元素 100 級的原因,而永久技能只敢給 +45%。
    */
-  books: number;
+  books: ElementBooks;
   /** 生存模式的最佳紀錄:一輪連續撐過幾**波**。純紀錄,不影響數值。 */
   bestSurvival: number;
   /**
@@ -115,6 +122,17 @@ export interface SaveData {
    * 一律現算。加一個新的 key **不必升版號**——讀不到就是 0。
    */
   questCounters: QuestCounters;
+  /**
+   * 底下兩個副本次數屬於**哪一天**(本地日曆天的序號,見 dungeons 的 dayIndex)。
+   *
+   * 存「哪一天」而不是「還剩幾次」是刻意的:存剩餘次數的話,跨日要有人負責把它加回去,
+   * 而那個「有人」只能是某次讀存檔或某個計時器——玩家整天沒開遊戲、或開著遊戲跨過午夜,
+   * 兩種都會漏掉。存日期則是**自我修復**的:今天的日期跟這裡不一樣,今天的次數就是 0,
+   * 不需要任何人去重設它。
+   */
+  dungeonDay: number;
+  /** 那一天各個副本已經通關幾次。只有技能書/裝備副本有上限,無限副本不記。 */
+  dungeonClears: Partial<Record<DungeonId, number>>;
 }
 
 /** 音量預設值。BGM 這一份的峰值很滿,1.0 會把音效整個蓋掉(見 hooks/useBgm.ts)。 */
@@ -126,7 +144,7 @@ export const DEFAULT_SAVE: SaveData = {
   stage: 1,
   job: null,
   coins: 0,
-  books: 0,
+  books: {},
   bestSurvival: 0,
   bgmOff: false,
   bgmVolume: DEFAULT_BGM_VOLUME,
@@ -134,13 +152,15 @@ export const DEFAULT_SAVE: SaveData = {
   collected: '',
   questsClaimed: [],
   questCounters: {},
+  dungeonDay: 0,
+  dungeonClears: {},
 };
 
 /** 全新的一份存檔。回傳新物件,呼叫端改它不會污染 DEFAULT_SAVE。 */
 export function newSave(): SaveData {
   // 可變的欄位各自給新的實體,不然呼叫端改它會污染 DEFAULT_SAVE
   // (症狀是「開新遊戲卻帶著上一輪的任務進度」,而且只在同一個分頁裡重開才會出現)。
-  return { ...DEFAULT_SAVE, questsClaimed: [], questCounters: {} };
+  return { ...DEFAULT_SAVE, questsClaimed: [], questCounters: {}, books: {}, dungeonClears: {} };
 }
 
 // ---- 各欄位的驗證 ----
@@ -168,6 +188,54 @@ function readJob(value: unknown): SavedJob | null {
 }
 
 /**
+/**
+ * 逐屬性的技能書等級。不認得的 key 丟掉、每個值各自夾在 [0, 上限]。
+ *
+ * **數字型的舊存檔也讀得進來**:v6 之前 books 是一個全域等級,而遷移鏈理論上會處理它——
+ * 但這裡再擋一次,因為遷移失敗(或有人手改存檔塞了一個數字)的後備行為必須是
+ * 「六個元素都拿到那個等級」而不是「全部歸零」。歸零等於默默沒收玩家整條養成。
+ */
+function readBooks(value: unknown): ElementBooks {
+  if (typeof value === 'number') return spreadLegacyBooks(value);
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out: ElementBooks = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!isElement(key as RunSkillId)) continue;
+    const level = readInt(raw, 0, 0, MAX_SKILL_BOOK_LEVEL);
+    if (level > 0) out[key as RunSkillId] = level;
+  }
+  return out;
+}
+
+/**
+ * 單一的全域等級 → 六個元素各自的等級。
+ *
+ * **每個元素都拿到同一個數字,不是把它除以六。** 舊制的那一級放大的是**全部**元素
+ * (`bookPowerScale` 對六個元素回傳同一個倍率),所以「等值」的意思就是六個都是那一級。
+ * 除以六的話,老玩家一升版每一個元素的加成都掉一大截,而他完全不知道發生了什麼——
+ * 這款在 bestSurvival 從「關」變「波」、以及技能書上限從 5 開到 100 的時候
+ * 各踩過一次同一個坑(見 v3→v4 與 v4→v5)。
+ */
+function spreadLegacyBooks(level: unknown): ElementBooks {
+  const l = readInt(level, 0, 0, MAX_SKILL_BOOK_LEVEL);
+  if (l <= 0) return {};
+  const out: ElementBooks = {};
+  for (const id of ELEMENTS) out[id] = l;
+  return out;
+}
+
+/** 每個副本今天打了幾次。不認得的 id 丟掉,值夾在 [0, 每日上限]。 */
+function readDungeonClears(value: unknown): Partial<Record<DungeonId, number>> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out: Partial<Record<DungeonId, number>> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!DUNGEON_IDS.includes(key as DungeonId)) continue;
+    const n = readInt(raw, 0, 0, DUNGEON_DAILY_CLEARS);
+    if (n > 0) out[key as DungeonId] = n;
+  }
+  return out;
+}
+
 /**
  * 已領獎的任務 id。**不認得的 id 一律丟掉**——任務刪掉之後它的 id 就沒有意義了,
  * 留著只會讓 `questsClaimed.length` 這種數字慢慢失真。重複的也只留一個。
@@ -254,6 +322,22 @@ const MIGRATIONS: Record<number, (raw: Record<string, unknown>) => Record<string
     const { skills: _dropped, ...rest } = raw;
     return { ...rest, version: 7 };
   },
+  // v7 → v8:技能書從單一的全域等級變成**六個元素各自一份**,副本加上每日次數。
+  //
+  // 舊的那一級放大的是全部元素,所以等值的換算是**六個都給那一級**(見 spreadLegacyBooks)。
+  // 除以六會讓老玩家一升版就每個元素都掉一大截,而且他不會知道原因。
+  //
+  // 又一次「版號讓給先上線的那一條」:v7 是永久技能移除那一版,已經在 main 上。
+  // 一個號碼只能代表一件事——這條規則在這個專案短時間內已經救過三次。
+  7: (raw) => ({
+    ...raw,
+    version: 8,
+    books: spreadLegacyBooks(raw.books),
+    // 次數從「第 0 天」開始:那一天不可能等於今天(dayIndex 是 1970 以來的天數),
+    // 所以老玩家一載入就是滿額度,不會莫名其妙少掉今天的次數。
+    dungeonDay: 0,
+    dungeonClears: {},
+  }),
 };
 
 /** 遷移用的寬鬆數字讀取。遷移函式拿到的是還沒驗證過的 raw,所以不能假設型別。 */
@@ -309,7 +393,7 @@ export function readSave(text: string | null | undefined): { save: SaveData; mig
       stage: readInt(raw.stage, 1, 1, TOTAL_STAGES),
       job: readJob(raw.job),
       coins: readInt(raw.coins, 0, 0, Number.MAX_SAFE_INTEGER),
-      books: readInt(raw.books, 0, 0, MAX_SKILL_BOOK_LEVEL),
+      books: readBooks(raw.books),
       // 上限是「全部小關 x 一關最多幾波」——改過的存檔會被夾回來。
       bestSurvival: readInt(raw.bestSurvival, 0, 0, TOTAL_STAGES * LONG_LEVEL_WAVES),
       // 不是 true 就一律當成「開著」——壞掉的欄位要退回「有音樂」,那是預設的體驗。
@@ -322,6 +406,8 @@ export function readSave(text: string | null | undefined): { save: SaveData; mig
       collected: encodeCollection(decodeCollection(raw.collected)),
       questsClaimed: readQuestsClaimed(raw.questsClaimed),
       questCounters: readQuestCounters(raw.questCounters),
+      dungeonDay: readInt(raw.dungeonDay, 0, 0, Number.MAX_SAFE_INTEGER),
+      dungeonClears: readDungeonClears(raw.dungeonClears),
     },
     migrated,
   };

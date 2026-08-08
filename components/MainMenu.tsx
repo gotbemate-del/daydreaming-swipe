@@ -6,6 +6,7 @@ import { Settings, type AudioSettings } from './Settings';
 import { chapterOfStage, stageLabel, waveElementsForStage, wavesForStage } from '../game/laneRun';
 import { tutorialRulesFor } from '../game/laneTutorial';
 import type { QuestView } from '../game/quests';
+import { totalBookLevels, type ElementBooks } from '../game/laneRunSkills';
 import {
   COIN_ICON, GEAR_ICON, HERO_ASPECT, HERO_FRAME_MS, HERO_FRAMES, HERO_SEQUENCE, heroBoxHeight, LOCK_ICON,
   QUEST_ICON, TAB_ICONS,
@@ -41,12 +42,14 @@ interface Props {
   coins: number;
   /** 上一場的結果。第一次進來是 null,之後回到主介面時顯示「通關了/倒下了」。 */
   lastResult: 'cleared' | 'dead' | null;
-  /** 技能書等級。生存模式掉的,顯示在狀態列讓玩家看得到自己的第三層養成。 */
-  books: number;
+  /** 技能書等級,六個元素各自一份。狀態列顯示六條線的總和(細目在圖鑑那一頁)。 */
+  books: ElementBooks;
   /** 生存模式最好撐過幾波(單位是波不是關,見 game/save.ts 的 SURVIVAL_BOOK_THRESHOLDS)。 */
   bestSurvival: number;
   /** 這一場剛撿到幾件裝備。主介面閃一下,不然玩家不會發現圖鑑有在長。 */
   justFound: number[];
+  /** 這一場剛拿到幾本技能書。理由同上:它只讓圖鑑那一頁的數字動一格,不寫出來等於沒發生。 */
+  justBooks: number;
   /** 音訊設定(音樂開關、音樂音量、音效音量)。跟跑圖中的設定面板共用同一組。 */
   audio: AudioSettings;
   onChangeAudio: (patch: Partial<AudioSettings>) => void;
@@ -73,7 +76,7 @@ interface Props {
 }
 
 export function MainMenu({
-  stage, job, coins, lastResult, books, bestSurvival, justFound, audio, onChangeAudio, quest,
+  stage, job, coins, lastResult, books, bestSurvival, justFound, justBooks, audio, onChangeAudio, quest,
   dungeonNote, onOpenSettings, onStart, onDungeons, onCodex, onQuests,
 }: Props) {
   const [heroStep, setHeroStep] = useState(0);
@@ -120,7 +123,7 @@ export function MainMenu({
 
       <Text style={styles.jobLine}>
         第 {chapterOfStage(stage)} 大關 · {jobTitle(job)}
-        {books > 0 ? ` · 技能書 ${books}` : ''}
+        {totalBookLevels(books) > 0 ? ` · 技能書 ${totalBookLevels(books)}` : ''}
         {bestSurvival > 0 ? ` · 生存 ${bestSurvival} 波` : ''}
       </Text>
 
@@ -178,8 +181,13 @@ export function MainMenu({
       </View>
 
       <View style={styles.resultRow}>
-        {justFound.length > 0 && (
-          <Text style={styles.found}>撿到 {justFound.length} 件裝備</Text>
+        {(justFound.length > 0 || justBooks > 0) && (
+          <Text style={styles.found}>
+            {[
+              justFound.length > 0 ? `撿到 ${justFound.length} 件裝備` : '',
+              justBooks > 0 ? `技能書 +${justBooks}` : '',
+            ].filter(Boolean).join(' · ')}
+          </Text>
         )}
         {/* 副本的結果優先:剛跑完副本的人要看的是「拿到什麼」,不是主線關卡編號。 */}
         {dungeonNote !== null ? (
