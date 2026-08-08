@@ -4,6 +4,7 @@ import {
   describeSkill, MAX_SKILL_LEVEL, MAX_SKILL_SLOTS, skillLevel, skillSpec, type SkillState,
 } from '../game/laneSkills';
 import { stageLabel } from '../game/laneRun';
+import { playSfx } from '../hooks/useSfx';
 
 // 通關之後的技能選擇。每關一次,所以要能「看一眼就選」——
 // 卡片只放三件事:名字、這一級加什麼、目前幾級。不放技能樹、不放說明文,那些會打斷跑圖的節奏。
@@ -35,7 +36,7 @@ export function SkillChoice({ clearedStage, skills, offers, onChoose }: Props) {
             <Pressable
               key={offer.id}
               style={styles.card}
-              onPress={() => onChoose(offer)}
+              onPress={() => { playSfx('skill'); onChoose(offer); }}
               accessibilityLabel={`學習 ${spec.name} 第 ${offer.level} 級`}
             >
               <View style={styles.cardHead}>

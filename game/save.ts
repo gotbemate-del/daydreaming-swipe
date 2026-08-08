@@ -82,11 +82,27 @@ export interface SaveData {
    */
   bgmOff: boolean;
   /**
+   * 背景音樂與音效各自的音量(0~1)。
+   *
+   * 為什麼跟 bgmOff 並存而不是「音量 0 就等於關掉」:靜音是一個**要能立刻復原**的動作
+   * (旁邊有人講話、進了會議),而音量是一個**偏好**。合成一個數字的話,玩家為了暫時靜音
+   * 把滑桿拉到 0,之後想開回來只能憑記憶找回原本的位置。
+   *
+   * 兩條分開存也是因為它們的用途不同:音樂是可以完全不要的背景,音效是**回饋**
+   * (被打中、通關、選到技能),不少人會把音樂關掉但把音效留著。
+   */
+  bgmVolume: number;
+  sfxVolume: number;
+  /**
    * 裝備圖鑑:5668 個 bit 壓成 base64(見 game/collection.ts)。
    * 存 id 陣列的話滿收會是幾萬個字,bitset 壓完約 950 字。
    */
   collected: string;
 }
+
+/** 音量預設值。BGM 這一份的峰值很滿,1.0 會把音效整個蓋掉(見 hooks/useBgm.ts)。 */
+export const DEFAULT_BGM_VOLUME = 0.35;
+export const DEFAULT_SFX_VOLUME = 0.6;
 
 export const DEFAULT_SAVE: SaveData = {
   version: SAVE_VERSION,
@@ -97,6 +113,8 @@ export const DEFAULT_SAVE: SaveData = {
   books: 0,
   bestSurvival: 0,
   bgmOff: false,
+  bgmVolume: DEFAULT_BGM_VOLUME,
+  sfxVolume: DEFAULT_SFX_VOLUME,
   collected: '',
 };
 
@@ -111,6 +129,12 @@ export function newSave(): SaveData {
 function readInt(value: unknown, fallback: number, min: number, max: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+/** 音量:0~1 的小數,**不取整**(readInt 會把 0.35 變成 0)。壞掉就回預設值。 */
+function readVolume(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(1, Math.max(0, value));
 }
 
 function readJob(value: unknown): SavedJob | null {
@@ -229,6 +253,10 @@ export function readSave(text: string | null | undefined): { save: SaveData; mig
       bestSurvival: readInt(raw.bestSurvival, 0, 0, TOTAL_STAGES * LONG_LEVEL_WAVES),
       // 不是 true 就一律當成「開著」——壞掉的欄位要退回「有音樂」,那是預設的體驗。
       bgmOff: raw.bgmOff === true,
+      // 音量壞掉要退回預設值(不是退回 0)。退回 0 的話症狀是「遊戲沒聲音」,
+      // 而玩家不會聯想到存檔壞掉,只會覺得音效功能是壞的。
+      bgmVolume: readVolume(raw.bgmVolume, DEFAULT_BGM_VOLUME),
+      sfxVolume: readVolume(raw.sfxVolume, DEFAULT_SFX_VOLUME),
       // 圖鑑走 decode → encode 一圈:壞掉的字串會變成空圖鑑,超出總數的 bit 也會被清掉。
       collected: encodeCollection(decodeCollection(raw.collected)),
     },

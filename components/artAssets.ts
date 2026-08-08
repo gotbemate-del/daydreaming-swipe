@@ -176,6 +176,13 @@ export const ROCK_ART: ImageSourcePropType = require('../assets/sprites/material
 export const LOCK_ICON: ImageSourcePropType = require('../assets/sprites/ui/icon_lock.png');
 /** 金幣。主介面顯示身上有多少錢。 */
 export const COIN_ICON: ImageSourcePropType = require('../assets/sprites/ui/icon_coin.png');
+/**
+ * 齒輪。主介面右上角與跑圖中的設定鈕都用它。
+ *
+ * 註:程式碼裡曾經有兩處註解寫「ui/ 沒有齒輪圖示,所以用文字『設定』頂替」——
+ * 那是找漏了,`icon_gear.png` 一直都在。圖示鐵則沒有被違反過,只是白寫了兩個文字鈕。
+ */
+export const GEAR_ICON: ImageSourcePropType = require('../assets/sprites/ui/icon_gear.png');
 
 // 12 種身體原型,對應 game/monsters.ts 的 ARCHETYPE_CATALOG.key。怪物 id 是 `${archetype}-${slot}`,
 // slot(強度稱號)共用同一張原型圖:一副骨架、多種強度。

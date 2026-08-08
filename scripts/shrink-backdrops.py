@@ -128,7 +128,8 @@ def main() -> None:
         "import type { BackdropId } from '../game/laneRun';",
         '',
         '/**',
-        ' * 底圖本身,加上三個由圖算出來的數字:',
+        ' * 底圖本身,加上名字與四個由圖算出來的數字:',
+        ' *   name    給玩家看的名字(生存模式抽地圖的 toast 會印出來)',
         ' *   aspect  長寬比(width / height)—— 畫面照這個比例鋪才不會被拉扁',
         ' *   base    圖載進來之前的底色(整張的平均色壓暗)',
         ' *   edge    兩條跑道之間的分隔線顏色(平均色提亮)',
@@ -138,13 +139,23 @@ def main() -> None:
         ' */',
         'export const STAGE_BACKDROPS: Record<',
         '  BackdropId,',
-        '  { source: ImageSourcePropType; aspect: number; base: string; edge: string; scrim: string }',
+        '  {',
+        '    source: ImageSourcePropType;',
+        '    name: string;',
+        '    aspect: number;',
+        '    base: string;',
+        '    edge: string;',
+        '    scrim: string;',
+        '  }',
         '> = {',
     ]
     for key, label, w, h, base, edge, scrim, _size in rows:
         lines.append(
-            f"  {key}: {{ source: require('../assets/sprites/backgrounds/stages/{key}.png'),"
-            f" aspect: {w} / {h}, base: '{base}', edge: '{edge}', scrim: '{scrim}' }}, // {label}"
+            f"  {key}: {{\n"
+            f"    source: require('../assets/sprites/backgrounds/stages/{key}.png'),\n"
+            f"    name: '{label}', aspect: {w} / {h},\n"
+            f"    base: '{base}', edge: '{edge}', scrim: '{scrim}',\n"
+            f"  }},"
         )
     lines += ['};', '']
     TABLE.write_text('\n'.join(lines), encoding='utf-8')

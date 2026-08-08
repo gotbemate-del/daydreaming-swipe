@@ -320,6 +320,14 @@ interface WaveRuntime {
  */
 export function useLaneRun(
   stage: number, start: RunStart = DEFAULT_RUN_START, bookLevel = 0, collection: CollectionScales = {},
+  /**
+   * 畫面層要求暫停(打開設定面板、生存模式開頭抽地圖)。
+   *
+   * 跟「挑技能時暫停」走**同一條路徑**而不是各自做一套:暫停要停的東西有兩處
+   *(距離的計時迴圈與波次結算),各自實作一定會漏掉其中一個,而漏掉的症狀是
+   *「畫面停住但怪還在往前推進」——關掉面板的瞬間人數突然少一截,查起來完全看不出原因。
+   */
+  externallyPaused = false,
 ): LaneRunView {
   // 這一場的 seed。閘門與技能選項都由它決定,敵人戰力也是照同一顆 seed 的最佳路線算的,
   // 所以 seed 必須留著——技能選項另外抽的話,玩家看到的選單就不是 createRun 假設的那一組。
@@ -421,7 +429,7 @@ export function useLaneRun(
    * 中間試過不暫停(面板浮在跑道上、底下照樣跑),但那樣要同時做三件事:
    * 讀三個選項、閃迎面而來的怪、還要選閘門。翻回暫停。
    */
-  const paused = skillOffers.length > 0;
+  const paused = skillOffers.length > 0 || externallyPaused;
 
   /**
    * 前方**完全沒東西**的時候會不會加速趕路。

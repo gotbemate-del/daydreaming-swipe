@@ -3,6 +3,7 @@ import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { stageLabel } from '../game/laneRun';
 import { booksForSurvival, SURVIVAL_BOOK_THRESHOLDS } from '../game/save';
 import { COIN_ICON } from './artAssets';
+import { playSfx } from '../hooks/useSfx';
 import { PixelFrame } from './PixelFrame';
 
 // 生存模式的結算畫面。**它的重點是「下一級技能書還差幾波」**——
@@ -55,7 +56,7 @@ export function SurvivalResult({ waves, streak, previousBest, diedAt, coins, onD
         )}
         </View>
       </PixelFrame>
-      <Pressable style={styles.button} accessibilityLabel="回主介面" onPress={onDone}>
+      <Pressable style={styles.button} accessibilityLabel="回主介面" onPress={() => { playSfx('click'); onDone(); }}>
         <Text style={styles.buttonLabel}>回主介面</Text>
       </Pressable>
     </View>

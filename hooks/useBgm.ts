@@ -25,29 +25,36 @@ import { useAudioPlayer } from 'expo-audio';
 //
 // ## 音量
 //
-// 0.35 不是隨便挑的:這份 bgm 的峰值很滿,1.0 會蓋掉之後要接的音效
+// 音量由玩家決定(設定面板的滑桿,存進存檔),預設 `DEFAULT_BGM_VOLUME` = 0.35。
+// 0.35 不是隨便挑的:這份 bgm 的峰值很滿,1.0 會蓋掉音效
 //(被武器砸中、技能觸發那類提示)的空間,而且手機外放時 0.35 已經聽得很清楚。
+//
+// **音量要另外一個 effect 去套,不能跟「播/停」擠在同一個。** 擠在一起的話,
+// 拖滑桿的每一格都會重跑一次 `player.play()`——網頁上那是一次 seek + 重新解碼,
+// 拖動時聲音會一直斷。現在拖滑桿只動 `player.volume`,播放本身完全沒被碰到。
 
 const BGM = require('../assets/sounds/bgm.wav');
-
-/** 背景音樂放多大聲。留空間給之後的音效,不要開到 1.0。 */
-export const BGM_VOLUME = 0.35;
 
 /** 這一輪頁面有沒有被碰過。網頁的自動播放政策看的就是這件事。 */
 let gestureSeen = Platform.OS !== 'web';
 
 /**
  * @param enabled 要不要播(玩家把音樂關掉就是 false)。
+ * @param volume  0~1。玩家在設定面板拖的那一條。
  */
-export function useBgm(enabled: boolean): void {
+export function useBgm(enabled: boolean, volume: number): void {
   const player = useAudioPlayer(BGM);
   const wantsRef = useRef(enabled);
   wantsRef.current = enabled;
 
   useEffect(() => {
     player.loop = true;
-    player.volume = BGM_VOLUME;
   }, [player]);
+
+  // 音量獨立一個 effect,拖滑桿才不會順便重啟播放(見上面的註解)。
+  useEffect(() => {
+    player.volume = Math.min(1, Math.max(0, volume));
+  }, [player, volume]);
 
   useEffect(() => {
     if (!enabled) {

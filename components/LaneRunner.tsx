@@ -20,8 +20,12 @@ import {
   type WaveMonster,
   type RunRow,
   type RunStart,
+  type BackdropId,
 } from '../game/laneRun';
 import { STAGE_BACKDROPS } from './stageBackdrops';
+import { Settings, type AudioSettings } from './Settings';
+import { MapDrawToast } from './MapDrawToast';
+import { playSfx } from '../hooks/useSfx';
 import {
   describeRunSkill, runSkillSpec, ELEMENT_COUNTERS, isActiveSkill, FREEZE_MS,
   type CollectionScales, type RunSkillId,
@@ -33,7 +37,7 @@ import {
 import { PixelFrame } from './PixelFrame';
 import {
   heroBoxHeight, heroForm, squadForms, monsterArt, weaponArt, jobHeroArt, ROCK_ART,
-  elementColor, elementLabel, monsterAnim, jobHeroAnim, animFrameIndex,
+  elementColor, elementLabel, monsterAnim, jobHeroAnim, animFrameIndex, GEAR_ICON,
 } from './artAssets';
 
 // 跑道畫面。角色固定在跑道底部、物件由上往下逼近——這是「角色在跑」最省效能的表現方式:
@@ -225,11 +229,27 @@ interface Props {
   /** 裝備圖鑑給的放大倍率(技能 id → 倍率;只放大元素與主動)。 */
   collection?: CollectionScales;
   /**
-   * 背景音樂關掉了沒 + 切換。**跑圖中也要有這顆**:一場長關 6 分鐘、生存模式更久,
-   * 只放在主介面等於「想關音樂就得先死一次」。
+   * 音訊設定 + 修改。**跑圖中也要有這一整組**:一場長關 6 分鐘、生存模式更久,
+   * 只放在主介面等於「想調音量就得先死一次」。
+   *
+   * 給的是齒輪不是一顆音樂開關:齒輪打開的面板同時是**暫停**
+   *(見 settingsOpen),而中場能停下來這件事本身就是玩家會找的功能。
    */
-  bgmOff?: boolean;
-  onToggleBgm?: () => void;
+  audio?: AudioSettings;
+  onChangeAudio?: (patch: Partial<AudioSettings>) => void;
+  /**
+   * 底圖換成指定的那一張(生存模式抽到的)。不給就照關卡的大關走。
+   *
+   * 為什麼是 prop 不是 LaneRunner 自己抽:生存模式是一關接一關,而 LaneRunner
+   * **每一關都換 key 重新掛載**——自己抽的話每過一關地圖就換一次,而抽籤的意義
+   * 是「這一輪的身分」,不是「這一關的裝飾」。抽在 app 層,整輪只抽一次。
+   */
+  backdropOverride?: BackdropId | null;
+  /**
+   * 開場的抽地圖 toast(只有生存模式的第一關給)。給了就會在跑圖上蓋一層面板並暫停,
+   * 玩家按「開始」或倒數結束才解除。`onRedraw` 由 app 層負責抽新的一張。
+   */
+  mapDraw?: { onRedraw: () => void; onDone: () => void } | null;
   /**
    * 這一場結束(通關或陣亡)。coins 是這一場賺到的,由 app 層累加起來帶回主介面。
    * waves 是這一關實際打完幾波——生存模式的分數是**累計波數**,而死在第 3 波跟
@@ -240,9 +260,19 @@ interface Props {
 
 export function LaneRunner({
   stage, job, start, onFinish, bookLevel = 0, survivalWavesBefore = null, collection = {},
-  bgmOff = false, onToggleBgm,
+  audio, onChangeAudio, backdropOverride = null, mapDraw = null,
 }: Props) {
-  const run = useLaneRun(stage, start, bookLevel, collection);
+  /**
+   * 設定面板開著的時候跑圖停住。
+   *
+   * 這不是「順便」——它就是玩家要的暫停。跑圖中沒有別的地方可以停下來(生存模式尤其:
+   * 一輪可能跑十幾分鐘),而「我要接電話」跟「我想調音量」在體感上是同一件事:
+   * **先讓畫面別動**。所以齒輪＝暫停鈕,面板標題也直接寫「已暫停」。
+   */
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // 抽地圖的面板也要停:它蓋在跑道上面,不停的話玩家在讀地圖名稱的那幾秒會漏掉第一排閘門。
+  const drawing = mapDraw !== null;
+  const run = useLaneRun(stage, start, bookLevel, collection, settingsOpen || drawing);
   const {
     state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers, rocks,
     lastShotAt, lastShotId, feedback, steer, dragTo,
@@ -264,6 +294,18 @@ export function LaneRunner({
    */
   const finishRef = useRef(onFinish);
   finishRef.current = onFinish;
+
+  /**
+   * 通關 / 陣亡的音效。
+   *
+   * 綁在 `state.phase` 的變化上而不是掛在按鈕:結果卡是玩家看到的**結果**,
+   * 而按鈕是他之後才按的下一步——聲音要跟結果同時發生,不然會變成「畫面先變,
+   * 過三秒我按了按鈕才聽到通關的聲音」。生存模式更明顯:它根本不畫結果卡也不等按鈕。
+   */
+  useEffect(() => {
+    if (state.phase === 'cleared') playSfx('clear');
+    else if (state.phase === 'dead') playSfx('dead');
+  }, [state.phase]);
   useEffect(() => {
     if (!continuous || state.phase !== 'cleared') return;
     const id = setTimeout(() => finishRef.current('cleared', state.coins, totalWaves), HANDOFF_MS);
@@ -392,7 +434,7 @@ export function LaneRunner({
   // 由後往前畫(slice 之後 reverse),主角才會蓋在隊友上面而不是被壓在後面。
   // 由後往前畫,最前面那一隻才會蓋在後排上面。
   const drawn = units.map((form, i) => ({ form, slot: SQUAD_SLOTS[i], spiking: isSpiking(i) })).reverse();
-  const backdrop = STAGE_BACKDROPS[backdropForStage(stage)];
+  const backdrop = STAGE_BACKDROPS[backdropOverride ?? backdropForStage(stage)];
   /**
    * 底圖一格畫多高,以及這一刻捲到哪裡。
    *
@@ -1012,7 +1054,7 @@ export function LaneRunner({
                   // 文字選取器會選到別的地方的同名字(例如下面那行「已帶:鋒刃 2」),
                   // 所以自動化測試要點的東西一律靠 aria-label。
                   accessibilityLabel={`場內技能 ${runSkillSpec(offer.id).name}`}
-                  onPress={() => chooseRunSkill(offer)}
+                  onPress={() => { playSfx('skill'); chooseRunSkill(offer); }}
                 >
                   <Text style={styles.skillName}>
                     {runSkillSpec(offer.id).name} {offer.level > 1 ? `Lv.${offer.level}` : '新'}
@@ -1131,16 +1173,40 @@ export function LaneRunner({
           ? ` · 生存累計 ${survivalWavesBefore + waveNumber} 波(死了就結束)`
           : ' · 拖著史萊姆左右移動'}
         </Text>
-        {onToggleBgm && (
+        {/* 齒輪 = 暫停 + 設定。放在提示列而不是跑道的角落:跑道上的按鈕會吃掉那一角的拖曳,
+            而拖曳可以從畫面任何地方開始正是這款操作的前提(見 panResponder 的註解)。 */}
+        {audio && onChangeAudio && (
           <Pressable
-            accessibilityLabel={bgmOff ? '音樂 關' : '音樂 開'}
-            style={styles.bgmToggle}
-            onPress={onToggleBgm}
+            accessibilityLabel="暫停與設定"
+            style={styles.gearButton}
+            onPress={() => {
+              playSfx('click');
+              setSettingsOpen(true);
+            }}
           >
-            <Text style={[styles.bgmLabel, bgmOff && styles.bgmLabelOff]}>音樂 {bgmOff ? '關' : '開'}</Text>
+            <Image source={GEAR_ICON} resizeMode="contain" style={styles.gearIcon} />
           </Pressable>
         )}
       </View>
+
+      {/* 抽地圖:生存模式開頭。畫在設定面板下面(zIndex 55 vs 60),
+          兩個同時開的時候設定在上——玩家能從抽地圖的畫面直接去調音量。 */}
+      {mapDraw && (
+        <MapDrawToast
+          backdrop={backdropOverride ?? backdropForStage(stage)}
+          onRedraw={mapDraw.onRedraw}
+          onDone={mapDraw.onDone}
+        />
+      )}
+
+      {settingsOpen && audio && onChangeAudio && (
+        <Settings
+          audio={audio}
+          onChangeAudio={onChangeAudio}
+          paused
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
     </View>
   );
 }
@@ -1346,12 +1412,12 @@ const styles = StyleSheet.create({
   skillSlotSub: { color: '#8a8a95', fontSize: 9, lineHeight: 10 },
   skillBarEmpty: { color: '#8a8a95', fontSize: 11 },
   hintRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
-  // 音樂開關用文字不用圖示:ui/ 沒有喇叭圖,而圖示鐵則禁止拿 emoji 頂替。
-  bgmToggle: {
-    paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5,
+  // 齒輪。命中範圍(padding)刻意比圖大:圖只有 18px,而這顆在畫面最下緣,
+  // 手指按下去的落點本來就會偏低一點。
+  gearButton: {
+    padding: 6, borderRadius: 6,
     backgroundColor: '#2a2a35', borderWidth: 1, borderColor: '#3a3448',
   },
-  bgmLabel: { color: '#e0a95c', fontSize: 10, fontWeight: '700' },
-  bgmLabelOff: { color: '#8a8a95' },
+  gearIcon: { width: 18, height: 18 },
   /** 光・護盾的光圈。畫在勇者群外面,不填色(填了會蓋掉勇者)。 */
 });

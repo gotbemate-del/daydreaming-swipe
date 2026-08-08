@@ -2,10 +2,10 @@ import { useEffect, useState } from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { jobTitle, type LaneJob } from '../game/laneJobs';
-import { Settings } from './Settings';
+import { Settings, type AudioSettings } from './Settings';
 import { chapterOfStage, stageLabel, waveElementsForStage, wavesForStage } from '../game/laneRun';
 import {
-  COIN_ICON, HERO_ASPECT, HERO_FRAME_MS, HERO_FRAMES, HERO_SEQUENCE, heroBoxHeight, LOCK_ICON, TAB_ICONS,
+  COIN_ICON, GEAR_ICON, HERO_ASPECT, HERO_FRAME_MS, HERO_FRAMES, HERO_SEQUENCE, heroBoxHeight, LOCK_ICON, TAB_ICONS,
   elementColor, elementLabel,
 } from './artAssets';
 
@@ -44,16 +44,16 @@ interface Props {
   bestSurvival: number;
   /** 這一場剛撿到幾件裝備。主介面閃一下,不然玩家不會發現圖鑑有在長。 */
   justFound: number[];
-  /** 背景音樂關掉了沒。 */
-  bgmOff: boolean;
-  onToggleBgm: () => void;
+  /** 音訊設定(音樂開關、音樂音量、音效音量)。跟跑圖中的設定面板共用同一組。 */
+  audio: AudioSettings;
+  onChangeAudio: (patch: Partial<AudioSettings>) => void;
   onStart: () => void;
   onSurvival: () => void;
   onCodex: () => void;
 }
 
 export function MainMenu({
-  stage, job, coins, lastResult, books, bestSurvival, justFound, bgmOff, onToggleBgm,
+  stage, job, coins, lastResult, books, bestSurvival, justFound, audio, onChangeAudio,
   onStart, onSurvival, onCodex,
 }: Props) {
   const [heroStep, setHeroStep] = useState(0);
@@ -83,10 +83,10 @@ export function MainMenu({
             <Image source={COIN_ICON} resizeMode="contain" style={styles.coinIcon} />
             <Text style={styles.coinText}>{coins}</Text>
           </View>
-          {/* 右上角的設定。沒有齒輪圖示(ui/ 裡沒有,而圖示鐵則禁止拿 emoji 頂替),
-              所以直接寫「設定」——這個尺寸下文字反而比自己畫的齒輪好認。 */}
+          {/* 右上角的設定。用 ui/icon_gear.png ——之前這裡寫著「ui/ 沒有齒輪圖示」而改用文字,
+              那是找漏了,圖一直都在。齒輪是玩家找設定的第一直覺,文字反而要讀。 */}
           <Pressable accessibilityLabel="設定" style={styles.settingsButton} onPress={() => setSettings(true)}>
-            <Text style={styles.settingsLabel}>設定</Text>
+            <Image source={GEAR_ICON} resizeMode="contain" style={styles.settingsIcon} />
           </Pressable>
         </View>
       </View>
@@ -195,7 +195,7 @@ export function MainMenu({
       </ScrollView>
 
       {settings && (
-        <Settings bgmOff={bgmOff} onToggleBgm={onToggleBgm} onClose={() => setSettings(false)} />
+        <Settings audio={audio} onChangeAudio={onChangeAudio} onClose={() => setSettings(false)} />
       )}
     </View>
   );
@@ -212,10 +212,10 @@ const styles = StyleSheet.create({
   title: { color: '#e0a95c', fontSize: 20, fontWeight: '700' },
   headRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   settingsButton: {
-    paddingHorizontal: 9, paddingVertical: 4, borderRadius: 6,
+    padding: 5, borderRadius: 6,
     backgroundColor: '#2a2a35', borderWidth: 1, borderColor: '#3a3448',
   },
-  settingsLabel: { color: '#f2f2f2', fontSize: 11, fontWeight: '700' },
+  settingsIcon: { width: 18, height: 18 },
   coinBox: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   coinIcon: { width: 16, height: 16 },
   coinText: { color: '#f2f2f2', fontSize: 14, fontWeight: '600' },

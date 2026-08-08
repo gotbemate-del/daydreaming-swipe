@@ -3,6 +3,7 @@ import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-nati
 import { jobChoices, jobTitle, type JobTier, type LaneJob } from '../game/laneJobs';
 import { stageLabel } from '../game/laneRun';
 import { jobHeroArt } from './artAssets';
+import { playSfx } from '../hooks/useSfx';
 
 // 轉職畫面。每 5 關出現一次,是這款唯一的養成介面。
 //
@@ -32,7 +33,7 @@ export function JobChoice({ current, tier, clearedStage, onChoose }: Props) {
           <Pressable
             key={`${choice.job.archetype}-${choice.job.branch}`}
             style={styles.card}
-            onPress={() => onChoose(choice.job)}
+            onPress={() => { playSfx('skill'); onChoose(choice.job); }}
             accessibilityLabel={`轉職成 ${choice.title}`}
           >
             <Image

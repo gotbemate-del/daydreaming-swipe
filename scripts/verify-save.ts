@@ -6,6 +6,7 @@
 
 import {
   booksForSurvival, DEFAULT_SAVE, newSave, readSave, writeSave, SAVE_VERSION, TOTAL_STAGES,
+  DEFAULT_BGM_VOLUME, DEFAULT_SFX_VOLUME,
   type SaveData,
 } from '../game/save';
 import { WAVES_PER_LEVEL } from '../game/laneRun';
@@ -41,6 +42,8 @@ const full: SaveData = {
   books: 3,
   bestSurvival: 42,
   bgmOff: true,
+  bgmVolume: 0.5,
+  sfxVolume: 0.25,
   collected: encodeCollection((() => { const b = emptyCollection(); addItem(b, 0); addItem(b, 5000); return b; })()),
 };
 const round = readSave(writeSave(full)).save;
@@ -52,6 +55,28 @@ check('音樂開關存得住,而且壞掉的值退回「開著」',
   readSave(writeSave(full)).save.bgmOff === true
   && readSave(JSON.stringify({ version: SAVE_VERSION, bgmOff: 'yes' })).save.bgmOff === false
   && readSave(JSON.stringify({ version: SAVE_VERSION })).save.bgmOff === false);
+
+// --- 音量 ---
+// 音量是小數,而存檔裡其他數字全是整數——用 readInt 讀的話 0.35 會被 Math.floor 成 0,
+// 症狀是「玩家調好音量,重開之後遊戲完全沒聲音」。這一項就是在擋那件事。
+check('音量是小數,不會被取整成 0',
+  readSave(JSON.stringify({ version: SAVE_VERSION, bgmVolume: 0.35, sfxVolume: 0.6 })).save.bgmVolume === 0.35);
+check('音量存得住(0 也要存得住,那是玩家自己拉到底的)',
+  readSave(writeSave(full)).save.bgmVolume === 0.5
+  && readSave(writeSave({ ...full, sfxVolume: 0 })).save.sfxVolume === 0);
+// 壞掉要退回**預設值**不是退回 0:退回 0 的症狀是「遊戲沒聲音」,
+// 而玩家不會聯想到存檔壞掉,只會覺得音效功能是壞的。
+check('音量壞掉退回預設值(不是 0)',
+  readSave(JSON.stringify({ version: SAVE_VERSION, bgmVolume: 'loud' })).save.bgmVolume === DEFAULT_BGM_VOLUME
+  && readSave(JSON.stringify({ version: SAVE_VERSION })).save.sfxVolume === DEFAULT_SFX_VOLUME);
+check('超出範圍的音量夾回 0~1',
+  readSave(JSON.stringify({ version: SAVE_VERSION, bgmVolume: 9, sfxVolume: -4 })).save.bgmVolume === 1
+  && readSave(JSON.stringify({ version: SAVE_VERSION, bgmVolume: 9, sfxVolume: -4 })).save.sfxVolume === 0);
+// 舊存檔(v4 之前寫的,沒有這兩個欄位)進來要拿到預設值而不是 0 —— 這是實際會發生的情況:
+// 所有現役玩家的存檔都沒有這兩個欄位。
+check('舊存檔沒有音量欄位 -> 預設值,不是靜音',
+  readSave(JSON.stringify({ version: 1, stage: 30, coins: 5 })).save.bgmVolume === DEFAULT_BGM_VOLUME
+  && readSave(JSON.stringify({ version: 1, stage: 30, coins: 5 })).save.sfxVolume === DEFAULT_SFX_VOLUME);
 
 // --- 壞掉的東西 ---
 // 每一項的重點都是「不丟例外」而且「退回合法值」。

@@ -10,6 +10,9 @@ import { applySkills, learnSkill, skillOffers, type SkillState } from '../game/l
 import { useSave } from '../hooks/useSave';
 import { useBgm } from '../hooks/useBgm';
 import { useNoContextMenu } from '../hooks/useNoContextMenu';
+import { playSfx, useSfxVolume } from '../hooks/useSfx';
+import { BACKDROPS, type BackdropId } from '../game/laneRun';
+import type { AudioSettings } from '../components/Settings';
 import { booksForSurvival, TOTAL_STAGES, type SavedJob } from '../game/save';
 import {
   addItem, bookDropChance, collectionScales, decodeCollection, dropCountForRun,
@@ -59,6 +62,21 @@ function toLaneJob(saved: SavedJob | null): LaneJob {
   return saved === null ? null : { archetype: saved.archetype, branch: saved.branch, tier: saved.tier };
 }
 
+/**
+ * 抽一張生存模式的地圖。
+ *
+ * `avoid` 是目前這一張:重抽的時候**保證會換一張**。不排除的話,10 選 1 有十分之一
+ * 的機會抽回同一張,而玩家按下「重抽」看到一模一樣的名字,第一個念頭是「按鈕壞了」——
+ * 那是隨機性最不划算的一次現身。
+ *
+ * 用 Math.random 不用 seed:這一抽不進任何結算(底圖是純視覺,見 laneRun 的 BACKDROPS),
+ * 所以不必像閘門那樣可重播。
+ */
+function drawBackdrop(avoid: BackdropId | null): BackdropId {
+  const pool = avoid === null ? BACKDROPS : BACKDROPS.filter((b) => b !== avoid);
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
 export default function HomeScreen() {
   const { save, loaded, update } = useSave();
   const { stage, coins } = save;
@@ -67,7 +85,10 @@ export default function HomeScreen() {
 
   // 背景音樂掛在這一層,**不能掛進 LaneRunner**:那個元件每一關都換 key 重新掛載,
   // 音樂會每十波從頭播一次(生存模式尤其明顯)。
-  useBgm(loaded && !save.bgmOff);
+  useBgm(loaded && !save.bgmOff, save.bgmVolume);
+  // 音效音量同步到模組層。音效的觸發點散在各處(按鈕、通關、選技能),
+  // 一路把音量當 prop 傳下去只會讓每個元件多一個跟自己無關的欄位(見 hooks/useSfx.ts)。
+  useSfxVolume(save.sfxVolume);
 
   // 網頁版的右鍵選單與長按選單。跟音樂同一個理由掛在這一層:LaneRunner 每一關重新掛載,
   // 掛在裡面的話交棒的那 900ms 是沒有防護的(見 hooks/useNoContextMenu.ts)。
@@ -85,6 +106,27 @@ export default function HomeScreen() {
   const [promotionTier, setPromotionTier] = useState<JobTier | null>(null);
   const [offers, setOffers] = useState<SkillState[]>([]);
   const [lastResult, setLastResult] = useState<'cleared' | 'dead' | null>(null);
+  /**
+   * 生存模式這一輪抽到的地圖,以及開頭的抽地圖面板還開著沒。
+   *
+   * 兩個都放在 app 層,理由同一個:LaneRunner 每一關重新掛載,而這一輪的地圖與
+   * 「只在第一關顯示一次的面板」都必須跨過那個邊界(見 LaneRunner 的 backdropOverride)。
+   */
+  const [survivalBackdrop, setSurvivalBackdrop] = useState<BackdropId>(BACKDROPS[0]);
+  const [mapDrawOpen, setMapDrawOpen] = useState(false);
+
+  /**
+   * 音訊設定。主介面與跑圖中共用同一份,存進存檔。
+   *
+   * 包成一個物件而不是三個 prop:設定面板本來就是「一組偏好」,拆開傳的話每加一項
+   * 就要動主介面、跑圖、面板三個檔案的簽名,而那三個地方對這些值一個都不在乎。
+   */
+  const audio: AudioSettings = {
+    bgmOff: save.bgmOff,
+    bgmVolume: save.bgmVolume,
+    sfxVolume: save.sfxVolume,
+  };
+  const changeAudio = (patch: Partial<AudioSettings>) => update((prev) => ({ ...prev, ...patch }));
 
   /** 技能選完之後:該轉職就先轉職,不然直接回主介面並前進一關。 */
   function afterSkill(nextSkills: SkillState[]) {
@@ -244,16 +286,23 @@ export default function HomeScreen() {
           books={save.books}
           bestSurvival={save.bestSurvival}
           onStart={() => {
+            playSfx('click');
             setMode('normal');
             setRunKey((k) => k + 1);
             setScreen('run');
           }}
           justFound={justFound}
-          bgmOff={save.bgmOff}
-          onToggleBgm={() => update((prev) => ({ ...prev, bgmOff: !prev.bgmOff }))}
+          audio={audio}
+          onChangeAudio={changeAudio}
           onCodex={() => setScreen('codex')}
           onSurvival={() => {
             // 從目前進度的關卡開始:生存模式不是另一條難度曲線,是同一條的「不能失手」版本。
+            playSfx('click');
+            // 這一輪的地圖:**開跑前抽好,整輪不再變**。抽在這一層而不是 LaneRunner 裡,
+            // 因為生存模式一關接一關、LaneRunner 每一關都重新掛載——抽在裡面的話
+            // 每過一關地圖就換一次,而抽籤要給的是「這一輪的身分」不是「這一關的裝飾」。
+            setSurvivalBackdrop(drawBackdrop(null));
+            setMapDrawOpen(true);
             setMode('survival');
             setSurvivalFrom(stage);
             setSurvivalStage(stage);
@@ -278,8 +327,17 @@ export default function HomeScreen() {
         bookLevel={save.books}
         collection={collectionScales(decodeCollection(save.collected))}
         survivalWavesBefore={mode === 'survival' ? survivalWaves : null}
-        bgmOff={save.bgmOff}
-        onToggleBgm={() => update((prev) => ({ ...prev, bgmOff: !prev.bgmOff }))}
+        audio={audio}
+        onChangeAudio={changeAudio}
+        backdropOverride={mode === 'survival' ? survivalBackdrop : null}
+        mapDraw={
+          mode === 'survival' && mapDrawOpen
+            ? {
+                onRedraw: () => setSurvivalBackdrop((cur) => drawBackdrop(cur)),
+                onDone: () => setMapDrawOpen(false),
+              }
+            : null
+        }
         onFinish={onRunFinish}
       />
     </View>
