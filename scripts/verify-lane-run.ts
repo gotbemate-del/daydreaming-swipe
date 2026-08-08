@@ -93,10 +93,13 @@ check('關卡編號換算正確',
   [1, 10, 11, 27].map(stageLabel).join(' '));
 check('一個大關十個小關',
   chapterOfStage(10) === 1 && chapterOfStage(11) === 2 && levelOfStage(10) === LEVELS_PER_CHAPTER);
-check(`一般小關 ${WAVES_PER_LEVEL} 波、5 的倍數 ${LONG_LEVEL_WAVES} 波`,
-  [1, 2, 3, 4, 6, 7, 8, 9].every((l) => wavesForStage(l) === WAVES_PER_LEVEL)
+// 取樣刻意從 1-6 開始:**1-1 ~ 1-5 是教學關,波數自己帶**(5/6/8/10,見 game/laneTutorial.ts)。
+// 拿 1-1 來驗通則等於把教學區當成違規,而它是設計好的例外——教學關自己的結構
+// 由 verify-lane-tutorial.ts 負責盯。1-5 仍然照通則走 20 波,所以它留在下面那一組裡。
+check(`一般小關 ${WAVES_PER_LEVEL} 波、5 的倍數 ${LONG_LEVEL_WAVES} 波(教學關 1-1~1-4 除外)`,
+  [6, 7, 8, 9, 11, 12, 13, 14, 16].every((l) => wavesForStage(l) === WAVES_PER_LEVEL)
   && [5, 10, 15, 20].every((l) => wavesForStage(l) === LONG_LEVEL_WAVES),
-  [1, 5, 10, 11, 15].map((s) => `${stageLabel(s)}:${wavesForStage(s)}波`).join(' '));
+  [1, 5, 6, 10, 11, 15].map((s) => `${stageLabel(s)}:${wavesForStage(s)}波`).join(' '));
 check('每一小關都結束在一場戰鬥(最後一排是敵人)',
   [1, 5, 10, 11, 15, 27].every((st) => {
     const rr = createRun(7, st);
@@ -919,10 +922,13 @@ check('陷阱只會變重不會變輕(而且三種都不會消失)', (() => {
   const t = bandStages.map(trapHalveWeightForStage);
   return t.every((v, i) => i === 0 || v >= t[i - 1] - 1e-9) && t[t.length - 1] < 1;
 })());
-check('第 40 小關之前完全不動(前 4 個大關的難度只由跑速決定)',
-  gateWidthForStage(1) === gateWidthForStage(40)
-  && trapHalveWeightForStage(1) === trapHalveWeightForStage(40)
-  && heroWaveEveryForStage(1) === heroWaveEveryForStage(40));
+// 從 1-6 量起而不是 1-1:教學關把腰斬陷阱關掉了(1-5 才登場,見 game/laneTutorial.ts),
+// 那是**機制還沒登場**不是**旋鈕轉了一格**。用 1-1 當基準會把「教學關少一種陷阱」
+// 誤報成「難度分段提早開始」,兩件事完全不同——這一項要守的是後者。
+check('第 40 小關之前完全不動(教學關結束到第 4 大關,難度只由跑速決定)',
+  gateWidthForStage(6) === gateWidthForStage(40)
+  && trapHalveWeightForStage(6) === trapHalveWeightForStage(40)
+  && heroWaveEveryForStage(6) === heroWaveEveryForStage(40));
 // 一段只轉一顆:任何相鄰的兩關之間,最多只有一顆旋鈕在動。
 check('一段只轉一顆旋鈕(某一段變難了講得出是哪一顆造成的)', (() => {
   const moving = (a: number, b: number) => [

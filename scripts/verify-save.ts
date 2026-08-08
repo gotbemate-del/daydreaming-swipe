@@ -15,6 +15,7 @@ import {
   addItem, collectedCount, decodeCollection, emptyCollection, encodeCollection, hasItem,
   rollDrops, TOTAL_ITEMS,
 } from '../game/collection';
+import { claimableCount } from '../game/quests';
 
 let fail = 0;
 const check = (name: string, cond: boolean, extra = '') => {
@@ -38,6 +39,8 @@ const full: SaveData = {
   bgmVolume: 0.5,
   sfxVolume: 0.25,
   collected: encodeCollection((() => { const b = emptyCollection(); addItem(b, 0); addItem(b, 5000); return b; })()),
+  questsClaimed: ['clear-1-1', 'open-settings'],
+  questCounters: { goodGates: 47, settingsOpened: 2 },
 };
 const round = readSave(writeSave(full)).save;
 check('存進去再讀回來一模一樣', JSON.stringify(round) === JSON.stringify(full), JSON.stringify(round));
@@ -236,6 +239,78 @@ check('遷移的結果一定是現行版本',
 // 讀→寫→讀 要穩定下來:第二次讀不該再回報 migrated,不然每次開遊戲都會多寫一次硬碟。
 check('遷移過的存檔寫回去之後就穩定了(不會每次開遊戲都再遷移一次)',
   readSave(writeSave(readSave(v0).save)).migrated === false);
+
+// --- v4 → v5:任務系統 ---
+// 老玩家升上來的時候,已經達成的任務要亮著「可領獎」而不是被默默標成已領——
+// 達成與否是現算的(見 game/quests.ts),所以打到第 120 關的人本來就該拿到前面那些獎勵。
+const v4 = JSON.stringify({
+  version: 4, stage: 120, coins: 9, job: null, skills: [], books: 5, bestSurvival: 210, collected: '',
+});
+const fromV4 = readSave(v4);
+check('v4 → v5:任務欄位補空值,進度不動',
+  fromV4.save.stage === 120 && fromV4.save.questsClaimed.length === 0
+  && Object.keys(fromV4.save.questCounters).length === 0
+  && fromV4.save.version === SAVE_VERSION);
+check('v4 老玩家升上來之後,已經達成的任務是「可領獎」不是「已領」', (() => {
+  const ctx = {
+    stage: fromV4.save.stage, books: fromV4.save.books, bestSurvival: fromV4.save.bestSurvival,
+    collected: 0, promoted: false, counters: fromV4.save.questCounters,
+  };
+  return claimableCount(ctx, fromV4.save.questsClaimed) > 0;
+})());
+
+// v5 是**已經上線過**的版本(技能書上限開到 100 的那一版),所以硬碟上真的有 v5 存檔。
+// 它升到 v6 只該補任務欄位,**絕對不能再跑一次技能書換算**——那一步不可重入,
+// 跑兩次會把 5 級變成 100 級(rescale(rescale(5)) = rescale(37) = 100)。
+// 這一項就是在盯「一個版號只代表一件事」。
+{
+  const v5 = JSON.stringify({
+    version: 5, stage: 80, coins: 1, job: null, skills: [], books: 37, bestSurvival: 0, collected: '',
+  });
+  const got = readSave(v5).save;
+  check('v5 → v6:只補任務欄位,技能書等級原封不動(換算不會跑第二次)',
+    got.books === 37 && got.version === SAVE_VERSION
+    && got.questsClaimed.length === 0 && Object.keys(got.questCounters).length === 0,
+    `books ${got.books}(應為 37)`);
+  // 反過來:v4 的 5 級要被換算成 37 級,然後才進 v6。整條鏈只換算一次。
+  const v4books = readSave(JSON.stringify({
+    version: 4, stage: 80, coins: 1, job: null, skills: [], books: 5, bestSurvival: 0, collected: '',
+  })).save;
+  check('v4 → v6:技能書換算剛好跑一次(5 級 → 37 級,不是 100 級)',
+    v4books.books === 37 && v4books.version === SAVE_VERSION,
+    `books ${v4books.books}`);
+}
+
+// 任務欄位一樣是「來路不明的 JSON」:不認得的 id / key 要丟掉,但**不能丟掉整份**。
+check('不認得的任務 id 會被丟掉,認得的留著', (() => {
+  const raw = JSON.stringify({
+    ...full, questsClaimed: ['clear-1-1', 'no-such-quest', 'clear-1-1', 42, null],
+  });
+  const got = readSave(raw).save.questsClaimed;
+  return got.length === 1 && got[0] === 'clear-1-1';
+})());
+check('不認得的計數器 key 會被丟掉,壞掉的值當 0', (() => {
+  const raw = JSON.stringify({
+    ...full, questCounters: { goodGates: 12, bogusKey: 99, misses: -5, codexViewed: 'x', bossKills: 1.9 },
+  });
+  const got = readSave(raw).save.questCounters;
+  return got.goodGates === 12 && got.bossKills === 1
+    && got.misses === undefined && got.codexViewed === undefined
+    && (got as Record<string, unknown>).bogusKey === undefined;
+})());
+check('任務欄位是陣列/物件以外的東西 -> 退回空的,其他欄位不受影響', (() => {
+  const got = readSave(JSON.stringify({ ...full, questsClaimed: 'nope', questCounters: 7 })).save;
+  return got.questsClaimed.length === 0 && Object.keys(got.questCounters).length === 0
+    && got.stage === full.stage && got.coins === full.coins;
+})());
+check('newSave 的任務欄位不會共用同一份(改一份不會污染另一份)', (() => {
+  const a = newSave();
+  a.questsClaimed.push('clear-1-1');
+  a.questCounters.goodGates = 5;
+  const b = newSave();
+  return b.questsClaimed.length === 0 && b.questCounters.goodGates === undefined
+    && DEFAULT_SAVE.questsClaimed.length === 0;
+})());
 
 console.log(fail === 0 ? '\n全部通過' : `\n${fail} 項失敗`);
 process.exit(fail === 0 ? 0 : 1);
