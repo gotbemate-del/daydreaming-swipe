@@ -33,12 +33,15 @@
 // 反向再 import 就是循環相依——實測會炸在「Cannot access 'GEAR_STEP' before initialization」,
 // 而且是在模組載入時才炸,型別檢查完全看不出來。
 export type RunSkillId =
-  // 基礎被動:唯一兩款會加戰力的,也就是唯一兩款會被敵人曲線追平的(它們是「跟上」不是「變強」)
-  | 'edge' | 'swarm'
-  // 六元素:**全部只在你失誤的時候才生效**,所以完美玩家一個都用不到,
-  // 也因此全部不進理想路線——敵人不會為了它們變強,幅度可以放心給(見下方 ELEMENTS)
-  | 'fire' | 'metal' | 'thunder' | 'ice' | 'wood' | 'earth'
-  ;
+  // 只剩六元素。**全部只在你失誤的時候才生效**,所以完美玩家一個都用不到,
+  // 也因此全部不進理想路線——敵人不會為了它們變強,幅度可以放心給(見下方 ELEMENTS)。
+  //
+  // 鋒刃(每人攻擊力 +N%)與增殖(數量 +N%)已依指示移除,連同更早移除的四款主動。
+  // **那兩款是唯二進理想路線的**,所以拿掉之後場內技能對理想路線的貢獻是 0 ——
+  // createRun 照樣拿理想路線推敵人戰力,只是那條路線上不再有技能的份,
+  // 敵人跟著降下來,「選對就一定過」的結構保證不受影響(verify 有一項在盯)。
+  // 代價是一場的戰力膨脹只剩閘門那一份,見 MAX_RUN_SKILL_SLOTS 上面的說明。
+  'fire' | 'metal' | 'thunder' | 'ice' | 'wood' | 'earth';
 
 /**
  * 六元素。每一款的**規則**都不一樣(不是同一個東西換名字),而且互相剋制(見 ELEMENT_COUNTERS)。
@@ -204,13 +207,17 @@ export function bookPowerScale(id: RunSkillId, bookLevel = 0, collection: Collec
  * 一場最多帶幾個技能。
  *
  * **格數必須少於技能總數**,不然「要不要拿新的」根本不是決策——反正全部都帶得下。
- * 主動技能移除之後只剩 8 款(鋒刃/增殖 + 六元素),所以格數從 10 降到 6:
- * 帶得下 6 款、有 8 款可挑,每一次「拿新的」都是在放棄另一款。
+ * 鋒刃/增殖 移除之後只剩六元素,所以格數再從 6 降到 4:帶得下 4 款、有 6 款可挑,
+ * 每一次「拿新的」都還是在放棄另一款。**留 6 格的話 6 款全部帶得下,取捨當場消失**
+ *(這正是主動移除時把 10 降到 6 的同一個理由,少算一次就會重犯)。
  *
- * 核心決策因此仍然是**廣度 vs 深度**:每次都拿新的 = 6 個各 1 級,
- * 拿升級 = 例如 3 個各 2 級。一般小關 10 次選擇、長關 20 次,兩種走法都走得完。
+ * 核心決策因此仍然是**廣度 vs 深度**:每次都拿新的 = 4 個各 1 級,
+ * 拿升級 = 例如 2 個各 2 級。一般小關 10 次選擇、長關 20 次,兩種走法都走得完。
+ *
+ * 而且元素之間有相剋(見 ELEMENT_COUNTERS),關卡前又公開整關的屬性順序——
+ * 4 格逼玩家真的照那串順序去押注,6 格則是全帶了就不必看。
  */
-export const MAX_RUN_SKILL_SLOTS = 6;
+export const MAX_RUN_SKILL_SLOTS = 4;
 /** 一次給幾個選項。 */
 export const RUN_SKILL_OFFERS = 3;
 
@@ -222,9 +229,7 @@ export const RUN_SKILL_OFFERS = 3;
  */
 const PER_LEVEL = {
   /** 鋒刃:每人攻擊力 */
-  edgeAttack: 0.18,
   /** 增殖:隊伍人數的幾成 */
-  swarmHeroes: 0.25,
   // ---- 六元素(每一款的規則都不一樣,不是同一個東西換名字)----
   // 火沒有 fireKills 了:它現在**純粹是持續傷害**,不直接保證帶走幾隻(見 burnSpreadTargets)。
   /** 金・擴散:每一波額外清掉整波的幾成(後期、大波才有感) */
@@ -377,8 +382,6 @@ export function earthSlowRatio(level: number): number {
 }
 
 export const RUN_SKILLS: RunSkillSpec[] = [
-  { id: 'edge', name: '鋒刃', describe: (l) => `每人攻擊力 +${Math.round(PER_LEVEL.edgeAttack * l * 100)}%` },
-  { id: 'swarm', name: '增殖', describe: (l) => `數量 +${Math.round(PER_LEVEL.swarmHeroes * l * 100)}%` },
   // 六元素。說明一律寫「什麼時候有用」,不是只寫數字——玩家要在 2 秒內判斷該不該拿。
   {
     id: 'fire',
@@ -620,8 +623,6 @@ export function runSkillEffects(
   const actives: ActiveTrigger[] = [];
   for (const s of skills) {
     const level = Math.min(MAX_RUN_SKILL_LEVEL, Math.max(0, s.level));
-    if (s.id === 'edge') attack += PER_LEVEL.edgeAttack * level;
-    if (s.id === 'swarm') heroes += PER_LEVEL.swarmHeroes * level;
     // 八元素:每一款的規則都不一樣,而且全部只在「失誤了」才生效。
     // mx 是這一個元素對上這一波屬性的倍率(剋中放大、被剋削弱),逐元素各算各的。
     // 相剋(逐元素)乘上技能書的放大。兩者都只碰元素/主動,所以都不進理想路線。
@@ -698,12 +699,16 @@ export function applyRunSkillPick(
   };
 }
 
-/** 場內技能全部點滿時的總戰力倍率。給驗證腳本盯上限用。 */
+/**
+ * 場內技能全部點滿時的總戰力倍率。給驗證腳本盯上限用。
+ *
+ * 鋒刃/增殖 移除之後**這個值恆等於 1**:剩下的六元素一款都不加戰力。
+ * 函式留著不是為了好看——驗證要能證明「場內技能一點戰力都沒加」,
+ * 而那正是「敵人曲線不會為了技能變強」的前提。哪天又有人加了會加戰力的技能,
+ * 這個值會自己跳起來,verify 就會紅。
+ */
 export function maxRunSkillAttackMultiplier(): number {
-  const maxed: RunSkillState[] = [
-    { id: 'edge', level: MAX_RUN_SKILL_LEVEL },
-    { id: 'swarm', level: MAX_RUN_SKILL_LEVEL },
-  ];
+  const maxed: RunSkillState[] = RUN_SKILLS.map((spec) => ({ id: spec.id, level: MAX_RUN_SKILL_LEVEL }));
   const e = runSkillEffects(maxed);
   return e.attackMultiplier * e.heroMultiplier;
 }

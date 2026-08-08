@@ -11,6 +11,7 @@ import {
   totalAttack, ENEMY_POWER_RATIO, type RunStart,
 } from '../game/laneRun';
 import {
+  maxRunSkillAttackMultiplier,
   bookPowerScale, MAX_SKILL_BOOK_LEVEL, MAX_RUN_SKILL_LEVEL,
   ACTIVE_SKILL_IDS, bestRunSkillChoice, learnRunSkill, runSkillOffersAt,
   runSkillEffects, ELEMENTS, type RunSkillState,
@@ -140,12 +141,11 @@ check('全開之後每排都挑最好的仍然一定過關', rate(25, fullyLoade
 // --- 技能書(生存模式掉的第三層養成)---
 //
 // **它只准動貪心挑不到的東西。** 敵人戰力照「最佳路線」算,而最佳路線是照
-// attackMultiplier x heroMultiplier 貪心挑——只有鋒刃/增殖 會動這兩個值。
-// 所以技能書開的是元素/主動的等級上限,以及「保證選項裡有元素/主動」;
-// 兩條貪心都用不到,理想路線因此一格都不會動。
-check('技能書碰不到鋒刃/增殖(唯二會被理想路線挑到的兩款)',
-  bookPowerScale('edge', MAX_SKILL_BOOK_LEVEL) === 1
-  && bookPowerScale('swarm', MAX_SKILL_BOOK_LEVEL) === 1);
+// attackMultiplier x heroMultiplier 貪心挑。鋒刃/增殖 移除之後**沒有任何技能會動這兩個值**,
+// 所以技能書現在天生就碰不到理想路線——但這一項還是要留:它證明的是
+// 「技能書放大的東西全部在理想路線之外」,而不是「剛好目前沒有東西在裡面」。
+check('技能書放大的東西全部不進理想路線(全點滿的戰力倍率仍然是 1)',
+  maxRunSkillAttackMultiplier() === 1);
 // 主動技能已全部移除,所以技能書現在只放大元素。
 check('技能書會放大元素',
   ELEMENTS.every((id) => bookPowerScale(id, MAX_SKILL_BOOK_LEVEL) > 1));

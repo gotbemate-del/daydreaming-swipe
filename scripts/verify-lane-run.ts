@@ -26,10 +26,10 @@ import {
   simulateRun, type LanePicker,
 } from './simRun';
 import {
-  runSkillPicksForWave, totalRunSkillPicks, MAX_RUN_SKILL_LEVEL, RUN_SKILLS,
+  runSkillPicksForWave, totalRunSkillPicks, MAX_RUN_SKILL_LEVEL, RUN_SKILLS, maxRunSkillAttackMultiplier,
   MAX_RUN_SKILL_SLOTS, runSkillEffects, skillCooldownSeconds, bestRunSkillChoice, runSkillOffersAt,
   ACTIVE_SKILL_IDS, ELEMENTS, runSkillSpec, ELEMENT_COUNTERS, COUNTER_BONUS, COUNTERED_PENALTY,
-  elementMatchup, elementForRow,
+  elementMatchup, elementForRow, learnRunSkill, type RunSkillId, type RunSkillState,
   burnSpreadTargets, metalSpreadTargets,
 } from '../game/laneRunSkills';
 
@@ -511,10 +511,36 @@ const waveSpread = Math.max(...waveSeconds) / Math.min(...waveSeconds);
 check('一波的秒數在 3000 關之間幾乎不變(這是「冷卻可以綁秒」的前提)',
   waveSpread < 1.6,
   `${Math.min(...waveSeconds).toFixed(1)}~${Math.max(...waveSeconds).toFixed(1)} 秒(差 ${waveSpread.toFixed(2)} 倍)`);
-// 這條是元素不會把敵人養大的保證:貪心只看戰力,所以理想路線永遠不會挑元素,
-// 敵人也就不會為了一個「理想玩家用不到的東西」變強(跟兌換率同一個道理)。
-check('理想路線永遠不會挑元素(所以元素不進敵人曲線)',
-  bestRunSkillChoice([], [{ id: 'fire', level: 1 }, { id: 'edge', level: 1 }]).id === 'edge');
+// 這條是元素不會把敵人養大的保證。鋒刃/增殖 移除之後**沒有任何技能會加戰力**,
+// 所以現在證明的方式從「貪心會挑走鋒刃」變成更直接的一句:
+// 六款全部點滿,總戰力倍率仍然是 1 —— 理想路線上技能的份是 0,敵人一格都不會為它們長。
+// 一場能選幾次,不能超過「4 格 x 5 級」的容量——超過的話最後幾次會**開不出選項**,
+// 玩家看到的是一個空面板(而跑圖是暫停的,他會卡在那裡)。
+// 格數從 6 降到 4 之後容量剛好等於長關的選擇次數,一格餘裕都沒有:
+// 以後只要有人動 MAX_RUN_SKILL_SLOTS、MAX_RUN_SKILL_LEVEL 或波數,這一項會先紅。
+{
+  const capacity = MAX_RUN_SKILL_SLOTS * MAX_RUN_SKILL_LEVEL;
+  const longest = Math.max(...[1, 5, 10, 3000].map((st) => totalRunSkillPicks(wavesForStage(st))));
+  check('一場的選擇次數不超過技能容量(不然最後幾次會開出空面板)',
+    longest <= capacity, `最長 ${longest} 次 vs 容量 ${capacity}(${MAX_RUN_SKILL_SLOTS} 格 x ${MAX_RUN_SKILL_LEVEL} 級)`);
+  // 真的把最長的一場走完,證明每一次都開得出東西——上面那個算式對了不代表實作對了。
+  let carried: RunSkillState[] = [];
+  let dry = -1;
+  for (let i = 0; i < longest; i++) {
+    const offers = runSkillOffersAt(carried, 12345, i, 0);
+    if (offers.length === 0) { dry = i; break; }
+    carried = learnRunSkill(carried, bestRunSkillChoice(carried, offers));
+  }
+  check('把最長的一場走完,每一次都開得出選項', dry === -1,
+    dry === -1 ? `走完 ${longest} 次,最後帶著 ${carried.length} 格` : `第 ${dry + 1} 次開不出來`);
+}
+
+check('場內技能一點戰力都沒加(所以技能完全不進敵人曲線)',
+  maxRunSkillAttackMultiplier() === 1, `全點滿 x${maxRunSkillAttackMultiplier()}`);
+// 貪心在「怎麼挑都一樣」的情況下仍然要回得出一個合法選項,不能回 undefined ——
+// createRun 每一波都會叫它一次,回不出東西的話理想路線整條斷掉。
+check('沒有戰力可比的時候貪心仍然挑得出東西',
+  ELEMENTS.includes(bestRunSkillChoice([], ELEMENTS.map((id) => ({ id, level: 1 }))).id));
 check('額外擊殺不會超過整波隻數',
   resolveEnemy({ ...initialRunState(1), heroes: 50, perHero: 1 },
     { power: 1e9, reward: 0, species: [{ id: 'blob-1', name: '史' }], name: '史', units: 4 }, { kills: 99 })
@@ -555,7 +581,7 @@ check('火/雷/冰各有一組「命中當下」的演出參數',
   `火燒到 ${fireFx.burnSpread} 隻 / 雷每 ${thunderFx.chainEvery} 下電 ${thunderFx.chainTargets} 隻 / 冰 ${Math.round(iceFx.freezeChance * 100)}% 凍住`);
 check('沒帶那個元素就沒有演出參數(不會憑空多一層特效)',
   (() => {
-    const none = runSkillEffects([{ id: 'edge', level: 5 }]);
+    const none = runSkillEffects([{ id: 'wood', level: 5 }]);
     return none.burnSpread === 0 && none.chainEvery === 0 && none.chainTargets === 0 && none.freezeChance === 0;
   })());
 // 這一項是回歸防線:演出改版**完全沒有動**決定難度的那三個數字。
@@ -626,8 +652,10 @@ check('相剋倍率:剋中 x2.5、被剋 x2/3、無關 x1',
   && elementMatchup('metal', 'thunder') === 1 - COUNTERED_PENALTY
   && elementMatchup('metal', 'ice') === 1
   && elementMatchup('metal', undefined) === 1);
-check('非元素技能不吃相剋(鋒刃/增殖/主動技能)',
-  (['edge', 'swarm', ...ACTIVE_SKILL_IDS] as const).every((id) => ELEMENTS.every((e) => elementMatchup(id, e) === 1)));
+// 非元素技能已全部移除(鋒刃/增殖/四款主動),清單空了這一項就自動成立——
+// 留著是為了哪天又加了非元素技能時,它會提醒「相剋只能套在元素上」。
+check('非元素技能不吃相剋',
+  (ACTIVE_SKILL_IDS as readonly RunSkillId[]).every((id) => ELEMENTS.every((e) => elementMatchup(id, e) === 1)));
 // 一組技能裡,只有對得上的那一個被動到——這是「逐元素」跟舊版純量最關鍵的差別。
 // 對照組必須跟這一波的屬性**完全不相干**,不然它會被順帶剋到,就分不出隔離性有沒有成立。
 // 環是 金→木→土→冰→火→雷→金,所以對「金」與「火」兩波都中立的是土。

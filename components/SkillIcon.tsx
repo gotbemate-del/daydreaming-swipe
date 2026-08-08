@@ -29,21 +29,6 @@ import type { RunSkillId } from '../game/laneRunSkills';
 
 /** 每一款的字形。viewBox 統一 24x24,靠 currentColor 上色。 */
 const GLYPHS: Record<string, (color: string) => React.ReactNode> = {
-  // 鋒刃:一把往右上斜的刀鋒。尖端朝外 = 攻擊力。
-  edge: (c) => (
-    <G>
-      <Path d="M4 20 L15 4 L18 7 L7 21 Z" fill={c} />
-      <Path d="M3 21 L6 18 L8 20 L5 22 Z" fill={c} opacity={0.6} />
-    </G>
-  ),
-  // 增殖:一顆分裂成三顆。中間大、兩側小 = 數量變多。
-  swarm: (c) => (
-    <G fill={c}>
-      <Circle cx={12} cy={9} r={5} />
-      <Circle cx={5.5} cy={17} r={3.5} opacity={0.75} />
-      <Circle cx={18.5} cy={17} r={3.5} opacity={0.75} />
-    </G>
-  ),
   // 火:一團往上竄的火焰。
   fire: (c) => (
     <G fill={c}>
