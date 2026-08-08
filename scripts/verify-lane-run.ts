@@ -538,12 +538,20 @@ check('二三階吃相剋,而且跟它的一階同一個倍率',
     const el = elementOf(id);
     return ELEMENTS.every((w) => elementMatchup(id, w) === elementMatchup(el, w));
   }));
-// 「依既有特性往上長」:二階要先有一階、三階要先有二階。
-// 沒有這條的話第一次選擇就可能開出三階,而三階的量級是為「已經投資過這個元素」設計的。
-check('沒有前一階就開不出下一階',
-  runSkillOffersAt([], 4242, 0, 5).every((o) => skillTier(o.id) === 1)
-  && runSkillOffersAt([{ id: 'fire', level: 1 }], 4242, 0, 5)
-    .every((o) => previousTier(o.id) === null || o.id === 'fire2' || o.id === 'fire'));
+// **三階不設前置,第一次選擇就開得出來**(依指示提前)。
+// 這一項從「擋住」翻成「不准擋」:哪天有人把階級前置加回去,它會先紅。
+{
+  const seen = new Set<number>();
+  for (let i = 0; i < 400; i++) {
+    for (const o of runSkillOffersAt([], i, 0, 5)) seen.add(skillTier(o.id));
+  }
+  check('一開場就開得出三階(沒有階級前置)',
+    seen.has(1) && seen.has(2) && seen.has(3), `開過的階級:${[...seen].sort().join('/')}`);
+}
+// 三階直接拿得到,但**集齊加成仍然要湊滿三階**——那才是專精的獎勵。
+check('直接拿三階不會自動拿到集齊加成',
+  !hasElementSet([{ id: 'fire3', level: 5 }], 'fire')
+  && hasElementSet([{ id: 'fire', level: 1 }, { id: 'fire2', level: 1 }, { id: 'fire3', level: 1 }], 'fire'));
 // **這一項推翻了原本的「冷卻要綁波不綁秒」。** 舊結構是「一波 = 一排」,
 // 一排的時間 = 排距 / 跑速,而跑速從 45 爬到 111 —— 綁秒等於後期技能自己變弱。
 // 關卡結構改成「戰鬥段是時間」之後,一波的長度反而幾乎是常數,綁秒才是穩的那一邊。

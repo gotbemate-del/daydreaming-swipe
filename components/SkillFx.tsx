@@ -125,23 +125,34 @@ function render(
     const bolts = tier === 2 ? 1 : 5;
     // 每 80ms 換一次形狀,看起來才像持續在打而不是一張靜止的圖。
     const flick = Math.floor(t * 8);
+    // **折線幅度要夠大,不然它讀起來是雨不是雷。** 第一版是 ±10px 拉在 800px 的高度上,
+    // 畫出來是五條近乎筆直的長線——實機截圖一看就知道不對。
+    // 現在是 ±34px、七段,而且只打在跑道**上半段**(閃電是從天上劈下來,
+    // 拉到腳邊就變成柵欄,還會蓋住閘門)。
+    const SWAY = 34;
+    const SEGMENTS = 7;
     return (
       <G opacity={a}>
         {Array.from({ length: bolts }, (_, i) => {
           const x = bolts === 1 ? heroX : ((i + 0.5) / bolts) * w;
-          const top = headY - h * 0.75;
-          const seed = i * 3 + flick;
-          const jag = (k: number) => x + (((seed * (k + 7) * 37) % 21) - 10);
-          const y = (k: number) => top + ((headY - top) * k) / 4;
+          const top = headY - h * 0.72;
+          const bottom = headY - h * 0.12;
+          const seed = i * 7 + flick * 13 + 1;
+          // 逐段左右擺:用 k 的奇偶決定方向,幅度再乘一個雜湊,才不會五條長得一樣。
+          const jag = (k: number) => {
+            if (k === 0 || k === SEGMENTS) return x;
+            const swing = ((seed * (k + 3) * 2654435761) >>> 8) % SWAY;
+            return x + (k % 2 === 0 ? swing : -swing);
+          };
+          const y = (k: number) => top + ((bottom - top) * k) / SEGMENTS;
+          const d = Array.from({ length: SEGMENTS + 1 }, (_, k) =>
+            `${k === 0 ? 'M' : 'L'}${jag(k)} ${y(k)}`).join(' ');
           return (
-            <Path
-              key={i}
-              d={`M${x} ${top} L${jag(1)} ${y(1)} L${jag(2)} ${y(2)} L${jag(3)} ${y(3)} L${x} ${headY}`}
-              stroke={color}
-              strokeWidth={i === 0 || bolts === 1 ? 4 : 3}
-              fill="none"
-              strokeLinecap="round"
-            />
+            <G key={i}>
+              {/* 外圈粗一點、淡一點當光暈,內圈細而實 —— 兩層才有「亮」的感覺 */}
+              <Path d={d} stroke={color} strokeWidth={7} fill="none" strokeLinecap="round" opacity={0.35} />
+              <Path d={d} stroke={color} strokeWidth={3} fill="none" strokeLinecap="round" />
+            </G>
           );
         })}
       </G>

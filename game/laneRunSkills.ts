@@ -714,24 +714,27 @@ export function runSkillOffers(
 ): RunSkillState[] {
   // 帶滿 10 格之後只能升級手上的——不然「廣度 vs 深度」那個決策不存在(永遠可以再拿新的)。
   const full = skills.length >= MAX_RUN_SKILL_SLOTS;
-  // 轉職給的是「**同時帶得動幾款主動**」,不是「解鎖清單的前 N 款」。
+  // **主動技能沒有另外的持有上限——唯一的上限就是 10 格。**
   //
-  // 舊版是 `ACTIVE_SKILL_IDS.slice(0, activeCount)`,那在只有四款主動時還行;
-  // 現在主動是六元素各兩款,切前 N 個等於**只解鎖火跟金**——
-  // 「沒有萬用元素也沒有廢元素」當場失效,而那是六元素設計的地基。
-  // 改成算持有數之後,轉職的獎勵仍然是實的(能同時掛幾款主動),而且對六元素完全中性。
-  const activeCap = Math.max(1, Math.min(MAX_RUN_SKILL_SLOTS, activeCount));
-  const activesHeld = skills.filter((s) => isActiveSkill(s.id)).length;
+  // 這裡曾經拿轉職的「主動額度」(activeSkillCountForStage,學生 1 款)去限制
+  // 「同時帶得動幾款主動」,結果是**三階在第 50 關之前根本開不出來**:
+  // 未轉職的額度是 1,拿了「火・爆炎」之後「火・煉獄」就被擋在選項池外,
+  // 只剩下升級手上那一款。實機跑三場都卡在同一個地方,而畫面上完全看不出原因
+  // ——選項照樣是三個,只是那三個永遠不會是三階。
+  //
+  // 額度那條規則本來是為「只有四款主動」的舊設計寫的;現在主動是六元素各兩款、
+  // 而技能的取捨已經由「10 格 vs 18 款」與「要先有前一階」兩條在管,再多一條就變成
+  // 一道看不見的牆。轉職的獎勵仍然是實的(runStartFor 給起跑數值),不必靠擋技能。
+  // **三階不設任何前置,第一次選擇就開得出來。** 依指示提前。
+  //
+  // 原本有一條「二階要先有一階、三階要先有二階」,理由是三階的量級是為
+  // 「已經投資過這個元素」設計的。拿掉之後三階變成從第一波就可能出現的選項。
+  //
+  // 難度不受影響,理由跟二三階本身一樣:傷害只幫**漏了幾隻的人**,理想玩家每一波全清,
+  // 多給他清怪的能力等於 0(`extraKills` 還會被夾在整波隻數上)。所以它抬的是地板。
+  // 取捨仍然在:10 格 vs 18 款,而且集齊同元素三階才有 ELEMENT_SET_BONUS——
+  // 直接拿三階等於放棄那一族的集齊加成,除非後面再把一二階補回來。
   const pool = RUN_SKILLS
-    // 已經帶滿主動額度的話,只能升級手上那幾款,不能再拿新的主動。
-    .filter((spec) => !isActiveSkill(spec.id) || activesHeld < activeCap
-      || skills.some((s) => s.id === spec.id))
-    // **要先有前一階**:二階要先有一階、三階要先有二階。這就是「依既有特性往上長」——
-    // 沒有這條的話第一次選擇就可能開出三階,而三階的量級是為「已經投資過這個元素」設計的。
-    .filter((spec) => {
-      const prev = previousTier(spec.id);
-      return prev === null || runSkillLevel(skills, prev) > 0;
-    })
     .filter((spec) => !full || skills.some((s) => s.id === spec.id))
     .map((spec) => ({ id: spec.id, level: runSkillLevel(skills, spec.id) + 1 }))
     .filter((o) => o.level <= MAX_RUN_SKILL_LEVEL);
