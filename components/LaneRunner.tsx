@@ -34,7 +34,7 @@ import {
   type CollectionScales, type RunSkillId,
 } from '../game/laneRunSkills';
 import {
-  HIT_NUMBER_MS, ELEMENT_FX_MS, useLaneRun,
+  HIT_NUMBER_MS, ELEMENT_FX_MS, FEEDBACK_MS, useLaneRun,
   type CarriedSkill, type ElementEvent, type HitNumber, type Projectile, type WaveView,
 } from '../hooks/useLaneRun';
 import { PixelFrame } from './PixelFrame';
@@ -69,6 +69,8 @@ const HERO_BODY_HEIGHT = 44;
  * 人多的時候投擲間隔只有 90ms,那樣就永遠回不到待機。
  */
 const HERO_SPIKE_MS = 130;
+/** 金・擴散命中那一下的方塊閃光大小。 */
+const SPREAD_SIZE = 14;
 /** 技能列那一排圓的直徑。34 是「環看得出走到哪」與「一排塞得下 6 顆」的交界。 */
 const SKILL_ICON_SIZE = 34;
 // 只給 headY 當基準用(見下方 form 那段的說明):版面錨點固定用基本型,合體不會讓它位移。
@@ -676,6 +678,43 @@ export function LaneRunner({
           />
         );
       }
+      // 金・擴散:命中當下往旁邊甩出去的碎刃。畫成一條短的金色斜線 + 目標身上閃一下,
+      // 跟雷的連鎖(長線、會轉折)刻意分開——兩款都是「跳到旁邊」,不畫得不一樣就分不出誰在作用。
+      if (e.kind === 'spread') {
+        const from = e.from !== undefined ? posOf(e.from) : null;
+        const r = SPREAD_SIZE * (1 - age);
+        return (
+          <View key={`fx-${e.id}`} pointerEvents="none">
+            {from && (() => {
+              const dx = to.x - from.x;
+              const dy = to.y - from.y;
+              const len = Math.max(2, Math.hypot(dx, dy));
+              const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
+              return (
+                <View
+                  style={[
+                    styles.spreadShard,
+                    {
+                      left: (from.x + to.x) / 2 - len / 2,
+                      top: (from.y + to.y) / 2 - 1,
+                      width: len,
+                      opacity: 0.9 * (1 - age),
+                      transform: [{ rotate: `${angle}deg` }],
+                    },
+                  ]}
+                />
+              );
+            })()}
+            <View
+              style={[
+                styles.spreadBurst,
+                { left: to.x - r / 2, top: to.y - r / 2, width: r, height: r, opacity: 1 - age,
+                  transform: [{ rotate: '45deg' }] },
+              ]}
+            />
+          </View>
+        );
+      }
       if (e.kind === 'burn') {
         const r = BURN_SIZE * (1 - age * 0.5);
         return (
@@ -975,7 +1014,7 @@ export function LaneRunner({
 
         {/* 結算回饋:直接浮在判定線上、勇者正上方。放在跑道外面的話,玩家要在「框消失」與
             「畫面下方跳出一行字」之間自己連連看;放在事發地點就不用連。 */}
-        {feedback && feedback.message !== '' && ready && (
+        {feedback && feedback.message !== '' && ready && Date.now() - feedback.at < FEEDBACK_MS && (
           <Text
             key={feedback.key}
             pointerEvents="none"
@@ -1373,6 +1412,9 @@ const styles = StyleSheet.create({
   /** 燃燒:目標身上一團橘光,由大縮小。 */
   burnGlow: { position: 'absolute', backgroundColor: '#c8674a', zIndex: 12 },
   /** 連鎖:兩隻怪之間的一條線。長度與角度由兩點算出來(見 renderElementFx)。 */
+  /** 金・擴散:甩過去的碎刃(細短線)與命中那一下的方塊閃光。 */
+  spreadShard: { position: 'absolute', height: 2, backgroundColor: '#c9c4b0', borderRadius: 1, zIndex: 12 },
+  spreadBurst: { position: 'absolute', backgroundColor: '#c9c4b0', zIndex: 12 },
   chainBolt: { position: 'absolute', height: 2, backgroundColor: '#f2e6a0', borderRadius: 1, zIndex: 12 },
   /** 凍結:炸開的那一圈。 */
   frostBurst: { position: 'absolute', borderWidth: 2, borderColor: FROST_COLOR, zIndex: 12 },

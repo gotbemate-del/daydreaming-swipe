@@ -70,6 +70,14 @@ const ENEMY_SHOT_SPEED = 260;
 
 export interface RunFeedback {
   key: number;
+  /**
+   * 出現的時間。畫面拿它在 FEEDBACK_MS 之後把字收掉。
+   *
+   * **不能讓它留到下一則出現為止。** 一場三分鐘裡結算之間常常隔好幾秒,
+   * 而「數量 -1」「沒碰到」那幾行是**事件**不是狀態——留在畫面上會被讀成
+   * 「我現在的狀況是沒碰到」,而且下一排逼近時它還壓在跑道上跟閘門搶注意力。
+   */
+  at: number;
   message: string;
   /** 人數變化。負的就是被撞掉了——這一版沒有血量。 */
   heroDelta: number;
@@ -92,6 +100,9 @@ export interface HitNumber {
 
 /** 數字浮多久。太長會整片數字疊在一起看不清楚,太短看不到。 */
 export const HIT_NUMBER_MS = 620;
+
+/** 結算回饋(「數量 -1」「沒碰到」)留在畫面上多久。到時間就收掉,不等下一則。 */
+export const FEEDBACK_MS = 2000;
 
 /** 飛行中的武器。位置跟排、跟小怪同一個座標系(絕對距離),畫面才不用換算兩套。 */
 export interface Projectile {
@@ -137,7 +148,7 @@ export interface EnemyShot {
  */
 export interface ElementEvent {
   id: number;
-  kind: 'burn' | 'chain' | 'freeze';
+  kind: 'burn' | 'chain' | 'freeze' | 'spread';
   /** 效果落在哪一隻(waveMonsters 的索引) */
   target: number;
   /** 連鎖:電從哪一隻跳過來 */
@@ -146,7 +157,11 @@ export interface ElementEvent {
 }
 
 /** 元素演出畫多久。連鎖是一條線(短),燃燒與凍結是身上的光(長一點才看得到)。 */
-export const ELEMENT_FX_MS: Record<ElementEvent['kind'], number> = { burn: 420, chain: 220, freeze: FREEZE_MS };
+export const ELEMENT_FX_MS: Record<ElementEvent['kind'], number> = {
+  burn: 420, chain: 220, freeze: FREEZE_MS,
+  // 擴散是「一瞬間的碎刃」,比連鎖再短一點——它每一下命中都會發生,拖長會變成一片閃爍。
+  spread: 180,
+};
 
 /** 技能列上的一格。被動沒有冷卻(cooldown = 0),只顯示名字與等級。 */
 export interface CarriedSkill {
@@ -342,6 +357,21 @@ export function useLaneRun(
   const [state, setState] = useState<RunState>(() => initialRunState(stage, start));
   const [distance, setDistance] = useState(0);
   const [feedback, setFeedback] = useState<RunFeedback | null>(null);
+
+  /**
+   * 結算回饋到時間就自己收掉。
+   *
+   * **不能只靠畫面層算「過了幾毫秒」**:那個判斷只在重畫的時候才會跑,而跑圖一停
+   *(陣亡、通關、打開設定面板)tick 就停了——最後那一則「數量 -1」會凍在畫面上,
+   * 疊在結果卡底下。那正是這次要修掉的症狀的另一半。
+   */
+  useEffect(() => {
+    if (feedback === null) return;
+    const left = FEEDBACK_MS - (Date.now() - feedback.at);
+    if (left <= 0) { setFeedback(null); return; }
+    const id = setTimeout(() => setFeedback((cur) => (cur && cur.key === feedback.key ? null : cur)), left);
+    return () => clearTimeout(id);
+  }, [feedback]);
   const [wave, setWave] = useState<WaveView | null>(null);
   const [projectiles, setProjectiles] = useState<Projectile[]>([]);
   const [enemyShots, setEnemyShots] = useState<EnemyShot[]>([]);
@@ -608,6 +638,25 @@ export function useLaneRun(
         spread += 1;
       }
     }
+    // 金・擴散:命中當下往旁邊幾隻各補半下(metalSpreadDamage)。
+    //
+    // **這一段先前整個漏掉了。** 效果算得出來(runSkillEffects 有 metalSpread /
+    // metalSpreadDamage),但 hook 從來沒讀過它——所以金・擴散在遊戲裡既沒有擴散傷害
+    // 也沒有任何畫面,只有結算時那一份 pierceRatio 在動。症狀是「這一款好像沒作用」,
+    // 而且因為結算數字仍然會變,查起來完全不像是漏了一段。
+    //
+    // 跟火的差別是**瞬間 vs 持續**:金當下就補傷害,火是點燃之後慢慢啃。
+    // 跟雷一樣只在第一層觸發:連鎖電到的每一隻再各自擴散一次的話,
+    // 一下命中可以補出十幾下——火的燃燒就是為此改成持續傷害的(CLAUDE.md 記過)。
+    if (depth === 0 && fx.metalSpread > 0) {
+      let spread = 0;
+      for (let j = i + 1; j < current.monsters.length && spread < fx.metalSpread; j++) {
+        if (current.hitsOn[j] >= current.hitsPerUnit) continue;
+        current.hitsOn[j] += fx.metalSpreadDamage;
+        pushElementEvent('spread', j, now, i);
+        spread += 1;
+      }
+    }
     // 雷・連鎖:每 N 下一次。**只有第一層會觸發**——連鎖電到的目標再觸發連鎖的話,
     // 一下命中可以連到整波,那不是「連鎖」是「全屏」。
     if (depth === 0 && fx.chainEvery > 0 && current.hitCount % fx.chainEvery === 0) {
@@ -657,6 +706,7 @@ export function useLaneRun(
       feedbackKeyRef.current += 1;
       setFeedback({
         key: feedbackKeyRef.current,
+        at: Date.now(),
         message: r.message,
         heroDelta: r.heroDelta,
         attackDelta: r.attackDelta,
@@ -917,6 +967,7 @@ export function useLaneRun(
             feedbackKeyRef.current += 1;
             setFeedback({
               key: feedbackKeyRef.current,
+              at: now,
               message: `被武器砸中 -${hit} 人`,
               heroDelta: -hit,
               attackDelta: 0,
@@ -1030,6 +1081,7 @@ export function useLaneRun(
         feedbackKeyRef.current += 1;
         setFeedback({
           key: feedbackKeyRef.current,
+          at: Date.now(),
           message: r.message,
           heroDelta: r.heroDelta,
           attackDelta: r.attackDelta,
