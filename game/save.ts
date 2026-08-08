@@ -22,12 +22,13 @@ import { LEVELS_PER_CHAPTER, LONG_LEVEL_WAVES, TOTAL_CHAPTERS, WAVES_PER_LEVEL }
 import { MAX_SKILL_LEVEL, MAX_SKILL_SLOTS, SKILLS, type SkillId, type SkillState } from './laneSkills';
 import { MAX_SKILL_BOOK_LEVEL, rescaleLegacyBookLevel } from './laneRunSkills';
 import { decodeCollection, encodeCollection } from './collection';
+import { isQuestCounter, isQuestId, type QuestCounters } from './quests';
 
 /**
  * 存檔格式版本。**改動任何欄位的意義就要 +1,並在 MIGRATIONS 補一條。**
  * 只是新增一個「有預設值的欄位」不必升版:readSave 會幫沒有的欄位補預設值。
  */
-export const SAVE_VERSION = 5;
+export const SAVE_VERSION = 6;
 
 /** localStorage / AsyncStorage 的 key。改這個等於讓所有人的存檔消失,不要改。 */
 export const SAVE_KEY = 'daydreaming-swipe/save';
@@ -101,6 +102,22 @@ export interface SaveData {
    * 存 id 陣列的話滿收會是幾萬個字,bitset 壓完約 950 字。
    */
   collected: string;
+  /**
+   * 任務:已經**領過獎**的任務 id。
+   *
+   * 存的是「領過獎」不是「達成了」,兩者刻意不同:達成與否一律**現算**
+   * (見 game/quests.ts 的檔頭),存下來就會跟本尊不同步,而那種 bug 的症狀是
+   * 「任務永遠完成不了」——玩家看得到卻做不到。只有「領過了沒」是真正的一次性事實,
+   * 算不出來,非存不可。
+   */
+  questsClaimed: string[];
+  /**
+   * 任務的事件計數器(開過幾次設定、進過幾次裝備副本…)。
+   *
+   * 只有任務才在乎的東西才進這裡;打到第幾關、幾本技能書那些存檔本來就有,
+   * 一律現算。加一個新的 key **不必升版號**——讀不到就是 0。
+   */
+  questCounters: QuestCounters;
 }
 
 /** 音量預設值。BGM 這一份的峰值很滿,1.0 會把音效整個蓋掉(見 hooks/useBgm.ts)。 */
@@ -119,11 +136,15 @@ export const DEFAULT_SAVE: SaveData = {
   bgmVolume: DEFAULT_BGM_VOLUME,
   sfxVolume: DEFAULT_SFX_VOLUME,
   collected: '',
+  questsClaimed: [],
+  questCounters: {},
 };
 
 /** 全新的一份存檔。回傳新物件,呼叫端改它不會污染 DEFAULT_SAVE。 */
 export function newSave(): SaveData {
-  return { ...DEFAULT_SAVE, skills: [] };
+  // 三個可變的欄位各自給新的實體,不然呼叫端改它會污染 DEFAULT_SAVE
+  // (症狀是「開新遊戲卻帶著上一輪的任務進度」,而且只在同一個分頁裡重開才會出現)。
+  return { ...DEFAULT_SAVE, skills: [], questsClaimed: [], questCounters: {} };
 }
 
 // ---- 各欄位的驗證 ----
@@ -174,6 +195,36 @@ function readSkills(value: unknown): SkillState[] {
 }
 
 /**
+ * 已領獎的任務 id。**不認得的 id 一律丟掉**——任務刪掉之後它的 id 就沒有意義了,
+ * 留著只會讓 `questsClaimed.length` 這種數字慢慢失真。重複的也只留一個。
+ */
+function readQuestsClaimed(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (typeof item === 'string' && isQuestId(item)) seen.add(item);
+  }
+  return [...seen];
+}
+
+/**
+ * 任務計數器。逐 key 驗證:不認得的 key 丟掉、值不是數字或為負的一律當 0。
+ *
+ * 上限夾在一個很大的數字而不是不夾:計數器只拿來跟任務的 target 比大小,
+ * 但改過的存檔塞一個 Infinity 進來的話,畫面上的進度條會算出 NaN。
+ */
+function readQuestCounters(value: unknown): QuestCounters {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out: QuestCounters = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!isQuestCounter(key)) continue;
+    const n = readInt(raw, 0, 0, Number.MAX_SAFE_INTEGER);
+    if (n > 0) out[key] = n;
+  }
+  return out;
+}
+
+/**
  * 遷移表:`MIGRATIONS[n]` 把 **v(n) 的資料轉成 v(n+1)**。
  *
  * 目前是空的(v1 是第一版),但表本身要先存在:等到真的要升版的時候,
@@ -204,6 +255,18 @@ const MIGRATIONS: Record<number, (raw: Record<string, unknown>) => Record<string
     version: 5,
     books: rescaleLegacyBookLevel(readNumber(raw.books, 0)),
   }),
+  // v5 → v6:任務系統與三種副本上線。兩個都是新欄位,舊存檔沒有就是「一個都沒領、
+  // 計數器全 0」,所以這一步只要補空值。
+  //
+  // **為什麼是 v6 而不是把任務欄位塞進 v5**:v5 已經上線了(技能書上限那一版),
+  // 玩家硬碟上真的有 v5 的存檔。同一個版號給兩種意義的話,遷移鏈就再也分不出
+  // 「這份 v5 有沒有跑過技能書換算」——而那一步是不可重入的(換算兩次會把 5 級變成 100 級)。
+  // 版號寧可多跳一格,也不要讓一個號碼代表兩件事。
+  //
+  // **刻意不幫老玩家把已經達成的任務標成已領**:達成與否是現算的,所以打到第 50 關的
+  // 老玩家一載入就會看到前面十幾個任務全部亮著「可領獎」——那是對的,那些獎勵他本來
+  // 就該拿。反過來把它們標成「已領」的話,等於在升版的瞬間默默沒收一批獎勵。
+  5: (raw) => ({ ...raw, version: 6, questsClaimed: raw.questsClaimed ?? [], questCounters: raw.questCounters ?? {} }),
 };
 
 /** 遷移用的寬鬆數字讀取。遷移函式拿到的是還沒驗證過的 raw,所以不能假設型別。 */
@@ -271,6 +334,8 @@ export function readSave(text: string | null | undefined): { save: SaveData; mig
       sfxVolume: readVolume(raw.sfxVolume, DEFAULT_SFX_VOLUME),
       // 圖鑑走 decode → encode 一圈:壞掉的字串會變成空圖鑑,超出總數的 bit 也會被清掉。
       collected: encodeCollection(decodeCollection(raw.collected)),
+      questsClaimed: readQuestsClaimed(raw.questsClaimed),
+      questCounters: readQuestCounters(raw.questCounters),
     },
     migrated,
   };

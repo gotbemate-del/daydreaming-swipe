@@ -4,8 +4,11 @@ import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-nati
 import { jobTitle, type LaneJob } from '../game/laneJobs';
 import { Settings, type AudioSettings } from './Settings';
 import { chapterOfStage, stageLabel, waveElementsForStage, wavesForStage } from '../game/laneRun';
+import { tutorialRulesFor } from '../game/laneTutorial';
+import type { QuestView } from '../game/quests';
 import {
-  COIN_ICON, GEAR_ICON, HERO_ASPECT, HERO_FRAME_MS, HERO_FRAMES, HERO_SEQUENCE, heroBoxHeight, LOCK_ICON, TAB_ICONS,
+  COIN_ICON, GEAR_ICON, HERO_ASPECT, HERO_FRAME_MS, HERO_FRAMES, HERO_SEQUENCE, heroBoxHeight, LOCK_ICON,
+  QUEST_ICON, TAB_ICONS,
   elementColor, elementLabel,
 } from './artAssets';
 
@@ -47,20 +50,40 @@ interface Props {
   /** 音訊設定(音樂開關、音樂音量、音效音量)。跟跑圖中的設定面板共用同一組。 */
   audio: AudioSettings;
   onChangeAudio: (patch: Partial<AudioSettings>) => void;
+  /**
+   * 主介面橫幅上要顯示的那一個任務(全部做完就是 null)。
+   *
+   * 只給**一個**不是整份清單:橫幅的工作是「現在去做這件事」,列三個就變成一張表,
+   * 而表格是要人閱讀的東西,橫幅不是(見 game/quests.ts 的 activeQuest)。
+   */
+  quest: QuestView | null;
+  /**
+   * 剛跑完的單場副本結果(沒有就是 null)。
+   *
+   * 跟 `lastResult` 分開是因為副本**不推進關卡**,而 lastResult 那一行是照
+   * `stage - 1` 算標題的——副本沿用它會少報一關。副本要講的也不是關卡編號,是拿到什麼。
+   */
+  dungeonNote: string | null;
+  /** 右上角齒輪被點開了(任務要記這件事)。 */
+  onOpenSettings: () => void;
   onStart: () => void;
-  onSurvival: () => void;
+  onDungeons: () => void;
   onCodex: () => void;
+  onQuests: () => void;
 }
 
 export function MainMenu({
-  stage, job, coins, lastResult, books, bestSurvival, justFound, audio, onChangeAudio,
-  onStart, onSurvival, onCodex,
+  stage, job, coins, lastResult, books, bestSurvival, justFound, audio, onChangeAudio, quest,
+  dungeonNote, onOpenSettings, onStart, onDungeons, onCodex, onQuests,
 }: Props) {
   const [heroStep, setHeroStep] = useState(0);
   const [settings, setSettings] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   // 主角永遠是史萊姆,轉職不換造型。職業立繪只留在轉職選擇畫面(那裡是在介紹職業)。
   const heroArt = HERO_FRAMES[HERO_SEQUENCE[heroStep]];
+  // 教學關(1-1 ~ 1-5)才有。null 的時候整列不畫——不是教學關的人不需要多一行字,
+  // 而多出來的那一行在 640 高的螢幕上正好會把「開始闖關」往下推。
+  const tutorial = tutorialRulesFor(stage);
 
   useEffect(() => {
     const id = setInterval(() => setHeroStep((s) => (s + 1) % HERO_SEQUENCE.length), HERO_FRAME_MS);
@@ -85,7 +108,11 @@ export function MainMenu({
           </View>
           {/* 右上角的設定。用 ui/icon_gear.png ——之前這裡寫著「ui/ 沒有齒輪圖示」而改用文字,
               那是找漏了,圖一直都在。齒輪是玩家找設定的第一直覺,文字反而要讀。 */}
-          <Pressable accessibilityLabel="設定" style={styles.settingsButton} onPress={() => setSettings(true)}>
+          <Pressable
+            accessibilityLabel="設定"
+            style={styles.settingsButton}
+            onPress={() => { onOpenSettings(); setSettings(true); }}
+          >
             <Image source={GEAR_ICON} resizeMode="contain" style={styles.settingsIcon} />
           </Pressable>
         </View>
@@ -96,6 +123,20 @@ export function MainMenu({
         {books > 0 ? ` · 技能書 ${books}` : ''}
         {bestSurvival > 0 ? ` · 生存 ${bestSurvival} 波` : ''}
       </Text>
+
+      {/*
+        教學關要學什麼。**只在 1-1 ~ 1-5 出現**,畢業之後整列消失。
+
+        寫在主介面而不是跑圖裡,是因為它要在**開跑之前**被讀到:跑起來之後玩家的
+        注意力全部在前方那一排上,那時候給他一句要理解的話等於在跟閘門搶注意力
+        (跑圖裡給的是更短的 tip,見 laneTutorial 的 tip 欄位)。
+      */}
+      {tutorial !== null && (
+        <View style={styles.tutorialRow}>
+          <Text style={styles.tutorialTitle}>教學 {tutorial.stage}/5 · {tutorial.title}</Text>
+          <Text style={styles.tutorialLesson}>{tutorial.lesson}</Text>
+        </View>
+      )}
 
       {/* 中間:勇者站在正中央。這裡刻意什麼都不做——沒有跑道、沒有敵人,
           就是一個站著的角色 + 一顆開始闖關。戰鬥全部發生在跑道畫面裡。 */}
@@ -140,12 +181,41 @@ export function MainMenu({
         {justFound.length > 0 && (
           <Text style={styles.found}>撿到 {justFound.length} 件裝備</Text>
         )}
-        {lastResult !== null && (
+        {/* 副本的結果優先:剛跑完副本的人要看的是「拿到什麼」,不是主線關卡編號。 */}
+        {dungeonNote !== null ? (
+          <Text style={styles.dungeonNote} numberOfLines={1}>{dungeonNote}</Text>
+        ) : lastResult !== null && (
           <Text style={lastResult === 'cleared' ? styles.resultWin : styles.resultLose}>
             {lastResult === 'cleared' ? `${stageLabel(stage - 1)} 通關` : `${stageLabel(stage)} 失敗,再挑戰一次`}
           </Text>
         )}
       </View>
+
+      {/*
+        任務橫幅。**整條可以點**,點下去是任務面板。
+
+        它是這一頁唯一會告訴玩家「分頁列上那些東西什麼時候能點」的地方——鎖頭只說明
+        「還不行」,說不出「打到 1-10 就開」。可以領獎的時候整條變成金色:那是唯一
+        會讓人去點它的訊號,做得不明顯等於沒做。
+      */}
+      {quest !== null && (
+        <Pressable
+          accessibilityLabel={quest.claimable ? `領獎 ${quest.quest.name}` : `任務 ${quest.quest.name}`}
+          style={quest.claimable ? styles.questBannerReady : styles.questBanner}
+          onPress={onQuests}
+        >
+          <Image source={QUEST_ICON} resizeMode="contain" style={styles.questIcon} />
+          <View style={styles.questTextBox}>
+            <Text style={quest.claimable ? styles.questNameReady : styles.questName} numberOfLines={1}>
+              {quest.quest.name}
+              {quest.quest.target > 1 && !quest.claimable ? ` ${quest.progress}/${quest.quest.target}` : ''}
+            </Text>
+            <Text style={quest.claimable ? styles.questHintReady : styles.questHint} numberOfLines={1}>
+              {quest.claimable ? `可領取 ${quest.quest.coins} 金幣` : quest.quest.hint}
+            </Text>
+          </View>
+        </Pressable>
+      )}
 
       <Pressable style={styles.startButton} accessibilityLabel="開始闖關" onPress={onStart}>
         <Text style={styles.startLabel}>開始闖關</Text>
@@ -170,8 +240,7 @@ export function MainMenu({
         contentContainerStyle={styles.tabBar}
       >
         {TAB_ICONS.map((tab) => {
-          // 「副本」是第一個開放的分頁:生存模式。其餘九個維持鎖著(見檔頭的說明)。
-          // 開放的兩個:副本(生存模式)與裝備(圖鑑)。其餘八個維持鎖著。
+          // 開放的兩個:副本(三種副本的選擇畫面)與裝備(圖鑑)。其餘八個維持鎖著。
           const open = tab.id === 'dungeon' || tab.id === 'equipment';
           return (
             <Pressable
@@ -179,7 +248,7 @@ export function MainMenu({
               style={styles.tab}
               accessibilityLabel={open ? tab.label : `${tab.label}(未開放)`}
               onPress={() => {
-                if (tab.id === 'dungeon') onSurvival();
+                if (tab.id === 'dungeon') onDungeons();
                 else if (tab.id === 'equipment') onCodex();
                 else setNotice(`${tab.label}尚未開放`);
               }}
@@ -220,6 +289,12 @@ const styles = StyleSheet.create({
   coinIcon: { width: 16, height: 16 },
   coinText: { color: '#f2f2f2', fontSize: 14, fontWeight: '600' },
   jobLine: { color: '#8a8a95', fontSize: 13 },
+
+  // 教學提示。整列刻意做窄(兩行共 30px):它只在前五關出現,但版面不能為了它
+  // 把「開始闖關」往下推——那是這個專案踩過最貴的一種 bug。
+  tutorialRow: { width: '100%', alignItems: 'center' },
+  tutorialTitle: { color: '#e0a95c', fontSize: 12, fontWeight: '700' },
+  tutorialLesson: { color: '#9691a5', fontSize: 11, textAlign: 'center' },
 
   // 立繪區吃掉剩下的高度。用 flex 而不是固定高:小螢幕自己縮,不會把下面的按鈕頂出畫面——
   // 這是這個專案踩過最痛的一個坑(見 CLAUDE.md「版面」那段)。
@@ -269,6 +344,26 @@ const styles = StyleSheet.create({
   resultRow: { height: 18, justifyContent: 'center' },
   resultWin: { color: '#5ec26a', fontSize: 13, fontWeight: '600' },
   resultLose: { color: '#e05050', fontSize: 13, fontWeight: '600' },
+  dungeonNote: { color: '#e0a95c', fontSize: 12, fontWeight: '600' },
+
+  // 任務橫幅。兩種狀態共用同一個高度,不然「變成可領獎」的瞬間整個版面會跳一下。
+  questBanner: {
+    width: '100%', flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#2a2a35', borderRadius: 8, borderWidth: 1, borderColor: '#3a3448',
+    paddingHorizontal: 10, paddingVertical: 6,
+  },
+  questBannerReady: {
+    width: '100%', flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#3a3448', borderRadius: 8, borderWidth: 1, borderColor: '#e0a95c',
+    paddingHorizontal: 10, paddingVertical: 6,
+  },
+  questIcon: { width: 18, height: 18 },
+  // flexShrink 讓長提示自己截斷(numberOfLines),不會把整條橫幅撐寬。
+  questTextBox: { flexShrink: 1, flexGrow: 1 },
+  questName: { color: '#f2f2f2', fontSize: 12, fontWeight: '700' },
+  questNameReady: { color: '#e0a95c', fontSize: 12, fontWeight: '700' },
+  questHint: { color: '#8a8a95', fontSize: 11 },
+  questHintReady: { color: '#e0a95c', fontSize: 11 },
 
   startButton: {
     width: '100%',

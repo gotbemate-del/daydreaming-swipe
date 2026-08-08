@@ -174,6 +174,15 @@ export const ROCK_ART: ImageSourcePropType = require('../assets/sprites/material
 
 /** 鎖頭。分頁全部未開放,疊在圖示上表示「還不能點」。 */
 export const LOCK_ICON: ImageSourcePropType = require('../assets/sprites/ui/icon_lock.png');
+/**
+ * 禮物。任務橫幅與任務面板上的獎勵標記。
+ *
+ * 圖示鐵則:畫面上任何位置都不用 emoji(見 CLAUDE.md)。ui/ 底下本來就有這張,
+ * 而「有東西可以領」是任務系統唯一需要一眼認出來的狀態。
+ */
+export const QUEST_ICON: ImageSourcePropType = require('../assets/sprites/ui/icon_gift.png');
+/** 技能書。技能書副本的圖示,也是狀態列上技能書等級的圖示。 */
+export const BOOK_ICON: ImageSourcePropType = require('../assets/sprites/ui/icon_skillbook.png');
 /** 金幣。主介面顯示身上有多少錢。 */
 export const COIN_ICON: ImageSourcePropType = require('../assets/sprites/ui/icon_coin.png');
 /**
