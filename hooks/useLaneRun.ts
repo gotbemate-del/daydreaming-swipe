@@ -38,6 +38,7 @@ import {
   createRocks,
   hitsRock,
   applyRockHit,
+  withinFireWidth,
   type Lane,
   type RunRock,
   type RunRow,
@@ -305,6 +306,8 @@ interface WaveRuntime {
    * 會在最後一波一次結算掉,玩家看到的是「魔王莫名其妙被秒了」。
    */
   fired: { kills: number; killRatio: number; immune: boolean };
+  /** 這一波有哪幾隻曾經進到射程寬度內。擊殺數會被它的大小夾住(見 laneRun 的 FIRE_WIDTH)。 */
+  covered: Set<number>;
 }
 
 // 一場跑圖就是一個 hook 實例:重跑、下一關都由外層換 key 重新掛載,不在 hook 裡自己 reset。
@@ -412,7 +415,16 @@ export function useLaneRun(
   runSkillsRef.current = runSkills;
   const [lastStrike, setLastStrike] = useState<{ at: number; names: string[]; kills: number } | null>(null);
 
-  const paused = skillOffers.length > 0;
+  /**
+   * 挑技能的時候**跑圖不停**。
+   *
+   * 舊版是「開面板 = 暫停」,所以一場切成「打怪 / 選技能」兩段,玩家的原話是
+   * 「好像是在選技能而不是在玩遊戲」。現在兩件事交錯進行:面板浮在跑道上,
+   * 底下的怪照樣衝過來、閘門照樣要選——挑技能本身變成一個要在跑動中完成的動作。
+   *
+   * 這個旗標留著只是為了「已經沒得挑就別開空面板」,不再拿來停 interval。
+   */
+  const paused = false;
 
   /**
    * 前方**完全沒東西**的時候會不會加速趕路。
@@ -498,7 +510,9 @@ export function useLaneRun(
    * 這一波目前的加成。**跑圖途中的演出與這一排的結算共用同一份**——
    * 各算各的話,畫面上倒了 9 隻、結算卻只算 8 隻,玩家會看到「明明打完了還是漏一隻」。
    */
-  function boostFor(heroWave: boolean, fired: WaveRuntime['fired'], fx: RunSkillEffects): WaveBoost {
+  function boostFor(
+    heroWave: boolean, fired: WaveRuntime['fired'], fx: RunSkillEffects, covered?: number,
+  ): WaveBoost {
     const boost: WaveBoost = {};
     // 勇者波:投擲傷害在跑圖途中就逐發扣過了(見 EnemyShot),一定要告訴 resolveEnemy
     // 別再用期望值扣一次——漏掉這一行的症狀只是「勇者波特別難」,不會有任何錯誤訊息。
@@ -511,6 +525,7 @@ export function useLaneRun(
     if (fx.regen > 0) { boost.regen = fx.regen; boost.lostSoFar = lostSoFarRef.current; }
     if (fx.lossCut > 0) boost.lossCut = fx.lossCut;
     if (fired.immune) boost.immune = true;
+    if (covered !== undefined) boost.coveredUnits = covered;
     return boost;
   }
 
@@ -691,6 +706,7 @@ export function useLaneRun(
         burningUntil: new Array(enemy.units).fill(0),
         hitCount: 0,
         fired: { kills: 0, killRatio: 0, immune: false },
+        covered: new Set<number>(),
       };
       waveRef.current = current;
       projectilesRef.current = [];
@@ -730,11 +746,18 @@ export function useLaneRun(
     // 各寫一份的話畫面與結算會慢慢岔開,而兩邊分開看都完全合理,最難查。
     const ownKills = waveKillCount(totalAttack(stateRef.current), current.power, current.monsters.length);
     const enemyEffect = enemyRow.nodes[0].enemy!;
+    // 射程寬度:**打不到的那幾隻不能倒**,所以上限是「曾經進到射程內的隻數」,
+    // 不是總隻數。跟 resolveEnemy 的 coveredUnits 是同一個數字——畫面倒幾隻、
+    // 結算算幾隻,必須是同一份(CLAUDE.md:各寫一份是最難查的那種不一致)。
     const kills = Math.min(
-      current.monsters.length,
-      ownKills + Math.floor(extraKills(enemyEffect, boostFor(current.heroWave, current.fired, fx), ownKills)),
+      current.covered.size,
+      ownKills + Math.floor(extraKills(enemyEffect, boostFor(current.heroWave, current.fired, fx, current.covered.size), ownKills)),
     );
-    const isDown = (i: number) => i < kills && current!.hitsOn[i] >= current!.hitsPerUnit;
+    // 打得倒的是「覆蓋到的那幾隻裡最前面的 kills 隻」,所以要照覆蓋順序判斷,
+    // 不能用索引大小——沒被覆蓋的那幾隻夾在中間的話,索引比較不成立。
+    const isDown = (i: number) => current!.covered.has(i)
+      && [...current!.covered].filter((k) => k < i).length < kills
+      && current!.hitsOn[i] >= current!.hitsPerUnit;
 
     // --- 丟武器 ---
     // 打不倒的也照丟。丟到打得倒的都倒了就停手的話,剩下那段路上小怪一直衝過來、勇者卻站著
@@ -750,9 +773,14 @@ export function useLaneRun(
       if (i < kills) remainingDoomedShots += Math.max(0, current.hitsPerUnit - current.hitsOn[i] - inFlightOn[i]);
       // 接戰距離由 laneRun 給(每一隻各自抖動),不是一個寫死的常數:
       // 寫死的話整波會在同一條水平線上倒下,而且舊值 260 等於「一進畫面就死」。
-      if (targetIndex < 0 && current.monsters[i].distance - travelled <= engageRange(current.rowIndex, i)) {
-        targetIndex = i;
-      }
+      const inEngageRange = current.monsters[i].distance - travelled <= engageRange(current.rowIndex, i);
+      // **射程寬度**:打不到就不是目標(見 laneRun 的 FIRE_WIDTH)。
+      // 進到接戰距離**而且**在射程寬度內的那一刻就記一次「覆蓋到了」——
+      // 這一筆會夾住這一波的擊殺數,所以畫面上打不到的那幾隻,結算也一樣算漏掉。
+      // 兩邊必須是同一份數字,不然會出現「明明沒打到卻算清掉了」。
+      const inWidth = withinFireWidth(offsetRef.current, current.monsters[i].offset);
+      if (inEngageRange && inWidth) current.covered.add(i);
+      if (targetIndex < 0 && inEngageRange && inWidth) targetIndex = i;
     }
 
     if (targetIndex >= 0) {
@@ -978,7 +1006,7 @@ export function useLaneRun(
           const fx = runSkillEffects(runSkills, waveElement, bookLevel, collection);
           const current = waveRef.current;
           boost = current !== null && current.rowIndex === due.index
-            ? boostFor(current.heroWave, current.fired, fx)
+            ? boostFor(current.heroWave, current.fired, fx, current.covered.size)
             : boostFor(due.nodes[0].enemy?.heroWave === true, NO_FIRED, fx);
           if (runSkills.some((s) => s.level > 0 && ELEMENT_COUNTERS[s.id] === waveElement)) {
             setLastStrike({ at: Date.now(), names: ['剋'], kills: 0 });

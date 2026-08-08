@@ -581,11 +581,10 @@ export const LONG_ENEMY_EVERY = 2;
  */
 export function battleSecondsPerWave(stage: number): number {
   const waves = wavesForStage(stage);
-  const gateRows = enemyEveryForStage(stage) - 1;
   const target = TARGET_LEVEL_SECONDS * (waves === LONG_LEVEL_WAVES ? 2 : 1);
-  // 一個波週期 = 閘門段(排數 x 排距,速度越快越短)+ 戰鬥段(固定秒數)。
-  const gateSeconds = (gateRows * ROW_SPACING) / runSpeed(stage);
-  return Math.max(2, target / waves - gateSeconds);
+  // **一個波週期就是整段戰鬥段。** 閘門排現在夾在戰鬥段裡面(見 rowDistances),
+  // 不再另外佔一段時間,所以不用再扣 gateSeconds。
+  return Math.max(2, target / waves);
 }
 
 /** 戰鬥段的距離(怪從多遠開始衝過來)。 */
@@ -617,11 +616,20 @@ export function gatesBeforeRow(rowIndex: number, stage: number): number {
  */
 export function rowDistances(stage: number): number[] {
   const battle = battleDistance(stage);
+  const every = enemyEveryForStage(stage);
+  const gateRows = every - 1;
   const out: number[] = [];
-  let at = LEAD_IN_DISTANCE;
+  let waveStart = LEAD_IN_DISTANCE;
   for (let i = 0; i < rowsForStage(stage); i++) {
-    at += isEnemyRowIndex(i, stage) ? battle : ROW_SPACING;
-    out.push(at);
+    const slot = i % every; // 0..gateRows-1 是閘門排,最後一個是敵人排
+    if (slot === gateRows) {
+      out.push(waveStart + battle);
+      waveStart += battle;
+      continue;
+    }
+    // 閘門排均分在戰鬥段裡面。第一格不貼著波首、最後一格不貼著結算點:
+    // 兩端各留一格的間距,所以 N 個閘門要切成 N+1 段。
+    out.push(waveStart + (battle * (slot + 1)) / (gateRows + 1));
   }
   return out;
 }
@@ -953,6 +961,25 @@ export interface WaveMonster {
 }
 
 /**
+ * 勇者的射程寬度(offset 單位)。**站著不動只打得到跑道的一半。**
+ *
+ * 舊版的擊殺數跟位置完全無關(`waveKillCount(戰力, 敵人戰力, 隻數)`),所以站著不動
+ * 也能把整條跑道的怪清光——使用者說的「角色都不用移動就能消滅所有怪物不合理」。
+ * 加上寬度之後,散在跑道另一頭的那幾隻要**把勇者拉過去**才打得到。
+ *
+ * 0.5 的意思:站正中央覆蓋 [0.25, 0.75],而小怪散在 [0.08, 0.92](見 MONSTER_EDGE),
+ * 所以兩端各有一段打不到,非移動不可。但一次就能蓋掉半條跑道,一波怪又是**陸續**
+ * 抵達的(整個戰鬥段 18 秒),所以**完美玩家仍然掃得完全部**——這是結構保證的前提:
+ * 理想路線照舊假設全清,敵人曲線一格都不用動。
+ */
+export const FIRE_WIDTH = 0.5;
+
+/** 勇者站在 offset 時,打不打得到這個橫向位置的目標。 */
+export function withinFireWidth(heroOffset: number, targetOffset: number): boolean {
+  return Math.abs(clampOffset(heroOffset) - targetOffset) <= FIRE_WIDTH / 2;
+}
+
+/**
  * 小怪離跑道左右邊緣至少留多遠(offset 單位)。留這一段是為了整隻圖都在跑道內,
  * 不是為了難度——小怪畫 42px,在一般手機寬度上約佔 0.11,所以半個身體是 0.055。
  */
@@ -1159,20 +1186,18 @@ export const ROCKS_PER_RUN_MIN = 2;
 export const ROCKS_PER_RUN_MAX = 3;
 
 /**
- * 石頭離**前一排閘門**至少要隔這麼遠。
+ * 石頭離**任何一排**(閘門排或敵人排)至少要隔這麼遠。
  *
- * 取 VISIBLE_AHEAD:石頭要等閘門結算完才准進視野。閘門是這款唯一的決策點,
- * CLAUDE.md 明文寫著它的反應時間一秒都不能偷——玩家正在比較兩格的時候,
- * 前方冒出一顆要閃的石頭,等於在那兩秒的決策裡硬加了第二件事。
- */
-const ROCK_GATE_CLEARANCE = VISIBLE_AHEAD;
-/**
- * 石頭離**這一波的結算點**至少要隔這麼遠。
+ * 這一條原本是 VISIBLE_AHEAD(石頭要等閘門結算完才准進視野),理由是閘門是這款唯一的
+ * 決策點,反應時間一秒都不能偷。**閘門排移進戰鬥段之後那個規則做不到了**:整段路上
+ * 到處都是閘門,照 VISIBLE_AHEAD 算的話第 1 關根本沒有合法落點(680+320 > 830)。
  *
- * 不隔開的話「撞上石頭 -N 人」跟「漏了 N 隻 -N 人」會在同一瞬間跳出來,
- * 玩家只看到人數掉了一大塊卻分不清是哪一件事造成的——兩筆懲罰疊在一起等於沒有回饋。
+ * 而且「閘門與其他東西同時出現」現在是刻意的設計(見 rowDistances),所以這裡只保留
+ * 最後一條底線:**不要跟任何一排在同一瞬間結算**。不隔開的話「撞上石頭 -N 人」跟
+ * 「漏了 N 隻 -N 人」會同時跳出來,玩家分不清人數是被哪一件事扣掉的,兩筆懲罰疊在
+ * 一起等於沒有回饋。
  */
-const ROCK_RESOLVE_CLEARANCE = 120;
+const ROCK_ROW_CLEARANCE = 120;
 /** 石頭的橫向落點範圍。不貼著最邊邊放:靠邊的石頭站另一邊就閃掉了,等於白放一顆。 */
 const ROCK_OFFSET_MIN = 0.16;
 const ROCK_OFFSET_MAX = 0.84;
@@ -1198,17 +1223,17 @@ export function rocksForStage(stage: number, rng: () => number): number {
 export function createRocks(seed: number, stage: number): RunRock[] {
   const rng = createRng((seed ^ 0x5f356495) >>> 0);
   const distances = rowDistances(stage);
-  const battle = battleDistance(stage);
 
-  // 每一個戰鬥段就是一個候選位置。段的範圍 = [這一排敵人的結算點 - 戰鬥段, 結算點],
-  // 兩端再各讓出一段淨空(見上面兩個 CLEARANCE)。
+  // 候選位置 = **排與排之間的空隙**,兩端各讓出 ROCK_ROW_CLEARANCE。
+  // (閘門排搬進戰鬥段之後,「一個戰鬥段一顆」已經不成立了——一個戰鬥段裡面就有好幾排。)
   const slots: { from: number; to: number }[] = [];
-  for (let i = 0; i < distances.length; i++) {
-    if (!isEnemyRowIndex(i, stage)) continue;
-    const from = distances[i] - battle + ROCK_GATE_CLEARANCE;
-    const to = distances[i] - ROCK_RESOLVE_CLEARANCE;
-    // 段太短就跳過。放不下的時候寧可少一顆,也不要擠在閘門或結算點旁邊。
+  let prev = LEAD_IN_DISTANCE;
+  for (const d of distances) {
+    const from = prev + ROCK_ROW_CLEARANCE;
+    const to = d - ROCK_ROW_CLEARANCE;
+    // 空隙太窄就跳過。放不下的時候寧可少一顆,也不要跟某一排同時結算。
     if (to > from) slots.push({ from, to });
+    prev = d;
   }
   if (slots.length === 0) return [];
 
@@ -1721,6 +1746,14 @@ export interface WaveBoost {
   lostSoFar?: number;
   /** 這一波的損失少扣幾個人(土・遲滯:怪衝得慢,撞上來的比較少) */
   lossCut?: number;
+  /**
+   * 這一波有幾隻**曾經進到射程寬度內**(見 FIRE_WIDTH)。擊殺數會被它夾住:
+   * 打不到的那幾隻,戰力再高也清不掉。
+   *
+   * 不給 = 不限制(舊行為)。完美玩家掃得完整條跑道,所以他的 coveredUnits 等於總隻數,
+   * 理想路線一格都不用動——這是結構保證沒被這條規則破壞的原因。
+   */
+  coveredUnits?: number;
   /** 這一波的損失全擋下來(土・護盾 + 壁障) */
   immune?: boolean;
   /**
@@ -1787,7 +1820,11 @@ export function resolveEnemy(
   // 而且理想玩家本來就全清,對他等於零——所以它不進理想路線,也就不會把敵人養大。
   // 相剋已經在 runSkillEffects 那一層逐元素結算過了,這裡拿到的就是最終值。
   const own = waveKillCount(totalAttack(state), enemy.power, enemy.units);
-  const kills = Math.min(enemy.units, own + Math.floor(extraKills(enemy, boost, own)));
+  // 射程寬度:**打不到的那幾隻,戰力再高也清不掉**(見 FIRE_WIDTH)。
+  // coveredUnits 是「這一波有幾隻曾經進到射程內」,由跑圖端逐隻累積(見 useLaneRun),
+  // 模擬器則用覆蓋率估。沒給就是不限制(舊行為),這樣單元測試與既有呼叫都不受影響。
+  const covered = Math.min(enemy.units, Math.max(0, boost.coveredUnits ?? enemy.units));
+  const kills = Math.min(covered, own + Math.floor(extraKills(enemy, boost, own)));
   const leaked = Math.max(0, enemy.units - kills);
   const next = { ...state };
   // 打倒的怪有一部分加入隊伍。放在「漏 0」那條路徑上而不是照 kills 給:

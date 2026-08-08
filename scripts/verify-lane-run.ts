@@ -980,7 +980,6 @@ for (const stage of rockStages) {
       // 屬於哪一個戰鬥段:第一個結算點在它後面的敵人排。
       const resolveAt = dists.find((d, i) => isEnemyRowIndex(i, stage) && d >= rock.distance);
       if (resolveAt === undefined) { rockTooCloseToResolve++; continue; }
-      if (rock.distance <= resolveAt - battle + VISIBLE_AHEAD - 1) rockTooCloseToGate++;
       if (rock.distance > resolveAt - 120 + 1) rockTooCloseToResolve++;
       // 一定閃得掉:跑道上必須存在一個不會撞到它的位置。
       const spots = Array.from({ length: 101 }, (_, i) => i / 100);
@@ -989,23 +988,37 @@ for (const stage of rockStages) {
   }
 }
 check('石頭都在跑道範圍內', rockOffTrack === 0, `${rockTotal} 顆`);
-check('石頭等閘門結算完才進視野(不偷走閘門的決策時間)', rockTooCloseToGate === 0);
+// 閘門排搬進戰鬥段之後,「石頭等閘門結算完才進視野」做不到也不再是目標(見 createRocks)。
+// 現在只保證一件事:石頭不跟**任何一排**在同一瞬間結算,不然兩筆扣人疊在一起等於沒回饋。
 check('石頭離波次結算點有淨空(兩筆懲罰不會疊在同一瞬間)', rockTooCloseToResolve === 0);
+{
+  let tooCloseToAnyRow = 0;
+  let rocksChecked = 0;
+  for (const stage of rockStages) {
+    const dists = rowDistances(stage);
+    for (let t = 0; t < 40; t++) {
+      for (const rock of createRocks(t * 29 + 11, stage)) {
+        rocksChecked++;
+        if (dists.some((d) => Math.abs(d - rock.distance) < 120 - 1)) tooCloseToAnyRow++;
+      }
+    }
+  }
+  check('石頭離任何一排都有淨空(閘門排也算)', tooCloseToAnyRow === 0, `${rocksChecked} 顆`);
+}
 check('每一顆都閃得掉(石頭是反應題,不是二選一)', rockDodgeable === rockTotal);
 
-// 同一個戰鬥段不會放到兩顆(擠在一起等於一顆比較胖的石頭)。
-// 用「屬於哪一個戰鬥段」比對,不要拿距離去猜:相鄰兩段的合法間距約 540,
-// 而高關卡的戰鬥段長到 1798——任何「距離小於半段就算同段」的門檻都會誤判。
-let sameSegment = 0;
+// 同一個空隙不會放到兩顆(擠在一起等於一顆比較胖的石頭)。
+// 閘門排搬進戰鬥段之後,「一段一顆」的單位從戰鬥段變成**排與排之間的空隙**。
+let sameGap = 0;
 for (const stage of rockStages) {
   const dists = rowDistances(stage);
-  const segmentOf = (d: number) => dists.findIndex((v, i) => isEnemyRowIndex(i, stage) && v >= d);
+  const gapOf = (d: number) => dists.findIndex((v) => v >= d);
   for (let t = 0; t < 40; t++) {
-    const segs = createRocks(t * 31 + 7, stage).map((k) => segmentOf(k.distance));
-    if (new Set(segs).size !== segs.length) sameSegment++;
+    const gaps = createRocks(t * 31 + 7, stage).map((k) => gapOf(k.distance));
+    if (new Set(gaps).size !== gaps.length) sameGap++;
   }
 }
-check('同一個戰鬥段不會擠兩顆', sameSegment === 0);
+check('同一個空隙不會擠兩顆', sameGap === 0);
 
 // 效果:掉 20%,但撞不死人,而且看得出來。
 const rockCases = [1, 2, 3, 5, 10, 40, 137];

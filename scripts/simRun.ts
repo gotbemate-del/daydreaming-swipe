@@ -54,6 +54,15 @@ export interface SimOptions {
    * 不然量出來的「每排都挑最好 → 100% 過關」會莫名其妙破掉。
    */
   rockHitRate?: number;
+  /**
+   * 掃過整條跑道的比例(1 = 每一隻都拉到射程內)。
+   *
+   * 射程寬度上線之後,站著不動只打得到半條跑道(見 laneRun 的 FIRE_WIDTH),
+   * 沒被覆蓋到的那幾隻戰力再高也清不掉。**完美玩家必須是 1**:一波怪是陸續抵達的
+   * (整個戰鬥段 18 秒),所以掃得完全部——理想路線照舊假設全清,敵人曲線一格都沒動,
+   * 結構保證就是靠這一條成立的。模擬真人時用「準確率」當覆蓋率。
+   */
+  sweep?: number;
 }
 
 export function simulateRun(
@@ -62,7 +71,7 @@ export function simulateRun(
   pick: LanePicker,
   opts: SimOptions = {},
 ): SimResult {
-  const { start, sloppy = 0, rockHitRate = 0 } = opts;
+  const { start, sloppy = 0, rockHitRate = 0, sweep = 1 } = opts;
   const rows = createRun(seed, stage);
   const rocks = createRocks(seed, stage);
   let st = start ? initialRunState(stage, start) : initialRunState(stage);
@@ -96,7 +105,13 @@ export function simulateRun(
     }
     // 手抖:挑對邊了,但站的位置離該格中心有偏差,偏太多就整格漏掉(閘門左右都留空隙)。
     const offset = sloppy > 0 ? laneCenterOffset(st.lane) + (rng() * 2 - 1) * sloppy : undefined;
-    st = resolveRow(st, row, offset).state;
+    // 射程寬度:這一波有幾隻被拉到射程內。sweep = 1 就是全部(完美玩家)。
+    const node2 = row.nodes.find((n) => n.lane === st.lane);
+    const units = node2?.kind === 'enemy' ? node2.enemy?.units ?? 0 : 0;
+    const boost = units > 0 && sweep < 1
+      ? { coveredUnits: Math.max(0, Math.round(units * sweep)) }
+      : undefined;
+    st = resolveRow(st, row, offset, boost).state;
     if (st.phase === 'dead') {
       return {
         outcome: 'dead', state: st, deathRow: row.index, margins, runSkills: skills,
