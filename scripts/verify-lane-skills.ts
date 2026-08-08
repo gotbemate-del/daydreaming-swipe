@@ -182,21 +182,22 @@ check('裝備圖鑑碰不到鋒刃/增殖', (() => {
   return true;
 })());
 check('裝備圖鑑會放大元素(對玩家是真的變強)', (() => {
-  const kit: RunSkillState[] = [{ id: 'fire', level: 5 }];
-  return runSkillEffects(kit, undefined, 0, FULL_CODEX).burnKills
-    > runSkillEffects(kit, undefined, 0, {}).burnKills;
+  // 火已經完全退出擊殺數,改用金驗:圖鑑放大的是 pierceRatio。
+  const kit: RunSkillState[] = [{ id: 'metal', level: 5 }];
+  return runSkillEffects(kit, undefined, 0, FULL_CODEX).pierceRatio
+    > runSkillEffects(kit, undefined, 0, {}).pierceRatio;
 })());
 // 圖鑑改成「一個條目綁一個屬性」之後,加成是**逐屬性**的:收滿火的那幾件只有火變強。
 // 這一項在盯那個隔離性——沒有隔離的話它就退化回「一條收集率把八個一起拉」,
 // 蒐集的方向感(「我還差雷的那幾件」)就不存在了。
 check('圖鑑的加成是逐屬性的(收火不會順便把雷拉起來)', (() => {
-  const kit: RunSkillState[] = [{ id: 'fire', level: 5 }, { id: 'thunder', level: 5 }];
-  const onlyFire = runSkillEffects(kit, undefined, 0, { fire: 1 + MAX_ELEMENT_BONUS });
+  const kit: RunSkillState[] = [{ id: 'metal', level: 5 }, { id: 'thunder', level: 5 }];
+  const onlyMetal = runSkillEffects(kit, undefined, 0, { metal: 1 + MAX_ELEMENT_BONUS });
   const none = runSkillEffects(kit, undefined, 0, {});
-  return onlyFire.burnKills > none.burnKills && onlyFire.chainRatio === none.chainRatio;
+  return onlyMetal.pierceRatio > none.pierceRatio && onlyMetal.chainRatio === none.chainRatio;
 })());
 check(`單一屬性的加成封頂在 +${Math.round(MAX_ELEMENT_BONUS * 100)}%`, (() => {
-  // 501 個條目平均分到 8 個屬性 = 每個 63 件 x 5 級 x 1% = 理論上 +315%,所以一定要封頂。
+  // 501 個條目平均分到 6 個屬性 = 每個 63 件 x 5 級 x 1% = 理論上 +315%,所以一定要封頂。
   const bits = emptyCollection();
   for (let i = 0; i < TOTAL_ITEMS; i++) addItem(bits, i);
   const scales = collectionScales(bits);
@@ -204,7 +205,7 @@ check(`單一屬性的加成封頂在 +${Math.round(MAX_ELEMENT_BONUS * 100)}%`,
     && ELEMENTS.every((id) => (scales[id] ?? 1) > 1);
 })());
 // 條目數要夠分散,不然有些屬性收不滿、有些一下就封頂。
-check('八個屬性分到的條目數夠平均(沒有哪個屬性特別難收)', (() => {
+check('六個屬性分到的條目數夠平均(沒有哪個屬性特別難收)', (() => {
   const tally = new Map<string, number>();
   for (const e of CODEX_ENTRIES) tally.set(e.element, (tally.get(e.element) ?? 0) + 1);
   const counts = ELEMENTS.map((id) => tally.get(id) ?? 0);
@@ -213,10 +214,10 @@ check('八個屬性分到的條目數夠平均(沒有哪個屬性特別難收)',
   + ELEMENTS.map((id) => CODEX_ENTRIES.filter((e) => e.element === id).length).join('/'));
 // 反過來:對真人是真的變強(元素的效果被放大)。
 check('技能書讓元素明顯更強(對玩家是真的變強)', (() => {
-  const kit: RunSkillState[] = [{ id: 'fire', level: 5 }, { id: 'strike', level: 5 }, { id: 'dark', level: 5 }];
+  const kit: RunSkillState[] = [{ id: 'metal', level: 5 }, { id: 'strike', level: 5 }, { id: 'thunder', level: 5 }];
   const a = runSkillEffects(kit, undefined, 0);
   const b = runSkillEffects(kit, undefined, MAX_SKILL_BOOK_LEVEL);
-  return b.burnKills > a.burnKills && b.leech > a.leech && b.actives[0].kills! > a.actives[0].kills!;
+  return b.pierceRatio > a.pierceRatio && b.chainRatio > a.chainRatio && b.actives[0].kills! > a.actives[0].kills!;
 })());
 
 console.log(fail === 0 ? '\n全部通過' : `\n${fail} 項失敗`);

@@ -257,10 +257,6 @@ export interface LaneRunView {
   lastStrike: { at: number; names: string[]; kills: number } | null;
   /** 命中那一刻的元素演出(燃燒擴散 / 連鎖閃電 / 凍結)。 */
   elementEvents: ElementEvent[];
-  /** 光・護盾:手上還有幾個(0 = 沒有)。畫面在勇者外圍畫一圈淺黃色光。 */
-  shields: number;
-  /** 最後一次擋下攻擊的時間戳。畫面拿它閃一下光圈。 */
-  lastShieldAt: number;
   /**
    * 這一場帶著的技能與冷卻。**畫面最下方那一列就是這個**——
    * 主動技能改成秒冷卻之後,玩家一定要看得到「還有幾秒」,不然它就只是偶爾自己跳出來的特效。
@@ -411,10 +407,6 @@ export function useLaneRun(
    * 每波清空的話它會退化成「這一波有沒有中獎」,而玩家對一個自己控制不了、
    * 又留不住的東西不會有任何規劃。
    */
-  const shieldsRef = useRef(0);
-  /** 最後一次擋下攻擊的時間戳。畫面拿它閃一下光圈(不閃的話玩家不知道護盾用掉了)。 */
-  const [lastShieldAt, setLastShieldAt] = useState(0);
-  const [shields, setShields] = useState(0);
   /** 目前帶的技能。tick 迴圈(每 33ms)要讀,走 ref 才不用把整個迴圈綁進相依陣列。 */
   const runSkillsRef = useRef<RunSkillState[]>([]);
   runSkillsRef.current = runSkills;
@@ -511,17 +503,13 @@ export function useLaneRun(
     // 勇者波:投擲傷害在跑圖途中就逐發扣過了(見 EnemyShot),一定要告訴 resolveEnemy
     // 別再用期望值扣一次——漏掉這一行的症狀只是「勇者波特別難」,不會有任何錯誤訊息。
     if (heroWave) boost.hazardResolved = true;
-    const kills = fx.burnKills + fired.kills;
-    if (kills > 0) boost.kills = kills;
+    // 火不再進這裡:它現在純粹是持續傷害,不保證帶走幾隻(舊的 fx.burnKills 已移除)。
+    if (fired.kills > 0) boost.kills = fired.kills;
     const ratio = fx.pierceRatio + fired.killRatio;
     if (ratio > 0) boost.killRatio = ratio;
     if (fx.chainRatio > 0) boost.chainRatio = fx.chainRatio;
-    if (fx.leech > 0) boost.leech = fx.leech;
     if (fx.regen > 0) { boost.regen = fx.regen; boost.lostSoFar = lostSoFarRef.current; }
     if (fx.lossCut > 0) boost.lossCut = fx.lossCut;
-    // 護盾走 boost 只是為了跟模擬器對齊(它沒有時間軸,只能在結算時一次抵掉);
-    // 遊戲裡是**飛到你身上的那一刻**逐發抵的,見下面 EnemyShot 那一段。
-    if (shieldsRef.current > 0) boost.shields = shieldsRef.current;
     if (fired.immune) boost.immune = true;
     return boost;
   }
@@ -708,14 +696,6 @@ export function useLaneRun(
       projectilesRef.current = [];
       enemyShotsRef.current = [];
       elementEventsRef.current = [];
-      // 光・護盾:每一波開始時擲一次骰。用雜湊不用亂數,理由跟凍結一樣——
-      // 這一段每 33ms 會重跑,亂數的話同一波會一直重抽。
-      const lightFx = runSkillEffects(runSkillsRef.current, current.element, bookLevel, collection);
-      if (lightFx.shieldChance > 0 && shieldsRef.current < lightFx.shieldCap
-          && procRoll(current.rowIndex, 0, 977) < lightFx.shieldChance) {
-        shieldsRef.current += 1;
-        setShields(shieldsRef.current);
-      }
     }
 
     // 這一波的技能效果。**每個 tick 重算**:波次中途選了新技能、或是吃到閘門讓戰力變了,
@@ -884,13 +864,7 @@ export function useLaneRun(
         if (moved.distance > travelled) { stillFlying.push(moved); continue; }
         // 飛到你身上了:站在這條線上就會被砸中。一波最多扣一次(見 hazardHitRowRef)。
         const inLine = Math.abs(offsetRef.current - shot.offset) <= HAZARD_WIDTH / 2;
-        if (inLine && shieldsRef.current > 0) {
-          // 光・護盾:擋掉這一下,完全不扣人。**要有畫面訊號**——沒有的話玩家看到的是
-          // 「武器穿過去但沒事」,那跟「這款的碰撞判定壞了」長得一模一樣。
-          shieldsRef.current -= 1;
-          setShields(shieldsRef.current);
-          setLastShieldAt(now);
-        } else if (inLine) {
+        if (inLine) {
           // **每一下都算,一波不設上限**:一把武器換一個人。
           if (hazardHitsRef.current.row !== current.rowIndex) hazardHitsRef.current = { row: current.rowIndex, hits: 0 };
           hazardHitsRef.current.hits += 1;
@@ -1092,8 +1066,6 @@ export function useLaneRun(
     dashing,
     lastStrike,
     elementEvents,
-    shields,
-    lastShieldAt,
     // 冷卻的倒數在**畫的時候**才算(readyAt 是 ref,不觸發重畫)。
     // 跑圖每個 tick 都會因為 distance 變動而重畫,所以倒數自然會走,不必再開一個計時器。
     carriedSkills: runSkills.map((s) => {

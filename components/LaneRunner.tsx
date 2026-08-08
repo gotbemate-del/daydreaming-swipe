@@ -146,10 +146,6 @@ const FROST_BURST = 28;
 const BURN_COLOR = '#e8814a';
 /** 土・遲滯疊在怪身上的咖啡色。跟 artAssets 的土屬性同色。 */
 const EARTH_COLOR = '#a8865e';
-/** 光・護盾的光圈顏色(淺黃)。跟 artAssets 的光屬性同色。 */
-const SHIELD_COLOR = '#e8e0c4';
-/** 擋下一次攻擊之後,光圈亮一下的時間。 */
-const SHIELD_FLASH_MS = 420;
 
 
 /**
@@ -251,7 +247,7 @@ export function LaneRunner({
     lastShotAt, lastShotId, feedback, steer, dragTo,
     runSkills, skillOffers, pendingPicks, chooseRunSkill, lastStrike, upcomingElements,
     enemyShots, lastHazardAt, enemyThrowAt, waveNumber, totalWaves,
-    elementEvents, carriedSkills, shields, lastShieldAt,
+    elementEvents, carriedSkills,
   } = run;
   const attack = totalAttack(state);
   /** 生存模式:一條連續的跑圖,通關不停下來等玩家按鈕。 */
@@ -1044,32 +1040,6 @@ export function LaneRunner({
             />
           );
         })}
-        {/*
-          光・護盾:勇者群外圍一圈淺黃色的光,手上有幾個就畫幾圈(由外往內縮)。
-          **擋掉一次攻擊的當下要亮一下**——不亮的話玩家看到的是「武器穿過去但沒事」,
-          那跟「碰撞判定壞了」長得一模一樣(勇者波的紅閃踩過同一個坑)。
-        */}
-        {ready && shields > 0 && Array.from({ length: Math.min(3, shields) }, (_, i) => {
-          const flash = Date.now() - lastShieldAt < SHIELD_FLASH_MS;
-          const pad = 10 + i * 7;
-          return (
-            <View
-              key={`shield-${i}`}
-              pointerEvents="none"
-              style={[
-                styles.shieldRing,
-                {
-                  left: heroLeft + leadSize.w / 2 - (leadSize.w / 2 + pad),
-                  bottom: HERO_BOTTOM + bob - pad,
-                  width: leadSize.w + pad * 2,
-                  height: leadSize.w + pad * 2,
-                  borderRadius: (leadSize.w + pad * 2) / 2,
-                  opacity: flash ? 0.95 : 0.4 - i * 0.08,
-                },
-              ]}
-            />
-          );
-        })}
         {state.heroes > units.length && (
           <Text style={[styles.squadCount, { left: heroLeft - 12, bottom: HERO_BOTTOM + HERO_HEIGHT - 6 }]}>
             x{compact(state.heroes)}
@@ -1324,5 +1294,4 @@ const styles = StyleSheet.create({
   bgmLabel: { color: '#e0a95c', fontSize: 10, fontWeight: '700' },
   bgmLabelOff: { color: '#8a8a95' },
   /** 光・護盾的光圈。畫在勇者群外面,不填色(填了會蓋掉勇者)。 */
-  shieldRing: { position: 'absolute', borderWidth: 2, borderColor: SHIELD_COLOR, zIndex: 19 },
 });

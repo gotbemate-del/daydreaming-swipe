@@ -30,6 +30,7 @@ import {
   MAX_RUN_SKILL_SLOTS, runSkillEffects, skillCooldownSeconds, bestRunSkillChoice, runSkillOffersAt,
   ACTIVE_SKILL_IDS, ELEMENTS, runSkillSpec, ELEMENT_COUNTERS, COUNTER_BONUS, COUNTERED_PENALTY,
   elementMatchup, elementForRow,
+  burnSpreadTargets, metalSpreadTargets,
 } from '../game/laneRunSkills';
 
 let fail = 0;
@@ -512,17 +513,18 @@ check(`技能種類(${RUN_SKILLS.length})多於格數(${MAX_RUN_SKILL_SLOTS}),�
   && runSkillOffersAt(fullBag, 1, 0).every((o) => fullBag.some((s) => s.id === o.id)),
   `${RUN_SKILLS.length} 種 / ${MAX_RUN_SKILL_SLOTS} 格`);
 
-// --- 八元素:每一款規則都不一樣,而且**全部只在失誤時才生效** ---
+// --- 六元素:每一款規則都不一樣,而且**全部只在失誤時才生效** ---
+// 光(護盾)與暗(吸取)已移除,雷併進五行環(見 laneRunSkills 的 ELEMENT_COUNTERS)。
 const elemFx = (id: (typeof ELEMENTS)[number], l = 3) => runSkillEffects([{ id, level: l }]);
-check('八個元素都存在,而且效果組合互不相同(不是同一個東西換名字)',
-  ELEMENTS.length === 8
+check('六個元素都存在,而且效果組合互不相同(不是同一個東西換名字)',
+  ELEMENTS.length === 6
   && new Set(ELEMENTS.map((id) => {
     const e = elemFx(id);
-    return JSON.stringify([e.burnKills > 0, e.pierceRatio > 0, e.chainRatio > 0, e.tradeMultiplier > 1,
-      e.regen > 0, e.slow > 0, e.shieldChance > 0, e.leech > 0]);
-  })).size === 8,
+    return JSON.stringify([e.burnSpread > 0, e.pierceRatio > 0, e.chainRatio > 0, e.tradeMultiplier > 1,
+      e.regen > 0, e.slow > 0]);
+  })).size === 6,
   ELEMENTS.map((id) => runSkillSpec(id).name).join(' '));
-check('沒有任何元素會加戰力(所以八個都不進敵人曲線)',
+check('沒有任何元素會加戰力(所以六個都不進敵人曲線)',
   ELEMENTS.every((id) => {
     const e = elemFx(id, MAX_RUN_SKILL_LEVEL);
     return e.attackMultiplier === 1 && e.heroMultiplier === 1;
@@ -543,11 +545,19 @@ check('沒帶那個元素就沒有演出參數(不會憑空多一層特效)',
     return none.burnSpread === 0 && none.chainEvery === 0 && none.chainTargets === 0 && none.freezeChance === 0;
   })());
 // 這一項是回歸防線:演出改版**完全沒有動**決定難度的那三個數字。
-check('演出改版沒有動到擊殺數(火 1/級、雷 8%/級、金 6%/級)',
-  fireFx.burnKills === 5
-  && Math.abs(thunderFx.chainRatio - 0.4) < 1e-9
+// 火已經完全退出擊殺數(舊的 fireKills 移除),它現在純粹是持續傷害。
+check('擊殺數只剩雷 8%/級 與金 6%/級,火一隻都不保證',
+  Math.abs(thunderFx.chainRatio - 0.4) < 1e-9
   && Math.abs(runSkillEffects([{ id: 'metal', level: 5 }]).pierceRatio - 0.3) < 1e-9,
-  `火 ${fireFx.burnKills} 隻 / 雷 ${(thunderFx.chainRatio * 100).toFixed(0)}% / 金 ${(runSkillEffects([{ id: 'metal', level: 5 }]).pierceRatio * 100).toFixed(0)}%`);
+  `雷 ${(thunderFx.chainRatio * 100).toFixed(0)}% / 金 ${(runSkillEffects([{ id: 'metal', level: 5 }]).pierceRatio * 100).toFixed(0)}%`);
+// 火的新規則:1 級只燒被打中的那一隻,擴散是升級才長出來的。
+check('火 1 級不擴散,升級才蔓延',
+  burnSpreadTargets(1) === 0 && burnSpreadTargets(5) > burnSpreadTargets(2),
+  `1~5 級 ${[1, 2, 3, 4, 5].map(burnSpreadTargets).join('/')} 隻`);
+// 金的新規則:擴散是演出,擊殺數仍然只由 pierceRatio 決定。
+check('金會擴散,而且擴散隻數隨等級長',
+  metalSpreadTargets(1) >= 1 && metalSpreadTargets(5) > metalSpreadTargets(1),
+  `1~5 級 ${[1, 2, 3, 4, 5].map(metalSpreadTargets).join('/')} 隻`);
 // 凍結是唯一吃相剋的演出參數(它是機率,放大得動;擴散隻數是整數,放大就變成另一個技能)。
 check('冰的凍結機率吃相剋,擴散/連鎖的隻數不吃',
   runSkillEffects([{ id: 'ice', level: 3 }], 'fire').freezeChance
@@ -569,9 +579,9 @@ check('只有四款主動有冷卻,八元素一款都沒有(技能列的規則:�
 const perfectWave = { power: 1, reward: 0, species: [{ id: 'blob-1', name: '史' }], name: '史', units: 6 };
 const perfectState: RunState = { ...initialRunState(1), heroes: 50, perHero: 1000 };
 const allElements: WaveBoost = {
-  kills: 5, killRatio: 0.3, chainRatio: 0.3, leech: 1, regen: 9, lostSoFar: 0, lossCut: 3, shields: 3,
+  kills: 5, killRatio: 0.3, chainRatio: 0.3, regen: 9, lostSoFar: 0, lossCut: 3,
 };
-check('完美玩家帶滿八元素也一模一樣(所以它們是抬地板不抬天花板)',
+check('完美玩家帶滿六元素也一模一樣(所以它們是抬地板不抬天花板)',
   resolveEnemy(perfectState, perfectWave).state.heroes
   === resolveEnemy(perfectState, perfectWave, allElements).state.heroes);
 // 反過來:落後的玩家帶了就有差。
@@ -603,35 +613,35 @@ const cycleLengths = new Set(ELEMENTS.map((start) => {
 }));
 check('相剋是封閉的環,而且沒有元素剋自己',
   !cycleLengths.has(-1) && !cycleLengths.has(1)
-  && [...cycleLengths].sort((a, b) => a - b).join(',') === '3,5',
-  `環長 ${[...cycleLengths].sort((a, b) => a - b).join(' 與 ')}(五行 + 三才)`);
+  && [...cycleLengths].sort((a, b) => a - b).join(',') === '6',
+  `環長 ${[...cycleLengths].sort((a, b) => a - b).join(' 與 ')}(六元素單一閉環)`);
 // 相剋是**逐元素**的:剋中那一個放大、被剋那一個削弱,其他元素與主動技能一律不動。
 check('相剋倍率:剋中 x2.5、被剋 x2/3、無關 x1',
   elementMatchup('metal', 'wood') === COUNTER_BONUS
-  && elementMatchup('metal', 'fire') === 1 - COUNTERED_PENALTY
-  && elementMatchup('metal', 'light') === 1
+  && elementMatchup('metal', 'thunder') === 1 - COUNTERED_PENALTY
+  && elementMatchup('metal', 'ice') === 1
   && elementMatchup('metal', undefined) === 1);
 check('非元素技能不吃相剋(鋒刃/增殖/主動技能)',
   (['edge', 'swarm', ...ACTIVE_SKILL_IDS] as const).every((id) => ELEMENTS.every((e) => elementMatchup(id, e) === 1)));
 // 一組技能裡,只有對得上的那一個被動到——這是「逐元素」跟舊版純量最關鍵的差別。
-// 第三款刻意挑**另一個環**的(光屬三才、火金屬五行),不然它會被同一波順帶剋到,
-// 就分不出「只動對得上的那一個」到底有沒有成立。
+// 對照組必須跟這一波的屬性**完全不相干**,不然它會被順帶剋到,就分不出隔離性有沒有成立。
+// 環是 金→木→土→冰→火→雷→金,所以對「金」與「火」兩波都中立的是土。
 const mixed = [
-  { id: 'fire' as const, level: 3 },
-  { id: 'light' as const, level: 3 },
+  { id: 'thunder' as const, level: 3 },
+  { id: 'earth' as const, level: 3 },
   { id: 'strike' as const, level: 3 },
 ];
 const base = runSkillEffects(mixed);
-const vsMetal = runSkillEffects(mixed, 'metal'); // 火剋金
-const vsIce = runSkillEffects(mixed, 'ice');     // 冰剋火
+const vsMetal = runSkillEffects(mixed, 'metal'); // 雷剋金
+const vsFire = runSkillEffects(mixed, 'fire');   // 火剋雷
 check('剋中只放大那一個元素,別的元素不動',
-  Math.abs(vsMetal.burnKills - base.burnKills * COUNTER_BONUS) < 1e-9
-  && vsMetal.shieldChance === base.shieldChance,
-  `火 ${base.burnKills} → ${vsMetal.burnKills} / 光 ${base.shieldChance} → ${vsMetal.shieldChance}`);
+  Math.abs(vsMetal.chainRatio - base.chainRatio * COUNTER_BONUS) < 1e-9
+  && vsMetal.lossCut === base.lossCut,
+  `雷 ${base.chainRatio.toFixed(2)} → ${vsMetal.chainRatio.toFixed(2)} / 土 ${base.lossCut} → ${vsMetal.lossCut}`);
 check('被剋只削弱那一個元素',
-  Math.abs(vsIce.burnKills - base.burnKills * (1 - COUNTERED_PENALTY)) < 1e-9
-  && vsIce.shieldChance === base.shieldChance,
-  `火 ${base.burnKills} → ${vsIce.burnKills}`);
+  Math.abs(vsFire.chainRatio - base.chainRatio * (1 - COUNTERED_PENALTY)) < 1e-9
+  && vsFire.lossCut === base.lossCut,
+  `雷 ${base.chainRatio.toFixed(2)} → ${vsFire.chainRatio.toFixed(2)}`);
 check('相剋完全不碰主動技能與基礎戰力',
   vsMetal.actives[0].kills === base.actives[0].kills
   && vsMetal.attackMultiplier === base.attackMultiplier
@@ -720,18 +730,21 @@ check('魔王也有屬性,而且關卡前就公開(x-10 是最值得押注的一
 // **相剋照樣不進理想路線**:它只放大元素,而元素只在失誤時生效。
 const counteredAll: WaveBoost = {
   kills: 5 * COUNTER_BONUS, killRatio: 0.3 * COUNTER_BONUS, chainRatio: 0.3 * COUNTER_BONUS,
-  leech: 1, regen: 9 * COUNTER_BONUS, lostSoFar: 0, lossCut: 3 * COUNTER_BONUS,
+  regen: 9 * COUNTER_BONUS, lostSoFar: 0, lossCut: 3 * COUNTER_BONUS,
 };
 check('完美玩家帶對屬性也一模一樣(相剋沒有破壞結構保證)',
   resolveEnemy(perfectState, perfectWave, counteredAll).state.heroes
   === resolveEnemy(perfectState, perfectWave).state.heroes);
 // **這一波要夠大,大到兩邊都還有漏接**才比得出相剋的差別:小波會被兩邊都清光,
 // 清光之後「再多清一點」是零效益,兩邊的結果自然一模一樣(那不是相剋失效,是天花板)。
+// 但也**不能大到兩邊都全滅**——暗・吸取移除之後,原本靠它撐住的那組會直接歸零,
+// 兩邊同樣是 0 人就一樣分不出差別。所以拿一個「撐得住但會痛」的隊伍來比。
 const behindBigWave = { ...perfectWave, power: 4000, units: 200 };
+const behindBigState: RunState = { ...initialRunState(1), heroes: 300, perHero: 1 };
 check('落後的玩家帶對屬性明顯更有用',
-  resolveEnemy(behindState, behindBigWave, counteredAll).state.heroes
-  > resolveEnemy(behindState, behindBigWave, allElements).state.heroes,
-  `沒剋 ${resolveEnemy(behindState, behindBigWave, allElements).state.heroes} 人 / 剋中 ${resolveEnemy(behindState, behindBigWave, counteredAll).state.heroes} 人`);
+  resolveEnemy(behindBigState, behindBigWave, counteredAll).state.heroes
+  > resolveEnemy(behindBigState, behindBigWave, allElements).state.heroes,
+  `沒剋 ${resolveEnemy(behindBigState, behindBigWave, allElements).state.heroes} 人 / 剋中 ${resolveEnemy(behindBigState, behindBigWave, counteredAll).state.heroes} 人`);
 
 // --- 第 40 小關之後的難度分段 ---
 // 三顆旋鈕、一段一顆,而且**三顆都不能碰到完美玩家**——碰到就進了理想路線,
@@ -1006,18 +1019,17 @@ const bestNoRock = clearRate(20, simBest, 200, { rockHitRate: 0 });
 const bestAllRock = clearRate(20, simBest, 200, { rockHitRate: 1 });
 check('完美玩家(閃掉每一顆)仍然一定過關 —— 石頭沒有動到結構保證',
   bestNoRock === 1, `${(bestNoRock * 100).toFixed(0)}%`);
-// 這一項只擋一件事:**石頭不能變成必死**。門檻刻意鬆(0.5),因為這個數字量的是
-// 「石頭 × 其他所有平衡」的交互作用,會隨敵人隻數、元素、燃燒等等一起漂——
-// 實測值在不同版本之間看過 89% 與 77%,而那兩次石頭本身完全沒改。
-// 拿它當精確門檻只會在別人動平衡時誤報。
+// 門檻 0.8 是**漂移警報**,不只是「不能必死」的下限。
 //
-// 真正的結構保證是上面那一項(完美玩家閃掉每顆 = 100%),那個不准掉。
+// 這個數字量的是「石頭 × 其他所有平衡」的交互作用,所以石頭一行沒改也會被別人動到——
+// 實測在不同版本看過 92% / 89% / 77%。**那正是要它報警的情況**:掉下來就代表
+// 有人把整體難度收緊了,石頭的複利代價跟著變重,該回來重看 ROCK_HERO_LOSS。
 //
-// 代價是**複利**的:一般小關 3 顆各掉 20%,0.8^3 = 0.51,而容錯緩衝只有
-// 1/ENEMY_POWER_RATIO ≈ 2.08x —— 所以「閘門全對但石頭全撞」本來就該接近臨界。
-// 動 ROCK_HERO_LOSS 或顆數之前,先看一眼下面印出來的實測值往哪邊跑。
+// 代價是複利的:一般小關 3 顆各掉 20%,0.8^3 = 0.51,而容錯緩衝只有
+// 1/ENEMY_POWER_RATIO ≈ 2.08x —— 「閘門全對但石頭全撞」本來就貼著臨界。
+// 這一項紅了不要直接放寬門檻,先確認是「整體難度變了」還是「石頭真的太重」。
 check('就算每顆都撞到,選對閘門的玩家還是過得去(石頭是懲罰不是死刑)',
-  bestAllRock >= 0.5, `每顆都撞 ${(bestAllRock * 100).toFixed(0)}%`);
+  bestAllRock >= 0.8, `每顆都撞 ${(bestAllRock * 100).toFixed(0)}%`);
 
 // 代價:對會失誤的玩家要真的有感,但不能把難度整條拉走。
 console.log('\n石頭對過關率的影響(準確率 90%,石頭撞擊率 = 1 - 準確率):');

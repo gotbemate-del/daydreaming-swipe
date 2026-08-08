@@ -35,29 +35,36 @@
 export type RunSkillId =
   // 基礎被動:唯一兩款會加戰力的,也就是唯一兩款會被敵人曲線追平的(它們是「跟上」不是「變強」)
   | 'edge' | 'swarm'
-  // 八元素:**全部只在你失誤的時候才生效**,所以完美玩家一個都用不到,
+  // 六元素:**全部只在你失誤的時候才生效**,所以完美玩家一個都用不到,
   // 也因此全部不進理想路線——敵人不會為了它們變強,幅度可以放心給(見下方 ELEMENTS)
-  | 'fire' | 'metal' | 'thunder' | 'ice' | 'wood' | 'earth' | 'light' | 'dark'
+  | 'fire' | 'metal' | 'thunder' | 'ice' | 'wood' | 'earth'
   // 主動技能(有冷卻、有特效、造成固定效果)。冷卻以**秒**為單位(理由見 COOLDOWN_SPEC)。
   | 'strike' | 'pierce' | 'rally' | 'aegis';
 
 /**
- * 八元素。每一款的**規則**都不一樣(不是同一個東西換名字),而且互相剋制(見 ELEMENT_COUNTERS)。
+ * 六元素。每一款的**規則**都不一樣(不是同一個東西換名字),而且互相剋制(見 ELEMENT_COUNTERS)。
  *
- * **八個都刻意只在你失誤時才生效**(漏接、被撞、快死),完美玩家全清不漏,一個都碰不到:
+ * **六個都刻意只在你失誤時才生效**(漏接、被撞、快死),完美玩家全清不漏,一個都碰不到:
  * 這讓它們自動不進理想路線,敵人不會為了一個沒人用得到的東西變強——
  * 跟兌換率、主動技能同一個道理,也是這款所有「抬地板不抬天花板」機制的共同形狀。
+ *
+ * 光(護盾)與暗(吸取)已移除。移除之後原本的第二個閉環(光→暗→雷)只剩雷一個,
+ * 會變成沒有剋制對象的孤兒,所以雷併進五行環——見 ELEMENT_COUNTERS。
  */
-export const ELEMENTS: RunSkillId[] = ['fire', 'metal', 'thunder', 'ice', 'wood', 'earth', 'light', 'dark'];
+export const ELEMENTS: RunSkillId[] = ['fire', 'metal', 'thunder', 'ice', 'wood', 'earth'];
 export function isElement(id: RunSkillId): boolean {
   return ELEMENTS.includes(id);
 }
 
 /**
- * 相剋表:每個元素剋誰。**兩個閉環,所以每個元素剛好剋一個、也剛好被一個剋**——
+ * 相剋表:每個元素剋誰。**一個閉環,所以每個元素剛好剋一個、也剛好被一個剋**——
  * 沒有「萬用元素」也沒有「廢元素」。
  *
- *   五行:金 → 木 → 土 → 冰 → 火 → 金
+ *   金 → 木 → 土 → 冰 → 火 → 雷 → 金
+ *
+ * 雷原本在另一條環(光→暗→雷→光)上,光與暗移除之後那條環斷了,雷會變成孤兒
+ * (剋不到人也不被剋 = 永遠 x1,等於一款沒有相剋的萬用元素,那正是相剋要避免的東西)。
+ * 所以把雷插在火與金之間,六個元素併成單一閉環,「每個剛好剋一個」的性質保住。
  *   三才:光 → 暗 → 雷 → 光
  *
  * ## 相剋是**逐元素**的,不是整組的純量
@@ -91,8 +98,7 @@ export function isElement(id: RunSkillId): boolean {
  * 它照樣不進理想路線,敵人不會為了它變強。被剋的那一半同理:扣的是本來就等於零的東西。
  */
 export const ELEMENT_COUNTERS: Partial<Record<RunSkillId, RunSkillId>> = {
-  metal: 'wood', wood: 'earth', earth: 'ice', ice: 'fire', fire: 'metal',
-  light: 'dark', dark: 'thunder', thunder: 'light',
+  metal: 'wood', wood: 'earth', earth: 'ice', ice: 'fire', fire: 'thunder', thunder: 'metal',
 };
 
 /** 剋中的時候,那一個元素的效果放大幾倍。 */
@@ -212,10 +218,9 @@ const PER_LEVEL = {
   edgeAttack: 0.18,
   /** 增殖:隊伍人數的幾成 */
   swarmHeroes: 0.25,
-  // ---- 八元素(每一款的規則都不一樣,不是同一個東西換名字)----
-  /** 火・燃燒:每一波額外燒掉固定幾隻(前期、小波最有感) */
-  fireKills: 1,
-  /** 金・穿透:每一波額外清掉整波的幾成(後期、大波才有感,跟火互補) */
+  // ---- 六元素(每一款的規則都不一樣,不是同一個東西換名字)----
+  // 火沒有 fireKills 了:它現在**純粹是持續傷害**,不直接保證帶走幾隻(見 burnSpreadTargets)。
+  /** 金・擴散:每一波額外清掉整波的幾成(後期、大波才有感) */
   metalRatio: 0.06,
   /** 雷・連鎖:額外清掉「你自己打倒的隻數」的幾成(你越強放大越多) */
   thunderRatio: 0.08,
@@ -227,10 +232,8 @@ const PER_LEVEL = {
   earthSlow: 0.12,
   /** 土・遲滯:怪衝得慢,每一波少損失幾個人(**固定值**,跟冰的乘數互補) */
   earthLossCut: 1,
-  /** 光・護盾:每一波有幾成機率結出一個護盾(擋下一次攻擊) */
-  lightShieldChance: 0.2,
-  /** 暗・吸取:漏過來的怪有幾成反而加入你(只有漏接時才有東西可吸) */
-  darkLeech: 0.2,
+  /** 金・擴散:命中時往旁邊各送一下的傷害佔一次命中的幾成(演出,見 metalSpreadTargets) */
+  metalSpreadDamage: 0.5,
   /** 爆裂(主動):每次觸發直接清掉幾隻(固定值,前期最有感) */
   strikeKills: 0.8,
   /** 貫穿(主動):清掉整波的幾成(比例值,後期大波才有感——跟爆裂互補) */
@@ -297,8 +300,33 @@ export function hasCooldown(id: RunSkillId): boolean {
 // 由 laneRun 的 extraKills 統一結算。分開的理由:擊殺數是難度,演出是體感,
 // 混在一起的話「火燒得更漂亮」就會變成「難度悄悄降了」,而那不是設計決定的。
 
-/** 火・燃燒:一次命中把火燒到後面幾隻身上。 */
+/**
+ * 火・燃燒:一次命中把火**額外**燒到旁邊幾隻(不含被打中的那一隻,牠一定會燒)。
+ *
+ * 1 級是 0 —— **只有被打中的那一隻燒起來**,擴散是升級才長出來的東西。
+ * 先前 1 級就直接燒到旁邊 1 隻,「升級」在畫面上只是多一隻在燒,分不出差別;
+ * 從 0 開始的話第一次升級就是「火開始蔓延」,那是看得見的一步。
+ *
+ * 級數 1~5 → 0 / 1 / 1 / 2 / 2 隻。
+ */
 export function burnSpreadTargets(level: number): number {
+  return level > 0 ? Math.floor(Math.min(MAX_RUN_SKILL_LEVEL, level) / 2) : 0;
+}
+
+/**
+ * 金・擴散:一次命中往旁邊各送一下的目標數。
+ *
+ * 跟火的差別是**瞬間 vs 持續**:金是命中當下對旁邊各補一次傷害(半下,見 metalSpreadDamage),
+ * 火是點燃之後慢慢啃。兩款都會讓旁邊掉血,但看起來完全不同,而且金對「快撞上來的那幾隻」
+ * 立刻有效,火要等 3 秒。
+ *
+ * **它一樣不會多打倒任何一隻。** 畫面端的 isDown 只讓前 kills 隻倒下(見 useLaneRun),
+ * 所以擴散傷害只會讓該倒的更早倒,擊殺數仍然只由 metalRatio 經 extraKills 決定。
+ * 這一條是刻意的:CLAUDE.md 記過「火燒得更漂亮不該等於難度悄悄降了」。
+ *
+ * 級數 1~5 → 1 / 1 / 2 / 2 / 3 隻。
+ */
+export function metalSpreadTargets(level: number): number {
   return level > 0 ? 1 + Math.floor((Math.min(MAX_RUN_SKILL_LEVEL, level) - 1) / 2) : 0;
 }
 
@@ -354,27 +382,27 @@ export function earthSlowRatio(level: number): number {
   return level > 0 ? Math.min(0.5, PER_LEVEL.earthSlow * Math.min(MAX_RUN_SKILL_LEVEL, level)) : 0;
 }
 
-/**
- * 光・護盾:最多同時帶幾個護盾。
- *
- * 每一波開始時擲一次骰,中了就 +1 個,擋掉一次「被武器砸中」。
- * **上限存在的理由是它不能變成「攢起來的免傷」**:囤十個護盾等於整場勇者波免疫,
- * 而勇者波的威脅剛好等於「你沒打完的部分」——免疫掉就等於那一段沒有難度。
- */
-export function shieldChargeCap(level: number): number {
-  return level > 0 ? 1 + Math.floor(Math.min(MAX_RUN_SKILL_LEVEL, level) / 3) : 0;
-}
-
 export const RUN_SKILLS: RunSkillSpec[] = [
   { id: 'edge', name: '鋒刃', describe: (l) => `每人攻擊力 +${Math.round(PER_LEVEL.edgeAttack * l * 100)}%` },
   { id: 'swarm', name: '增殖', describe: (l) => `數量 +${Math.round(PER_LEVEL.swarmHeroes * l * 100)}%` },
-  // 八元素。說明一律寫「什麼時候有用」,不是只寫數字——玩家要在 2 秒內判斷該不該拿。
+  // 六元素。說明一律寫「什麼時候有用」,不是只寫數字——玩家要在 2 秒內判斷該不該拿。
   {
     id: 'fire',
     name: '火・燃燒',
-    describe: (l) => `命中後火焰燒到旁邊 ${burnSpreadTargets(l)} 隻(每秒 ${Math.round(BURN_DPS_RATIO * 100)}% 生命),每波多帶走 ${PER_LEVEL.fireKills * l} 隻`,
+    describe: (l) => {
+      const dps = `每秒 ${Math.round(BURN_DPS_RATIO * 100)}% 生命`;
+      const spread = burnSpreadTargets(l);
+      return spread > 0
+        ? `命中的那隻燒起來,火再蔓延到旁邊 ${spread} 隻(${dps})`
+        : `命中的那隻燒起來(${dps}),升級後火會蔓延`;
+    },
   },
-  { id: 'metal', name: '金・穿透', describe: (l) => `每波多清掉整波的 ${Math.round(PER_LEVEL.metalRatio * l * 100)}%` },
+  {
+    id: 'metal',
+    name: '金・擴散',
+    describe: (l) =>
+      `命中時往旁邊 ${metalSpreadTargets(l)} 隻各擴散一次傷害,每波多清掉整波的 ${Math.round(PER_LEVEL.metalRatio * l * 100)}%`,
+  },
   {
     id: 'thunder',
     name: '雷・連鎖',
@@ -391,12 +419,6 @@ export const RUN_SKILLS: RunSkillSpec[] = [
     name: '土・遲滯',
     describe: (l) => `怪衝得慢 ${Math.round(earthSlowRatio(l) * 100)}%,每波少損失 ${PER_LEVEL.earthLossCut * l} 人`,
   },
-  {
-    id: 'light',
-    name: '光・護盾',
-    describe: (l) => `每波 ${Math.round(PER_LEVEL.lightShieldChance * l * 100)}% 機率結出護盾,擋下一次攻擊(最多帶 ${shieldChargeCap(l)} 個)`,
-  },
-  { id: 'dark', name: '暗・吸取', describe: (l) => `漏過來的怪有 ${Math.round(PER_LEVEL.darkLeech * l * 100)}% 加入你` },
   {
     id: 'strike',
     name: '爆裂',
@@ -542,9 +564,7 @@ export interface RunSkillEffects {
   heroMultiplier: number;
   /** 兌換率乘這個(水・減速) */
   tradeMultiplier: number;
-  /** 火・燃燒:每波額外燒掉幾隻 */
-  burnKills: number;
-  /** 金・穿透:每波額外清掉整波的幾成 */
+  /** 金・擴散:每波額外清掉整波的幾成 */
   pierceRatio: number;
   /** 雷・連鎖:額外清掉「自己打倒的隻數」的幾成 */
   chainRatio: number;
@@ -554,23 +574,21 @@ export interface RunSkillEffects {
   slow: number;
   /** 土・遲滯:每一波少損失幾個人(這才是它的實際好處) */
   lossCut: number;
-  /** 光・護盾:每一波結出一個護盾的機率 */
-  shieldChance: number;
-  /** 光・護盾:最多同時帶幾個 */
-  shieldCap: number;
-  // ---- 以下四個只決定「命中的那一刻演出什麼」,不決定總共多打倒幾隻 ----
-  // 擊殺數一律由 burnKills / pierceRatio / chainRatio 決定(見 laneRun 的 extraKills)。
+  // ---- 以下這幾個只決定「命中的那一刻演出什麼」,不決定總共多打倒幾隻 ----
+  // 擊殺數一律由 pierceRatio / chainRatio 決定(見 laneRun 的 extraKills)。
   // 分開的理由寫在上面 burnSpreadTargets 那一段:演出變好看不該等於難度悄悄降低。
-  /** 火・燃燒:一次命中把火燒到後面幾隻 */
+  /** 火・燃燒:一次命中把火額外燒到旁邊幾隻(不含被打中的那一隻) */
   burnSpread: number;
+  /** 金・擴散:一次命中往旁邊幾隻各送一下 */
+  metalSpread: number;
+  /** 金・擴散:擴散出去的那一下佔一次命中的幾成 */
+  metalSpreadDamage: number;
   /** 冰・凍結:一次命中把目標凍住的機率(已含相剋) */
   freezeChance: number;
   /** 雷・連鎖:每幾下觸發一次連鎖閃電(0 = 沒點) */
   chainEvery: number;
   /** 雷・連鎖:一次電到幾隻 */
   chainTargets: number;
-  /** 暗・吸取:漏過來的怪有幾成加入你 */
-  leech: number;
   /**
    * 目前帶著的主動技能,每一款各自的冷卻與效果。
    *
@@ -621,16 +639,13 @@ export function runSkillEffects(
   let attack = 0;
   let heroes = 0;
   let trade = 0;
-  let burnKills = 0;
   let pierceRatio = 0;
   let chainRatio = 0;
   let regen = 0;
   let slow = 0;
   let lossCut = 0;
-  let shieldChance = 0;
-  let shieldCap = 0;
-  let leech = 0;
   let burnSpread = 0;
+  let metalSpread = 0;
   let freezeChance = 0;
   let chainEvery = 0;
   let chainTargets = 0;
@@ -643,8 +658,10 @@ export function runSkillEffects(
     // mx 是這一個元素對上這一波屬性的倍率(剋中放大、被剋削弱),逐元素各算各的。
     // 相剋(逐元素)乘上技能書的放大。兩者都只碰元素/主動,所以都不進理想路線。
     const mx = elementMatchup(s.id, waveElement) * bookPowerScale(s.id, bookLevel, collection);
-    if (s.id === 'fire') { burnKills += PER_LEVEL.fireKills * level * mx; burnSpread += burnSpreadTargets(level); }
-    if (s.id === 'metal') pierceRatio += PER_LEVEL.metalRatio * level * mx;
+    // 火:純持續傷害,**不再保證每波帶走幾隻**(舊的 fireKills 已移除)。
+    // 擴散隻數不吃相剋——它是演出,剋中就直接燒滿整波的話,「火燒得漂亮」又會等於難度降低。
+    if (s.id === 'fire') burnSpread += burnSpreadTargets(level);
+    if (s.id === 'metal') { pierceRatio += PER_LEVEL.metalRatio * level * mx; metalSpread += metalSpreadTargets(level); }
     if (s.id === 'thunder') {
       chainRatio += PER_LEVEL.thunderRatio * level * mx;
       chainEvery = chainEveryHits(level);
@@ -655,9 +672,6 @@ export function runSkillEffects(
     // 土・遲滯:減速是演出(所以不吃相剋,免得剋中就直接把整波定住),
     // 少損失幾個人才是它的實際好處(所以那個吃相剋)。
     if (s.id === 'earth') { slow += earthSlowRatio(level); lossCut += PER_LEVEL.earthLossCut * level * mx; }
-    // 光・護盾:機率吃相剋(它是機率,放大得動),上限不吃(整數,放大就變成另一個技能)。
-    if (s.id === 'light') { shieldChance += PER_LEVEL.lightShieldChance * level * mx; shieldCap += shieldChargeCap(level); }
-    if (s.id === 'dark') leech += PER_LEVEL.darkLeech * level * mx;
     if (level <= 0) continue;
     // 主動技能吃技能書的放大,但**不吃相剋**(相剋只放大元素,見 elementMatchup)。
     const bk = bookPowerScale(s.id, bookLevel, collection);
@@ -679,16 +693,14 @@ export function runSkillEffects(
     attackMultiplier: 1 + attack,
     heroMultiplier: 1 + heroes,
     tradeMultiplier: 1 + trade,
-    burnKills,
     pierceRatio,
     chainRatio,
     regen,
     slow: Math.min(0.5, slow),
     lossCut,
-    shieldChance: Math.min(1, shieldChance),
-    shieldCap,
-    leech,
     burnSpread,
+    metalSpread,
+    metalSpreadDamage: PER_LEVEL.metalSpreadDamage,
     freezeChance: Math.min(0.6, freezeChance),
     chainEvery,
     chainTargets,

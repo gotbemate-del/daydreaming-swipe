@@ -275,14 +275,12 @@ export const ELEMENT_COLORS: Record<string, string> = {
   ice: '#6fa8bd',
   wood: '#6f9e63',
   earth: '#a8865e',
-  light: '#e8e0c4',
-  dark: '#7a6f96',
 };
 
 /** 屬性的單字標籤(面板、提示列都用這個,不用 emoji)。 */
 export const ELEMENT_LABELS: Record<string, string> = {
   fire: '火', metal: '金', thunder: '雷', ice: '冰',
-  wood: '木', earth: '土', light: '光', dark: '暗',
+  wood: '木', earth: '土',
 };
 
 export function elementColor(id?: string): string | undefined {

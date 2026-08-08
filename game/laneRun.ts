@@ -314,7 +314,7 @@ export const START_OFFSET = 0.5;
  *
  * 難度不受影響:敵人是照這一場的最佳路線算的,閘門調小敵人自動跟著小(見 ENEMY_POWER_RATIO)。
  */
-export const GEAR_STEP = 1.08;
+export const GEAR_STEP = 1.07;
 export const MAX_GEAR = 5;
 
 // ---- 節奏 ----
@@ -1706,17 +1706,8 @@ export interface WaveBoost {
   regen?: number;
   /** 這一場到目前為止總共失去幾個人(給 regen 當上限用) */
   lostSoFar?: number;
-  /** 漏過來的怪有幾成加入你(暗・吸取) */
-  leech?: number;
   /** 這一波的損失少扣幾個人(土・遲滯:怪衝得慢,撞上來的比較少) */
   lossCut?: number;
-  /**
-   * 手上有幾個護盾(光・護盾),每個擋掉一次「被武器砸中」。
-   *
-   * 只擋勇者波的投擲,不擋漏接——擋漏接的話它就跟壁障/兌換率重疊了,
-   * 而且「擋下一次攻擊」在這款唯一看得到的攻擊就是飛過來的那把武器。
-   */
-  shields?: number;
   /** 這一波的損失全擋下來(土・護盾 + 壁障) */
   immune?: boolean;
   /**
@@ -1764,11 +1755,7 @@ export function resolveEnemy(
   if (heroWaveHazards.length > 0 && hitByHazard(at, heroWaveHazards)) {
     // 模擬器路徑:一波扣「期望被打中的次數」x 每下 1 個人。
     // 遊戲裡是逐發扣的(見 useLaneRun 的 EnemyShot),兩邊用同一組常數換算。
-    // 光・護盾:手上有幾個就擋掉幾下(擋完了才開始扣人)。
-    const hit = Math.max(
-      0,
-      expectedHazardHits(state.stage) * HAZARD_LOSS_HEROES - Math.floor(Math.max(0, boost.shields ?? 0)),
-    );
+    const hit = Math.max(0, expectedHazardHits(state.stage) * HAZARD_LOSS_HEROES);
     if (hit <= 0) return resolveEnemy(state, { ...enemy, heroWave: false }, boost, at);
     const struck = { ...state, heroes: Math.max(0, state.heroes - hit) };
     if (struck.heroes <= 0) {
@@ -1817,13 +1804,11 @@ export function resolveEnemy(
     Math.ceil((leaked * cost) / Math.max(BASE_TRADE_RATE, next.tradeRate))
       - Math.floor(Math.max(0, boost.lossCut ?? 0)),
   );
-  // 暗・吸取:漏過來的怪有一部分反而加入你。只有漏接時才有東西可吸,所以完美玩家拿它等於零。
-  const leeched = Math.floor(leaked * Math.min(1, Math.max(0, boost.leech ?? 0)));
   const before = totalAttack(next);
-  next.heroes = next.heroes - lost + leeched;
-  // 這裡曾經有「光・復活」(歸零的那一刻保住幾個人)。光改成護盾之後拿掉了,不要加回來:
+  next.heroes = next.heroes - lost;
+  // 這裡曾經有「光・復活」與「暗・吸取」。光與暗整組移除了,兩者都不要加回來:
   // 復活是**事後**把死亡取消掉,玩家看到的是「我死了但沒死」,那一刻沒有任何畫面可以演;
-  // 護盾是**事前**擋掉一次看得見的攻擊(飛過來的那把武器),它有位置、有時機、有聲響。
+  // 吸取則是「漏接反而變強」,跟漏接該是懲罰這件事直接衝突。
   if (next.heroes <= 0) {
     next.heroes = 0;
     next.phase = 'dead';
@@ -1831,7 +1816,7 @@ export function resolveEnemy(
   const delta = next.heroes - (state.heroes);
   return {
     state: next,
-    message: leeched > 0 ? `漏了 ${leaked} 隻 -${lost} 人(吸收 +${leeched})` : `漏了 ${leaked} 隻 -${lost} 人`,
+    message: `漏了 ${leaked} 隻 -${lost} 人`,
     heroDelta: delta,
     attackDelta: totalAttack(next) - before,
   };
