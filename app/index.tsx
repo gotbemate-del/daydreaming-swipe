@@ -4,9 +4,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import { JobChoice } from '../components/JobChoice';
 import { LaneRunner } from '../components/LaneRunner';
 import { MainMenu } from '../components/MainMenu';
-import { SkillChoice } from '../components/SkillChoice';
 import { isPromotionStage, runStartFor, tierAfter, type JobTier, type LaneJob } from '../game/laneJobs';
-import { applySkills, learnSkill, skillOffers, type SkillState } from '../game/laneSkills';
 import { useSave } from '../hooks/useSave';
 import { useBgm } from '../hooks/useBgm';
 import { useNoContextMenu } from '../hooks/useNoContextMenu';
@@ -81,7 +79,6 @@ export default function HomeScreen() {
   const { save, loaded, update } = useSave();
   const { stage, coins } = save;
   const job = toLaneJob(save.job);
-  const skills = save.skills;
 
   // 背景音樂掛在這一層,**不能掛進 LaneRunner**:那個元件每一關都換 key 重新掛載,
   // 音樂會每十波從頭播一次(生存模式尤其明顯)。
@@ -104,7 +101,6 @@ export default function HomeScreen() {
   const [survivalWaves, setSurvivalWaves] = useState(0);
   const [survivalStage, setSurvivalStage] = useState(1);
   const [promotionTier, setPromotionTier] = useState<JobTier | null>(null);
-  const [offers, setOffers] = useState<SkillState[]>([]);
   const [lastResult, setLastResult] = useState<'cleared' | 'dead' | null>(null);
   /**
    * 生存模式這一輪抽到的地圖,以及開頭的抽地圖面板還開著沒。
@@ -128,10 +124,16 @@ export default function HomeScreen() {
   };
   const changeAudio = (patch: Partial<AudioSettings>) => update((prev) => ({ ...prev, ...patch }));
 
-  /** 技能選完之後:該轉職就先轉職,不然直接回主介面並前進一關。 */
-  function afterSkill(nextSkills: SkillState[]) {
-    update((prev) => ({ ...prev, skills: nextSkills }));
-    setOffers([]);
+  /**
+   * 通關之後:該轉職就先轉職,不然直接回主介面並前進一關。
+   *
+   * **這裡原本夾著一層「三選一的永久技能」,整組拔掉了。**
+   * 養成現在只剩三條:轉職(起跑數值)、技能書(放大元素與主動)、圖鑑(同上)。
+   * 拔掉的理由是玩家要的養成軸是**場內那 18 款**——一場帶 10 格、跑完歸零,
+   * 而永久技能是另一條進理想路線的線,兩條並存只會讓「每一關通關要按幾次」變多,
+   * 卻沒有多給決策(永久技能只有 4 款,選項幾乎每次都一樣)。
+   */
+  function afterClear() {
     const tier = isPromotionStage(stage) ? tierAfter(stage) : null;
     if (tier !== null) setPromotionTier(tier);
     else backToMenu(true);
@@ -246,10 +248,7 @@ export default function HomeScreen() {
       backToMenu(false);
       return;
     }
-    // 技能全滿之後就沒東西可選,直接跳過這個畫面,不要卡一個空頁面。
-    const next = skillOffers(skills);
-    if (next.length > 0) setOffers(next);
-    else afterSkill(skills);
+    afterClear();
   }
 
   // 讀存檔是非同步的,讀完之前一律不畫遊戲——先畫 1-1 再跳回真正的進度,
@@ -280,19 +279,6 @@ export default function HomeScreen() {
           diedAt={survivalStage}
           coins={survivalCoins}
           onDone={() => { setMode('normal'); setScreen('menu'); }}
-        />
-      </View>
-    );
-  }
-
-  if (offers.length > 0) {
-    return (
-      <View style={styles.screen}>
-        <SkillChoice
-          clearedStage={stage}
-          skills={skills}
-          offers={offers}
-          onChoose={(choice) => afterSkill(learnSkill(skills, choice))}
         />
       </View>
     );
@@ -366,7 +352,7 @@ export default function HomeScreen() {
         key={`${mode}-${mode === 'survival' ? survivalStage : stage}-${runKey}`}
         stage={mode === 'survival' ? survivalStage : stage}
         job={job}
-        start={applySkills(runStartFor(job), skills)}
+        start={runStartFor(job)}
         bookLevel={save.books}
         collection={collectionScales(decodeCollection(save.collected))}
         survivalWavesBefore={mode === 'survival' ? survivalWaves : null}

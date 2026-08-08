@@ -19,7 +19,6 @@
 // 反過來,驗證失敗也絕對不能丟例外:存檔壞掉的症狀應該是「回到預設值」,不是白畫面。
 
 import { LEVELS_PER_CHAPTER, LONG_LEVEL_WAVES, TOTAL_CHAPTERS, WAVES_PER_LEVEL } from './laneRun';
-import { MAX_SKILL_LEVEL, MAX_SKILL_SLOTS, SKILLS, type SkillId, type SkillState } from './laneSkills';
 import { MAX_SKILL_BOOK_LEVEL, rescaleLegacyBookLevel } from './laneRunSkills';
 import { decodeCollection, encodeCollection } from './collection';
 
@@ -27,7 +26,7 @@ import { decodeCollection, encodeCollection } from './collection';
  * 存檔格式版本。**改動任何欄位的意義就要 +1,並在 MIGRATIONS 補一條。**
  * 只是新增一個「有預設值的欄位」不必升版:readSave 會幫沒有的欄位補預設值。
  */
-export const SAVE_VERSION = 5;
+export const SAVE_VERSION = 6;
 
 /** localStorage / AsyncStorage 的 key。改這個等於讓所有人的存檔消失,不要改。 */
 export const SAVE_KEY = 'daydreaming-swipe/save';
@@ -62,8 +61,6 @@ export interface SaveData {
   stage: number;
   /** 轉職結果。還沒轉職就是 null(學生)。 */
   job: SavedJob | null;
-  /** 永久技能(每關通關三選一)。 */
-  skills: SkillState[];
   /** 跨場累積的金幣。 */
   coins: number;
   /**
@@ -111,7 +108,6 @@ export const DEFAULT_SAVE: SaveData = {
   version: SAVE_VERSION,
   stage: 1,
   job: null,
-  skills: [],
   coins: 0,
   books: 0,
   bestSurvival: 0,
@@ -123,7 +119,7 @@ export const DEFAULT_SAVE: SaveData = {
 
 /** 全新的一份存檔。回傳新物件,呼叫端改它不會污染 DEFAULT_SAVE。 */
 export function newSave(): SaveData {
-  return { ...DEFAULT_SAVE, skills: [] };
+  return { ...DEFAULT_SAVE };
 }
 
 // ---- 各欄位的驗證 ----
@@ -148,29 +144,6 @@ function readJob(value: unknown): SavedJob | null {
   const branch = raw.branch === 'B' ? 'B' : 'A';
   const tier = readInt(raw.tier, 1, 1, 5) as SavedJob['tier'];
   return { archetype, branch, tier };
-}
-
-/**
- * 技能清單。三件事同時擋:未知的 id、超過上限的等級、超過格數的清單。
- * **同一個 id 出現兩次也要擋**——`skillLevel` 只讀第一個,重複的那個會變成看不見的幽靈,
- * 而它在 `skillOffers` 那邊會佔掉一個格子。
- */
-function readSkills(value: unknown): SkillState[] {
-  if (!Array.isArray(value)) return [];
-  const known = new Set<string>(SKILLS.map((s) => s.id));
-  const seen = new Set<string>();
-  const out: SkillState[] = [];
-  for (const item of value) {
-    if (item === null || typeof item !== 'object') continue;
-    const raw = item as Record<string, unknown>;
-    if (typeof raw.id !== 'string' || !known.has(raw.id) || seen.has(raw.id)) continue;
-    const level = readInt(raw.level, 0, 0, MAX_SKILL_LEVEL);
-    if (level <= 0) continue; // 0 級等於沒學,留著只是雜訊
-    seen.add(raw.id);
-    out.push({ id: raw.id as SkillId, level });
-    if (out.length >= MAX_SKILL_SLOTS) break;
-  }
-  return out;
 }
 
 /**
@@ -204,6 +177,16 @@ const MIGRATIONS: Record<number, (raw: Record<string, unknown>) => Record<string
     version: 5,
     books: rescaleLegacyBookLevel(readNumber(raw.books, 0)),
   }),
+  // v5 → v6:永久技能(鋒鑄/強化/堅韌/工藝)整組移除。
+  //
+  // **舊存檔的 skills 欄位直接丟掉,不換算成別的東西。** 換算的話等於偷偷把
+  // 一條已經廢掉的養成線折現成另一條,而玩家沒有同意過那筆交易;而且永久技能是
+  // 唯一一條**進理想路線**的養成,折現進技能書(不進理想路線)會讓兩邊的性質對不上。
+  // 留著不讀也不行:沒人讀的欄位是「以後會有人以為它有用」的陷阱(見檔頭)。
+  5: (raw) => {
+    const { skills: _dropped, ...rest } = raw;
+    return { ...rest, version: 6 };
+  },
 };
 
 /** 遷移用的寬鬆數字讀取。遷移函式拿到的是還沒驗證過的 raw,所以不能假設型別。 */
@@ -258,7 +241,6 @@ export function readSave(text: string | null | undefined): { save: SaveData; mig
       version: SAVE_VERSION,
       stage: readInt(raw.stage, 1, 1, TOTAL_STAGES),
       job: readJob(raw.job),
-      skills: readSkills(raw.skills),
       coins: readInt(raw.coins, 0, 0, Number.MAX_SAFE_INTEGER),
       books: readInt(raw.books, 0, 0, MAX_SKILL_BOOK_LEVEL),
       // 上限是「全部小關 x 一關最多幾波」——改過的存檔會被夾回來。

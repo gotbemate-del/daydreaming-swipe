@@ -15,7 +15,6 @@ import {
   addItem, collectedCount, decodeCollection, emptyCollection, encodeCollection, hasItem,
   rollDrops, TOTAL_ITEMS,
 } from '../game/collection';
-import { MAX_SKILL_LEVEL, MAX_SKILL_SLOTS } from '../game/laneSkills';
 
 let fail = 0;
 const check = (name: string, cond: boolean, extra = '') => {
@@ -26,18 +25,12 @@ const check = (name: string, cond: boolean, extra = '') => {
 // --- 全新玩家 ---
 check('沒有存檔 -> 預設值', readSave(null).save.stage === 1 && readSave(null).save.coins === 0);
 check('空字串 -> 預設值', readSave('').save.stage === 1);
-check('newSave 不會共用同一個陣列(改一份不會污染另一份)', (() => {
-  const a = newSave();
-  a.skills.push({ id: 'forge', level: 1 });
-  return newSave().skills.length === 0 && DEFAULT_SAVE.skills.length === 0;
-})());
 
 // --- 來回一趟要一模一樣 ---
 const full: SaveData = {
   version: SAVE_VERSION,
   stage: 137,
   job: { archetype: 'magicRanged', branch: 'B', tier: 3 },
-  skills: [{ id: 'forge', level: 5 }, { id: 'toughen', level: 2 }],
   coins: 98765,
   books: 3,
   bestSurvival: 42,
@@ -115,7 +108,7 @@ survives('存了一個陣列 -> 預設值', '[1,2,3]', (s) => s.stage === 1);
 survives('存了 null -> 預設值', 'null', (s) => s.stage === 1);
 survives('存了一個數字 -> 預設值', '42', (s) => s.stage === 1);
 survives('整份是空物件 -> 每個欄位各自退回預設值',
-  '{}', (s) => s.stage === 1 && s.job === null && s.skills.length === 0 && s.coins === 0);
+  '{}', (s) => s.stage === 1 && s.job === null && s.coins === 0);
 
 // 單一欄位壞掉**不能拖垮整份**——一個手滑的 coins 欄位不該讓玩家失去 300 關的進度。
 survives('只有 coins 壞掉,關卡照樣留著',
@@ -145,38 +138,8 @@ survives('職業分支只認得 A/B',
   JSON.stringify({ version: 1, job: { archetype: 'magicMelee', branch: 'X', tier: 2 } }),
   (s) => s.job?.branch === 'A');
 
-// 技能是最值得改的地方(直接等於戰力),三種手法都要擋。
-survives('技能等級被改超過上限 -> 夾回上限',
-  JSON.stringify({ version: 1, skills: [{ id: 'forge', level: 999 }] }),
-  (s) => s.skills[0].level === MAX_SKILL_LEVEL);
-survives('不存在的技能 id -> 直接丟掉',
-  JSON.stringify({ version: 1, skills: [{ id: 'godmode', level: 5 }, { id: 'forge', level: 2 }] }),
-  (s) => s.skills.length === 1 && s.skills[0].id === 'forge');
-survives('塞超過格數的技能 -> 只留前幾個',
-  JSON.stringify({
-    version: 1,
-    skills: [
-      { id: 'forge', level: 5 }, { id: 'reinforce', level: 5 },
-      { id: 'toughen', level: 5 }, { id: 'craft', level: 5 },
-    ],
-  }),
-  (s) => s.skills.length === MAX_SKILL_SLOTS);
-// 同一個 id 出現兩次:skillLevel 只讀第一個,重複的那個會變成看不見的幽靈,
-// 但它在 skillOffers 那邊會佔掉一個格子——症狀是「選項變少了」而且完全查不出原因。
-survives('同一個技能出現兩次 -> 只留一個',
-  JSON.stringify({ version: 1, skills: [{ id: 'forge', level: 1 }, { id: 'forge', level: 5 }] }),
-  (s) => s.skills.length === 1 && s.skills[0].level === 1);
-survives('技能是 0 級 -> 當成沒學',
-  JSON.stringify({ version: 1, skills: [{ id: 'forge', level: 0 }] }), (s) => s.skills.length === 0);
-survives('技能欄位不是陣列 -> 空的',
-  JSON.stringify({ version: 1, skills: 'forge' }), (s) => s.skills.length === 0);
-
 // 現行版本的存檔被改大 -> 夾回上限。**要用現行版號**:舊版號會先走 v4 → v5 的換算
 // (那一步本來就會把數字壓回舊制的 0~5 再放大),測不到「夾回上限」這件事。
-survives('技能書被改超過上限 -> 夾回上限',
-  JSON.stringify({ version: SAVE_VERSION, books: 999 }), (s) => s.books === MAX_SKILL_BOOK_LEVEL);
-survives('技能書是負數 -> 夾回 0',
-  JSON.stringify({ version: SAVE_VERSION, books: -3 }), (s) => s.books === 0);
 // 舊版號被改大也要收得住:換算的輸入先夾回舊制上限(5),所以結果是舊制滿書的等值等級。
 survives('舊版存檔的技能書被改大 -> 換算成舊制滿書的等值等級',
   JSON.stringify({ version: 4, books: 999 }), (s) => s.books === rescaleLegacyBookLevel(5));
@@ -241,10 +204,13 @@ check('v2 的生存紀錄也一路換算得到(跨兩級遷移)',
   fromV2.save.bestSurvival === 7 * WAVES_PER_LEVEL,
   `7 關 → ${fromV2.save.bestSurvival} 波`);
 
+// v1 帶著永久技能欄位進來:那一組已經整組移除,所以它應該**安靜地被丟掉**,
+// 而其他進度一格都不能少(v5 → v6 就是在做這件事)。
 const v1 = JSON.stringify({ version: 1, stage: 88, coins: 500, job: null, skills: [{ id: 'craft', level: 2 }] });
 const fromV1 = readSave(v1);
-check('v1 存檔升到 v2 之後進度全留著,新欄位補 0',
-  fromV1.save.stage === 88 && fromV1.save.coins === 500 && fromV1.save.skills[0]?.level === 2
+check('v1 存檔升上來之後進度全留著,永久技能欄位被丟掉',
+  fromV1.save.stage === 88 && fromV1.save.coins === 500
+  && !('skills' in fromV1.save)
   && fromV1.save.books === 0 && fromV1.save.bestSurvival === 0 && fromV1.save.version === SAVE_VERSION,
   JSON.stringify(fromV1.save));
 check('v1 存檔會回報 migrated', fromV1.migrated === true);
@@ -253,7 +219,7 @@ check('v1 升上來之後再讀一次就穩定了', readSave(writeSave(fromV1.sa
 const v0 = JSON.stringify({ stage: 42, coins: 3000, skills: [{ id: 'forge', level: 3 }] });
 const fromV0 = readSave(v0);
 check('舊存檔(沒有 version 欄位)載入後保留得住進度',
-  fromV0.save.stage === 42 && fromV0.save.coins === 3000 && fromV0.save.skills[0]?.level === 3,
+  fromV0.save.stage === 42 && fromV0.save.coins === 3000 && !('skills' in fromV0.save),
   JSON.stringify(fromV0.save));
 check('舊存檔載入後版本會被補成現行版本', fromV0.save.version === SAVE_VERSION);
 check('舊存檔載入會回報 migrated(呼叫端才知道要立刻寫回去)', fromV0.migrated === true);
