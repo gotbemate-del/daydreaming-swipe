@@ -146,9 +146,9 @@ check('全開之後每排都挑最好的仍然一定過關', rate(25, fullyLoade
 check('技能書碰不到鋒刃/增殖(唯二會被理想路線挑到的兩款)',
   bookPowerScale('edge', MAX_SKILL_BOOK_LEVEL) === 1
   && bookPowerScale('swarm', MAX_SKILL_BOOK_LEVEL) === 1);
-check('技能書會放大元素與主動',
-  bookPowerScale('fire', MAX_SKILL_BOOK_LEVEL) > 1
-  && bookPowerScale('strike', MAX_SKILL_BOOK_LEVEL) > 1);
+// 主動技能已全部移除,所以技能書現在只放大元素。
+check('技能書會放大元素',
+  ELEMENTS.every((id) => bookPowerScale(id, MAX_SKILL_BOOK_LEVEL) > 1));
 // 技能書一律不出現在選項那一層:加量、換成元素、開等級上限,三種都會改變
 // 「同一顆 seed 抽出哪三個」,玩家側的曲線就會偏離 createRun 假設的那一條。
 check('技能書完全不影響選項(runSkillOffersAt 根本不收它)',
@@ -214,10 +214,11 @@ check('六個屬性分到的條目數夠平均(沒有哪個屬性特別難收)',
   + ELEMENTS.map((id) => CODEX_ENTRIES.filter((e) => e.element === id).length).join('/'));
 // 反過來:對真人是真的變強(元素的效果被放大)。
 check('技能書讓元素明顯更強(對玩家是真的變強)', (() => {
-  const kit: RunSkillState[] = [{ id: 'metal', level: 5 }, { id: 'strike', level: 5 }, { id: 'thunder', level: 5 }];
+  const kit: RunSkillState[] = [{ id: 'metal', level: 5 }, { id: 'ice', level: 5 }, { id: 'thunder', level: 5 }];
   const a = runSkillEffects(kit, undefined, 0);
   const b = runSkillEffects(kit, undefined, MAX_SKILL_BOOK_LEVEL);
-  return b.pierceRatio > a.pierceRatio && b.chainRatio > a.chainRatio && b.actives[0].kills! > a.actives[0].kills!;
+  return b.pierceRatio > a.pierceRatio && b.chainRatio > a.chainRatio
+    && b.tradeMultiplier > a.tradeMultiplier;
 })());
 
 console.log(fail === 0 ? '\n全部通過' : `\n${fail} 項失敗`);

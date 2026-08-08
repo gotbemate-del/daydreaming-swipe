@@ -486,26 +486,11 @@ function rate(stage: number, pick: LanePicker, trials = 300) {
 // 上面那個 play 沒有場內技能,只留給「戰力不會被卡死」那種不看過關率的檢查。
 // 所有跟難度有關的數字一律走 simRun(它會照遊戲規則挑技能),不然玩家會比敵人假設的弱一截。
 
-// --- 主動技能「爆裂」:固定值 + 冷卻用波數 ---
-const strikeAt = (l: number) => runSkillEffects([{ id: 'strike' as const, level: l }]).actives[0];
-check('爆裂是固定擊殺數,不是百分比(所以越落後越有用)',
-  [1, 3, 5].every((l) => (strikeAt(l).kills ?? 0) > 0)
-  && strikeAt(5).kills! > strikeAt(1).kills!
-  && runSkillEffects([{ id: 'strike', level: 3 }]).attackMultiplier === 1
-  && runSkillEffects([{ id: 'strike', level: 3 }]).heroMultiplier === 1,
-  `1級 ${strikeAt(1).kills} 隻 / 5級 ${strikeAt(5).kills} 隻,完全不加戰力`);
-// 四款主動各有各的規則,不是同一個東西換名字:
-//   爆裂 固定值(前期最有感)  貫穿 比例值(後期大波才有感)  號令 補人  壁障 擋掉整波損失
-const actives = ACTIVE_SKILL_IDS.map((id) => runSkillEffects([{ id, level: 3 }]).actives[0]);
-check('每一款主動技能的效果都不一樣(不是同一個東西換名字)',
-  new Set(actives.map((a) => JSON.stringify({ k: !!a.kills, r: !!a.killRatio, h: !!a.heroes, i: !!a.immune }))).size
-  === ACTIVE_SKILL_IDS.length,
-  actives.map((a) => a.name).join(' / '));
-check('主動技能一款都不加戰力(所以全部都不進敵人曲線)',
-  ACTIVE_SKILL_IDS.every((id) => {
-    const e = runSkillEffects([{ id, level: 5 }]);
-    return e.attackMultiplier === 1 && e.heroMultiplier === 1;
-  }));
+// --- 主動技能已全部移除(爆裂/貫穿/號令/壁障)---
+// 留這一組當回歸防線:哪天有人加回來,得先想清楚「它會不會進敵人曲線」。
+check('主動技能已全部移除', ACTIVE_SKILL_IDS.length === 0);
+check('沒有任何技能有冷卻(有倒數的就是主動,一款都不剩)',
+  RUN_SKILLS.every((sp) => skillCooldownSeconds(sp.id, MAX_RUN_SKILL_LEVEL) === 0));
 // **這一項推翻了原本的「冷卻要綁波不綁秒」。** 舊結構是「一波 = 一排」,
 // 一排的時間 = 排距 / 跑速,而跑速從 45 爬到 111 —— 綁秒等於後期技能自己變弱。
 // 關卡結構改成「戰鬥段是時間」之後,一波的長度反而幾乎是常數,綁秒才是穩的那一邊。
@@ -515,15 +500,10 @@ const waveSpread = Math.max(...waveSeconds) / Math.min(...waveSeconds);
 check('一波的秒數在 3000 關之間幾乎不變(這是「冷卻可以綁秒」的前提)',
   waveSpread < 1.6,
   `${Math.min(...waveSeconds).toFixed(1)}~${Math.max(...waveSeconds).toFixed(1)} 秒(差 ${waveSpread.toFixed(2)} 倍)`);
-check('冷卻的單位是秒,而且等級越高越短',
-  [1, 2, 3, 4, 5].map((l) => skillCooldownSeconds('strike', l)).every((c, i, a) => i === 0 || c <= a[i - 1])
-  && skillCooldownSeconds('strike', 5) > 0
-  && skillCooldownSeconds('edge', 5) === 0,
-  [1, 3, 5].map((l) => `${l}級每 ${skillCooldownSeconds('strike', l)} 秒`).join(' / '));
-// 這條是它不會把敵人養大的保證:貪心只看戰力,所以理想路線永遠不會挑爆裂,
+// 這條是元素不會把敵人養大的保證:貪心只看戰力,所以理想路線永遠不會挑元素,
 // 敵人也就不會為了一個「理想玩家用不到的東西」變強(跟兌換率同一個道理)。
-check('理想路線永遠不會挑爆裂(所以它不進敵人曲線)',
-  bestRunSkillChoice([], [{ id: 'strike', level: 1 }, { id: 'edge', level: 1 }]).id === 'edge');
+check('理想路線永遠不會挑元素(所以元素不進敵人曲線)',
+  bestRunSkillChoice([], [{ id: 'fire', level: 1 }, { id: 'edge', level: 1 }]).id === 'edge');
 check('額外擊殺不會超過整波隻數',
   resolveEnemy({ ...initialRunState(1), heroes: 50, perHero: 1 },
     { power: 1e9, reward: 0, species: [{ id: 'blob-1', name: '史' }], name: '史', units: 4 }, { kills: 99 })
@@ -588,15 +568,6 @@ check('冰的凍結機率吃相剋,擴散/連鎖的隻數不吃',
   && runSkillEffects([{ id: 'fire', level: 3 }], 'metal').burnSpread
   === runSkillEffects([{ id: 'fire', level: 3 }]).burnSpread);
 // 壁障擋的是「一整波的損失」,所以冷卻要落在「幾波」的量級,不是「一波之內幾次」——
-// 一波約 18 秒,秒數必須遠大於它,不然它會變成「每一波都免疫」。
-// (土曾經是第二款,改成減速之後它沒有冷卻了——**有倒數的就是主動,沒有的就是被動**。)
-const waveCycle = runSeconds(1) / wavesForStage(1);
-check('壁障的冷卻是「幾波」的量級(不是每波都擋)',
-  skillCooldownSeconds('aegis', 5) > waveCycle * 3,
-  `壁障 ${skillCooldownSeconds('aegis', 1)}~${skillCooldownSeconds('aegis', 5)} 秒 ≈ ${(skillCooldownSeconds('aegis', 5) / waveCycle).toFixed(1)}~${(skillCooldownSeconds('aegis', 1) / waveCycle).toFixed(1)} 波`);
-check('只有四款主動有冷卻,八元素一款都沒有(技能列的規則:有倒數的就是主動)',
-  ELEMENTS.every((id) => skillCooldownSeconds(id, MAX_RUN_SKILL_LEVEL) === 0)
-  && ACTIVE_SKILL_IDS.every((id) => skillCooldownSeconds(id, 1) > 0));
 // 這一項是八元素設計的核心:完美玩家(全清、不漏、不死)一個都用不到。
 // 用一波「戰力遠超過」的結算去驗——帶滿八元素跟什麼都不帶,結果必須完全一樣。
 const perfectWave = { power: 1, reward: 0, species: [{ id: 'blob-1', name: '史' }], name: '史', units: 6 };
@@ -652,7 +623,7 @@ check('非元素技能不吃相剋(鋒刃/增殖/主動技能)',
 const mixed = [
   { id: 'thunder' as const, level: 3 },
   { id: 'earth' as const, level: 3 },
-  { id: 'strike' as const, level: 3 },
+  { id: 'ice' as const, level: 3 },
 ];
 const base = runSkillEffects(mixed);
 const vsMetal = runSkillEffects(mixed, 'metal'); // 雷剋金
@@ -665,10 +636,13 @@ check('被剋只削弱那一個元素',
   Math.abs(vsFire.chainRatio - base.chainRatio * (1 - COUNTERED_PENALTY)) < 1e-9
   && vsFire.lossCut === base.lossCut,
   `雷 ${base.chainRatio.toFixed(2)} → ${vsFire.chainRatio.toFixed(2)}`);
-check('相剋完全不碰主動技能與基礎戰力',
-  vsMetal.actives[0].kills === base.actives[0].kills
-  && vsMetal.attackMultiplier === base.attackMultiplier
-  && vsMetal.heroMultiplier === base.heroMultiplier);
+// 主動技能已移除,所以這裡只剩「相剋不碰基礎戰力」——那才是真正要守的:
+// 鋒刃/增殖 是唯二進理想路線的,相剋一碰到它們,敵人曲線就會跟著動。
+check('相剋完全不碰基礎戰力',
+  vsMetal.attackMultiplier === base.attackMultiplier
+  && vsMetal.heroMultiplier === base.heroMultiplier
+  && vsFire.attackMultiplier === base.attackMultiplier
+  && vsFire.heroMultiplier === base.heroMultiplier);
 // 每一波的屬性要夠平均,不然有些元素整場都用不到。
 const elemTally = new Map<string, number>();
 for (let r = 0; r < 4000; r++) {

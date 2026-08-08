@@ -526,7 +526,10 @@ export function tierAtStage(stage: number): number {
  * 一整排選項,而「廣度 vs 深度」這個決策留到 1轉之後才登場。
  */
 export function activeSkillCountForStage(stage: number): number {
-  return Math.min(ACTIVE_SKILL_IDS.length, 1 + tierAtStage(stage));
+  // 不夾 ACTIVE_SKILL_IDS.length:主動技能全部移除之後那是 0,整條階梯會被壓平。
+  // 階梯本身是轉職的時程表(1/2/3/4/5 款),跟「現在有幾款可用」是兩件事——
+  // 之後主動加回來就直接接得上。實際開出來幾款由呼叫端自己跟清單取交集。
+  return 1 + tierAtStage(stage);
 }
 /** 一般小關幾波敵人。**每打完一波給一次技能選擇**,所以這個數字就是一場能挑幾次。 */
 export const WAVES_PER_LEVEL = 10;

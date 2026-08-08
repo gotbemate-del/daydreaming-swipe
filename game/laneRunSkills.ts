@@ -38,8 +38,7 @@ export type RunSkillId =
   // 六元素:**全部只在你失誤的時候才生效**,所以完美玩家一個都用不到,
   // 也因此全部不進理想路線——敵人不會為了它們變強,幅度可以放心給(見下方 ELEMENTS)
   | 'fire' | 'metal' | 'thunder' | 'ice' | 'wood' | 'earth'
-  // 主動技能(有冷卻、有特效、造成固定效果)。冷卻以**秒**為單位(理由見 COOLDOWN_SPEC)。
-  | 'strike' | 'pierce' | 'rally' | 'aegis';
+  ;
 
 /**
  * 六元素。每一款的**規則**都不一樣(不是同一個東西換名字),而且互相剋制(見 ELEMENT_COUNTERS)。
@@ -129,7 +128,11 @@ export function elementForRow(rowIndex: number, salt = 0): RunSkillId {
 }
 
 /** 哪些是主動技能。轉職解鎖的就是這一串的前 N 款(見 laneJobs 的 activeSkillsForStage)。 */
-export const ACTIVE_SKILL_IDS: RunSkillId[] = ['strike', 'pierce', 'rally', 'aegis'];
+/**
+ * 主動技能已全部移除(爆裂/貫穿/號令/壁障)。留著空陣列是為了讓「有幾款主動可選」
+ * 這個概念還在型別上成立(轉職曾經用它當獎勵),之後要加回來只要往這裡放。
+ */
+export const ACTIVE_SKILL_IDS: RunSkillId[] = [];
 export function isActiveSkill(id: RunSkillId): boolean {
   return ACTIVE_SKILL_IDS.includes(id);
 }
@@ -200,10 +203,14 @@ export function bookPowerScale(id: RunSkillId, bookLevel = 0, collection: Collec
 /**
  * 一場最多帶幾個技能。
  *
- * 10 格 x 一般小關 10 次選擇 = **剛好湊得滿**,而長關的 20 次讓玩家「湊滿再練深」。
- * 核心決策因此是**廣度 vs 深度**:每次都拿新的 = 10 個各 1 級,拿升級 = 例如 5 個各 2 級。
+ * **格數必須少於技能總數**,不然「要不要拿新的」根本不是決策——反正全部都帶得下。
+ * 主動技能移除之後只剩 8 款(鋒刃/增殖 + 六元素),所以格數從 10 降到 6:
+ * 帶得下 6 款、有 8 款可挑,每一次「拿新的」都是在放棄另一款。
+ *
+ * 核心決策因此仍然是**廣度 vs 深度**:每次都拿新的 = 6 個各 1 級,
+ * 拿升級 = 例如 3 個各 2 級。一般小關 10 次選擇、長關 20 次,兩種走法都走得完。
  */
-export const MAX_RUN_SKILL_SLOTS = 10;
+export const MAX_RUN_SKILL_SLOTS = 6;
 /** 一次給幾個選項。 */
 export const RUN_SKILL_OFFERS = 3;
 
@@ -234,12 +241,6 @@ const PER_LEVEL = {
   earthLossCut: 1,
   /** 金・擴散:命中時往旁邊各送一下的傷害佔一次命中的幾成(演出,見 metalSpreadTargets) */
   metalSpreadDamage: 0.5,
-  /** 爆裂(主動):每次觸發直接清掉幾隻(固定值,前期最有感) */
-  strikeKills: 0.8,
-  /** 貫穿(主動):清掉整波的幾成(比例值,後期大波才有感——跟爆裂互補) */
-  pierceRatio: 0.06,
-  /** 號令(主動):直接補幾個勇者 */
-  rallyHeroes: 0.4,
 };
 
 /**
@@ -262,15 +263,8 @@ const PER_LEVEL = {
  * 哪天結構又改回去,那一項會先紅。
  */
 const COOLDOWN_SPEC: Partial<Record<RunSkillId, { base: number; perLevel: number; min: number }>> = {
-  strike: { base: 18, perLevel: 2, min: 8 },
-  pierce: { base: 20, perLevel: 2, min: 10 },
-  rally: { base: 22, perLevel: 2, min: 12 },
-  // 壁障擋的是「一整波的損失」,所以冷卻的量級是**波**不是「一波之內幾次」:
-  // 一個波週期約 18 秒,110 秒 ≈ 6 波、70 秒 ≈ 4 波。
-  aegis: { base: 120, perLevel: 10, min: 70 },
-  // 土曾經也在這裡(每 N 秒擋下一整波損失)。改成「減緩怪物前進速度」之後它沒有冷卻了,
-  // 是常駐的被動——**四款主動之外不要再有第五個有冷卻的東西**,技能列的規則才單純:
-  // 有倒數的就是主動,沒有的就是被動。
+  // 主動技能移除之後這裡是空的。**元素一款都不准有冷卻**——
+  // 「有倒數的就是主動,沒有的就是被動」是玩家掃一眼就分得出來的規則(verify 有一項在盯)。
 };
 
 /** 這一款技能幾秒觸發一次。沒有冷卻的(被動)回傳 0。 */
@@ -419,26 +413,6 @@ export const RUN_SKILLS: RunSkillSpec[] = [
     name: '土・遲滯',
     describe: (l) => `怪衝得慢 ${Math.round(earthSlowRatio(l) * 100)}%,每波少損失 ${PER_LEVEL.earthLossCut * l} 人`,
   },
-  {
-    id: 'strike',
-    name: '爆裂',
-    describe: (l) => `每 ${skillCooldownSeconds('strike', l)} 秒清掉 ${activeKillCount(l)} 隻`,
-  },
-  {
-    id: 'pierce',
-    name: '貫穿',
-    describe: (l) => `每 ${skillCooldownSeconds('pierce', l)} 秒清掉整波的 ${Math.round(PER_LEVEL.pierceRatio * l * 100)}%`,
-  },
-  {
-    id: 'rally',
-    name: '號令',
-    describe: (l) => `每 ${skillCooldownSeconds('rally', l)} 秒補 ${activeHeroCount(l)} 個同伴`,
-  },
-  {
-    id: 'aegis',
-    name: '壁障',
-    describe: (l) => `每 ${skillCooldownSeconds('aegis', l)} 秒擋下一整波的損失`,
-  },
 ];
 
 /**
@@ -449,12 +423,6 @@ export const RUN_SKILLS: RunSkillSpec[] = [
  * **至少 1**:算出 0 的話玩家會看到技能觸發了卻什麼都沒發生,直接認定它是壞的
  *(跟增殖「保證至少 +1 人」同一個理由)。
  */
-export function activeKillCount(level: number, bookScale = 1): number {
-  return Math.max(1, Math.round(PER_LEVEL.strikeKills * Math.max(0, level) * bookScale));
-}
-export function activeHeroCount(level: number, bookScale = 1): number {
-  return Math.max(1, Math.round(PER_LEVEL.rallyHeroes * Math.max(0, level) * bookScale));
-}
 
 export function runSkillSpec(id: RunSkillId): RunSkillSpec {
   const found = RUN_SKILLS.find((s) => s.id === id);
@@ -672,22 +640,6 @@ export function runSkillEffects(
     // 土・遲滯:減速是演出(所以不吃相剋,免得剋中就直接把整波定住),
     // 少損失幾個人才是它的實際好處(所以那個吃相剋)。
     if (s.id === 'earth') { slow += earthSlowRatio(level); lossCut += PER_LEVEL.earthLossCut * level * mx; }
-    if (level <= 0) continue;
-    // 主動技能吃技能書的放大,但**不吃相剋**(相剋只放大元素,見 elementMatchup)。
-    const bk = bookPowerScale(s.id, bookLevel, collection);
-    const cd = skillCooldownSeconds(s.id, level);
-    if (s.id === 'strike') {
-      actives.push({ id: s.id, name: '爆裂', cooldown: cd, kills: activeKillCount(level, bk) });
-    }
-    if (s.id === 'pierce') {
-      actives.push({ id: s.id, name: '貫穿', cooldown: cd, killRatio: PER_LEVEL.pierceRatio * level * bk });
-    }
-    if (s.id === 'rally') {
-      actives.push({ id: s.id, name: '號令', cooldown: cd, heroes: activeHeroCount(level, bk) });
-    }
-    if (s.id === 'aegis') {
-      actives.push({ id: s.id, name: '壁障', cooldown: cd, immune: true });
-    }
   }
   return {
     attackMultiplier: 1 + attack,
