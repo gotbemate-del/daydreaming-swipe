@@ -14,7 +14,7 @@ import {
   ENEMY_POWER_RATIO, ENEMY_UNITS_PER_HERO, goodGateGrowthAt, gatesBeforeRow, isTrapGate, runSeconds, ELITE_MASS, ELITE_HITS, absorbedFrom,
   applyGate, gateLabel, DOUBLE_GATES_PER_RUN, GEAR_STEP, doubleGatesForStage, LONG_LEVEL_RATIO_SCALE,
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
-  createRocks, hitsRock, applyRockHit, extraKills, rowDistances, battleDistance, isEnemyRowIndex, VISIBLE_AHEAD,
+  createRocks, hitsRock, applyRockHit, extraKills, leakLoss, rowDistances, battleDistance, isEnemyRowIndex, VISIBLE_AHEAD,
   ROCKS_PER_RUN_MIN, ROCKS_PER_RUN_MAX, ROCK_HERO_LOSS, ROCK_GRAZE_MESSAGE, ACTIVE_THROWERS,
   BACKDROPS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane, MIN_WAVE_SIZE,
   HERO_WAVE_ELEMENT_SALT, waveElementsForStage, hazardsFor, hitByHazard, HAZARD_WIDTH, HAZARD_LOSS_HEROES, expectedHazardHits, ENEMY_THROW_INTERVAL_MS,
@@ -605,6 +605,30 @@ check('場內技能一點戰力都沒加(所以技能完全不進敵人曲線)',
 // createRun 每一波都會叫它一次,回不出東西的話理想路線整條斷掉。
 check('沒有戰力可比的時候貪心仍然挑得出東西',
   ELEMENTS.includes(bestRunSkillChoice([], ELEMENTS.map((id) => ({ id, level: 1 }))).id));
+// 「怪走到你身上就扣人」是**預付**,結算補差額——所以不管預付了多少,
+// **一波的總扣人數永遠等於 leakLoss 的結果**。這一項就是在證明那件事:
+// 同一個情境,預付 0 / 預付一半 / 預付超收,最後的人數要完全一樣。
+{
+  const base = { ...initialRunState(12), heroes: 60, perHero: 10 };
+  const enemy = { power: 1e9, reward: 0, species: [{ id: 'blob-1', name: '史' }], name: '史', units: 12 };
+  const noAdvance = resolveEnemy(base, enemy, {});
+  const totalLost = base.heroes - noAdvance.state.heroes;
+  const withAdvance = (n: number) => {
+    // 預付 n 個 = 跑圖途中已經扣掉 n 個,所以進結算的 state 也少了 n 個。
+    const advanced = { ...base, heroes: base.heroes - n };
+    return advanced.heroes - resolveEnemy(advanced, enemy, { leakAdvance: n }).state.heroes + n;
+  };
+  check('逐隻預扣不會改變一波的總扣人數(結算只補差額)',
+    withAdvance(0) === totalLost && withAdvance(Math.floor(totalLost / 2)) === totalLost
+    && withAdvance(totalLost) === totalLost,
+    `總共扣 ${totalLost} 人;預付 0/${Math.floor(totalLost / 2)}/${totalLost} 都是 `
+    + `${withAdvance(0)}/${withAdvance(Math.floor(totalLost / 2))}/${withAdvance(totalLost)}`);
+  check('預付超收會在結算退回去(總額仍然一樣)',
+    withAdvance(totalLost + 3) === totalLost, `預付 ${totalLost + 3} → 實扣 ${withAdvance(totalLost + 3)}`);
+  check('leakLoss 是唯一一份公式(結算用的就是它)',
+    leakLoss(5, 1, 1, 0) === 5 && leakLoss(5, 1, 2, 0) === 3 && leakLoss(5, 1, 1, 2) === 3);
+}
+
 check('額外擊殺不會超過整波隻數',
   resolveEnemy({ ...initialRunState(1), heroes: 50, perHero: 1 },
     { power: 1e9, reward: 0, species: [{ id: 'blob-1', name: '史' }], name: '史', units: 4 }, { kills: 99 })
