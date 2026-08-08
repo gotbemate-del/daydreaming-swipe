@@ -219,6 +219,7 @@ scripts/      驗證腳本
   align-frames.py 把 _open/_middle 對齊成兩格動畫,並產生 components/animFrames.ts
   shrink-items.py 把 501 張裝備原圖縮成圖鑑用的 112px 小圖,並產生 components/itemIcons.ts
   shrink-backdrops.py 把 10 張大關底圖縮成 768px,並算出各自的底色/線色/暗紗濃度
+  make-gate-scroll.py 從 easteregg 框切出閘門的卷軸三片(上軸/紙身/下軸)
 ```
 
 **分層鐵律**:`game/` 是純邏輯層,必須能在 Node 單獨跑。任何 React/RN/Expo 的 import
@@ -324,6 +325,14 @@ scripts/      驗證腳本
 - **生存模式的地圖要抽在 app 層,不能抽在 LaneRunner 裡。** 生存模式一關接一關,
   而 LaneRunner 每一關換 key 重新掛載——抽在裡面的話每過一關地圖就換一次,
   而抽籤要給的是「這一輪的身分」不是「這一關的裝飾」。
+
+- **`Image` 的 `resizeMode="stretch"` 不會被 `left:0 + right:0` 撐開。** react-native-web 的
+  Image 是靠 `background-size` 實作 resizeMode 的,而「左右都釘住」在它眼裡不構成一個確定的寬度——
+  實測閘門的卷軸圖用**原圖的 80px 自然寬**畫,右邊 45% 整片露出底色,而且完全沒有警告。
+  這跟 `PixelFrame` 那條「RN 的 Image 只給 left/right 不會被拉寬」是同一個坑的第二次現身:
+  那次的解法是外面包一層 View(View 吃 left/right,Image 在裡面填 100%),
+  閘門這裡因為高度本來就固定,直接把 `width: '100%'` 與 `height` 寫出來更短。
+  **驗收要看圖有沒有鋪滿,不是看有沒有出現**——它一定會出現,只是只鋪了一半。
 
 **素材轉檔**
 - **`img.convert('RGBA')` 會把 GIF 的 `transparency` 索引一起套用。** GIF frame 的 `info` 帶著
@@ -875,6 +884,7 @@ scripts/      驗證腳本
 | 需求 | 做法 |
 |---|---|
 | 16x16 小圖示 | 從 `assets/sprites/ui/` 挑既有的 PNG(分頁圖示、鎖頭、金幣、齒輪都已經有) |
+| 閘門的外框 | 卷軸三片(`assets/sprites/ui/frames/gate/`,由 `make-gate-scroll.py` 產生) |
 | 技能圖示 | 手寫 SVG 字形,見 `components/SkillIcon.tsx` 的 `GLYPHS`(圓形 + 冷卻環) |
 | 面板外框、進度環、大尺寸橫幅 | 手寫 SVG + `react-native-svg` |
 
