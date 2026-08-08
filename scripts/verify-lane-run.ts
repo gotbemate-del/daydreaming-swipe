@@ -29,7 +29,8 @@ import {
   runSkillPicksForWave, totalRunSkillPicks, MAX_RUN_SKILL_LEVEL, RUN_SKILLS, maxRunSkillAttackMultiplier,
   MAX_RUN_SKILL_SLOTS, runSkillEffects, skillCooldownSeconds, bestRunSkillChoice, runSkillOffersAt,
   ACTIVE_SKILL_IDS, ELEMENTS, runSkillSpec, ELEMENT_COUNTERS, COUNTER_BONUS, COUNTERED_PENALTY,
-  elementMatchup, elementForRow, learnRunSkill, type RunSkillId, type RunSkillState,
+  elementMatchup, elementForRow, learnRunSkill, elementOf, skillTier, previousTier,
+  type RunSkillId, type RunSkillState,
   burnSpreadTargets, metalSpreadTargets,
 } from '../game/laneRunSkills';
 
@@ -497,11 +498,48 @@ function rate(stage: number, pick: LanePicker, trials = 300) {
 // 上面那個 play 沒有場內技能,只留給「戰力不會被卡死」那種不看過關率的檢查。
 // 所有跟難度有關的數字一律走 simRun(它會照遊戲規則挑技能),不然玩家會比敵人假設的弱一截。
 
-// --- 主動技能已全部移除(爆裂/貫穿/號令/壁障)---
-// 留這一組當回歸防線:哪天有人加回來,得先想清楚「它會不會進敵人曲線」。
-check('主動技能已全部移除', ACTIVE_SKILL_IDS.length === 0);
-check('沒有任何技能有冷卻(有倒數的就是主動,一款都不剩)',
-  RUN_SKILLS.every((sp) => skillCooldownSeconds(sp.id, MAX_RUN_SKILL_LEVEL) === 0));
+// --- 六元素 x 三階 ---
+// 一階被動、二三階主動(冷卻好了而且畫面上有怪就自己放),二三階全部造成傷害。
+check('六個元素各三階,共 18 款', RUN_SKILLS.length === 18
+  && ELEMENTS.every((el) => RUN_SKILLS.filter((sp) => elementOf(sp.id) === el).length === 3),
+  ELEMENTS.map((el) => `${el} ${RUN_SKILLS.filter((sp) => elementOf(sp.id) === el).length}`).join(' / '));
+// **「有倒數的就是主動,沒有的就是被動」**——玩家掃一眼技能列就分得出來,
+// 破一次例(土曾經是「每 N 秒擋一整波」)整條規則就沒人信了。
+check('一階一款都沒有冷卻,二三階每一款都有',
+  RUN_SKILLS.every((sp) => (skillTier(sp.id) === 1)
+    ? skillCooldownSeconds(sp.id, MAX_RUN_SKILL_LEVEL) === 0
+    : skillCooldownSeconds(sp.id, MAX_RUN_SKILL_LEVEL) > 0));
+check('主動 = 二三階(12 款),而且六個元素各兩款',
+  ACTIVE_SKILL_IDS.length === 12
+  && ACTIVE_SKILL_IDS.every((id) => skillTier(id) > 1)
+  && ELEMENTS.every((el) => ACTIVE_SKILL_IDS.filter((id) => elementOf(id) === el).length === 2));
+// 三階是「等一下有一大口」,二階是「常常有一小口」——量級要真的分得開。
+check('三階冷卻比二階長,但單次的量更大',
+  ELEMENTS.every((el) => {
+    const t2 = `${el}2` as RunSkillId, t3 = `${el}3` as RunSkillId;
+    const k = (id: RunSkillId) => runSkillEffects([{ id, level: MAX_RUN_SKILL_LEVEL }]).actives[0];
+    return skillCooldownSeconds(t3, 5) > skillCooldownSeconds(t2, 5) && k(t3).kills! > k(t2).kills!;
+  }),
+  `二階 ${skillCooldownSeconds('fire2', 5)}s/${runSkillEffects([{ id: 'fire2', level: 5 }]).actives[0].kills} 隻`
+  + ` vs 三階 ${skillCooldownSeconds('fire3', 5)}s/${runSkillEffects([{ id: 'fire3', level: 5 }]).actives[0].kills} 隻`);
+// 使用者的規則,一字不差:二三階全部造成傷害,**只有木的一階例外**(它是補人不是打人)。
+check('二三階全部造成傷害',
+  ACTIVE_SKILL_IDS.every((id) => (runSkillEffects([{ id, level: 1 }]).actives[0]?.kills ?? 0) > 0));
+check('一階不造成主動傷害(它們是被動),木一階是補人',
+  ELEMENTS.every((el) => runSkillEffects([{ id: el, level: 5 }]).actives.length === 0)
+  && runSkillEffects([{ id: 'wood', level: 5 }]).regen > 0);
+// 二三階要吃相剋:押對屬性必須在高階更有感,不然「關卡前公開屬性順序」到後段就沒意義了。
+check('二三階吃相剋,而且跟它的一階同一個倍率',
+  ACTIVE_SKILL_IDS.every((id) => {
+    const el = elementOf(id);
+    return ELEMENTS.every((w) => elementMatchup(id, w) === elementMatchup(el, w));
+  }));
+// 「依既有特性往上長」:二階要先有一階、三階要先有二階。
+// 沒有這條的話第一次選擇就可能開出三階,而三階的量級是為「已經投資過這個元素」設計的。
+check('沒有前一階就開不出下一階',
+  runSkillOffersAt([], 4242, 0, 5).every((o) => skillTier(o.id) === 1)
+  && runSkillOffersAt([{ id: 'fire', level: 1 }], 4242, 0, 5)
+    .every((o) => previousTier(o.id) === null || o.id === 'fire2' || o.id === 'fire'));
 // **這一項推翻了原本的「冷卻要綁波不綁秒」。** 舊結構是「一波 = 一排」,
 // 一排的時間 = 排距 / 跑速,而跑速從 45 爬到 111 —— 綁秒等於後期技能自己變弱。
 // 關卡結構改成「戰鬥段是時間」之後,一波的長度反而幾乎是常數,綁秒才是穩的那一邊。
@@ -652,10 +690,16 @@ check('相剋倍率:剋中 x2.5、被剋 x2/3、無關 x1',
   && elementMatchup('metal', 'thunder') === 1 - COUNTERED_PENALTY
   && elementMatchup('metal', 'ice') === 1
   && elementMatchup('metal', undefined) === 1);
-// 非元素技能已全部移除(鋒刃/增殖/四款主動),清單空了這一項就自動成立——
-// 留著是為了哪天又加了非元素技能時,它會提醒「相剋只能套在元素上」。
-check('非元素技能不吃相剋',
-  (ACTIVE_SKILL_IDS as readonly RunSkillId[]).every((id) => ELEMENTS.every((e) => elementMatchup(id, e) === 1)));
+// 現在每一款技能都屬於某個元素(二三階走 elementOf 查回一階),所以「不吃相剋的技能」
+// 已經不存在。改成盯反面:**相剋一定是逐元素的**,同一個元素的三階一起動,
+// 別的元素一格都不動——這是「逐元素」跟舊版純量最關鍵的差別。
+check('相剋逐元素:剋中只放大那一族,別族不動',
+  (() => {
+    const wave = ELEMENT_COUNTERS['fire'] as RunSkillId; // 火剋的那一個
+    const fireFam = (['fire', 'fire2', 'fire3'] as RunSkillId[]).every((id) => elementMatchup(id, wave) > 1);
+    const others = ELEMENTS.filter((e) => e !== 'fire' && ELEMENT_COUNTERS[e] !== wave && ELEMENT_COUNTERS[wave] !== e);
+    return fireFam && others.every((e) => elementMatchup(e, wave) === 1);
+  })());
 // 一組技能裡,只有對得上的那一個被動到——這是「逐元素」跟舊版純量最關鍵的差別。
 // 對照組必須跟這一波的屬性**完全不相干**,不然它會被順帶剋到,就分不出隔離性有沒有成立。
 // 環是 金→木→土→冰→火→雷→金,所以對「金」與「火」兩波都中立的是土。

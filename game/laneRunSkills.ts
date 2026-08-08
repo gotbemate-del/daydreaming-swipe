@@ -33,15 +33,58 @@
 // 反向再 import 就是循環相依——實測會炸在「Cannot access 'GEAR_STEP' before initialization」,
 // 而且是在模組載入時才炸,型別檢查完全看不出來。
 export type RunSkillId =
-  // 只剩六元素。**全部只在你失誤的時候才生效**,所以完美玩家一個都用不到,
-  // 也因此全部不進理想路線——敵人不會為了它們變強,幅度可以放心給(見下方 ELEMENTS)。
+  // 六元素 x 三階 = 18 款。**一階是被動,二三階是主動**(冷卻好了、而且畫面上有怪,
+  // 就自己放出去),二三階全部造成傷害——只有木的一階例外,它是補人不是打人。
   //
-  // 鋒刃(每人攻擊力 +N%)與增殖(數量 +N%)已依指示移除,連同更早移除的四款主動。
-  // **那兩款是唯二進理想路線的**,所以拿掉之後場內技能對理想路線的貢獻是 0 ——
-  // createRun 照樣拿理想路線推敵人戰力,只是那條路線上不再有技能的份,
-  // 敵人跟著降下來,「選對就一定過」的結構保證不受影響(verify 有一項在盯)。
-  // 代價是一場的戰力膨脹只剩閘門那一份,見 MAX_RUN_SKILL_SLOTS 上面的說明。
-  'fire' | 'metal' | 'thunder' | 'ice' | 'wood' | 'earth';
+  // 一階的 id 刻意維持沒有後綴(`fire` 而不是 `fire1`):圖鑑的 501 個條目、
+  // 波次屬性、相剋表全部拿這六個字串當 key,加後綴等於要同時改存檔與圖鑑對應表。
+  //
+  // 鋒刃(每人攻擊力 +N%)與增殖(數量 +N%)已依指示移除。**那兩款是唯二進理想路線的**,
+  // 所以現在場內技能對理想路線的貢獻是 0 —— 二三階雖然會殺怪,但殺的是「你漏掉的那幾隻」:
+  // 理想玩家本來就全清,多給他清怪的能力等於零(見 RUN_SKILLS 上面的長註解)。
+  | 'fire' | 'fire2' | 'fire3'
+  | 'metal' | 'metal2' | 'metal3'
+  | 'thunder' | 'thunder2' | 'thunder3'
+  | 'ice' | 'ice2' | 'ice3'
+  | 'wood' | 'wood2' | 'wood3'
+  | 'earth' | 'earth2' | 'earth3';
+
+/**
+ * 這一款屬於哪一個元素(二三階回傳它的一階 id)。
+ *
+ * 相剋、圖鑑加成、屬性染色全部走這一支:`fire3` 對上木一樣要吃到剋制,
+ * 圖鑑收滿火的那幾件也要一起放大火的三階。**不要用字串比對硬拆**——
+ * 加一個新元素的時候會漏掉其中一處,而漏掉的那一處會安靜地永遠回傳 1。
+ */
+export function elementOf(id: RunSkillId): RunSkillId {
+  return SKILL_TIERS[id].element;
+}
+
+/** 這一款是第幾階(1 = 被動,2/3 = 主動)。 */
+export function skillTier(id: RunSkillId): 1 | 2 | 3 {
+  return SKILL_TIERS[id].tier;
+}
+
+/**
+ * id → (元素, 階級)。**這張表就是技能組的骨架**,新增技能只改這裡與 RUN_SKILLS。
+ * 寫成查表而不是從字串推(`id.endsWith('2')`)是因為一階沒有後綴,
+ * 用字串推就會需要一條特例,而特例正是以後漏掉的地方。
+ */
+const SKILL_TIERS: Record<RunSkillId, { element: RunSkillId; tier: 1 | 2 | 3 }> = {
+  fire: { element: 'fire', tier: 1 }, fire2: { element: 'fire', tier: 2 }, fire3: { element: 'fire', tier: 3 },
+  metal: { element: 'metal', tier: 1 }, metal2: { element: 'metal', tier: 2 }, metal3: { element: 'metal', tier: 3 },
+  thunder: { element: 'thunder', tier: 1 }, thunder2: { element: 'thunder', tier: 2 }, thunder3: { element: 'thunder', tier: 3 },
+  ice: { element: 'ice', tier: 1 }, ice2: { element: 'ice', tier: 2 }, ice3: { element: 'ice', tier: 3 },
+  wood: { element: 'wood', tier: 1 }, wood2: { element: 'wood', tier: 2 }, wood3: { element: 'wood', tier: 3 },
+  earth: { element: 'earth', tier: 1 }, earth2: { element: 'earth', tier: 2 }, earth3: { element: 'earth', tier: 3 },
+};
+
+/** 這一款的上一階(一階回傳 null)。選項池用它做「要先有前一階」的門檻。 */
+export function previousTier(id: RunSkillId): RunSkillId | null {
+  const { element, tier } = SKILL_TIERS[id];
+  if (tier === 1) return null;
+  return tier === 2 ? element : (`${element}2` as RunSkillId);
+}
 
 /**
  * 六元素。每一款的**規則**都不一樣(不是同一個東西換名字),而且互相剋制(見 ELEMENT_COUNTERS)。
@@ -113,9 +156,11 @@ export const COUNTERED_PENALTY = 1 / 3;
  * 剋中 x2.5、被剋 x2/3、其餘 x1。非元素(鋒刃/增殖/主動技能)一律 1。
  */
 export function elementMatchup(mine: RunSkillId, waveElement?: RunSkillId): number {
-  if (!waveElement || !isElement(mine)) return 1;
-  if (ELEMENT_COUNTERS[mine] === waveElement) return COUNTER_BONUS;
-  if (ELEMENT_COUNTERS[waveElement] === mine) return 1 - COUNTERED_PENALTY;
+  if (!waveElement) return 1;
+  // 二三階走它的一階去查表:`fire3` 對上木一樣要剋中,不然「押對屬性」在高階就失效了。
+  const el = elementOf(mine);
+  if (ELEMENT_COUNTERS[el] === waveElement) return COUNTER_BONUS;
+  if (ELEMENT_COUNTERS[waveElement] === el) return 1 - COUNTERED_PENALTY;
   return 1;
 }
 
@@ -132,10 +177,13 @@ export function elementForRow(rowIndex: number, salt = 0): RunSkillId {
 
 /** 哪些是主動技能。轉職解鎖的就是這一串的前 N 款(見 laneJobs 的 activeSkillsForStage)。 */
 /**
- * 主動技能已全部移除(爆裂/貫穿/號令/壁障)。留著空陣列是為了讓「有幾款主動可選」
- * 這個概念還在型別上成立(轉職曾經用它當獎勵),之後要加回來只要往這裡放。
+ * 哪些是主動技能 = **每個元素的二階與三階**(共 12 款)。
+ *
+ * 「有倒數的就是主動,沒有的就是被動」這條規則因此變成:一階全部沒有倒數,
+ * 二三階全部有。玩家掃一眼技能列就分得出來(verify 有一項在盯)。
  */
-export const ACTIVE_SKILL_IDS: RunSkillId[] = [];
+export const ACTIVE_SKILL_IDS: RunSkillId[] = (Object.keys(SKILL_TIERS) as RunSkillId[])
+  .filter((id) => SKILL_TIERS[id].tier > 1);
 export function isActiveSkill(id: RunSkillId): boolean {
   return ACTIVE_SKILL_IDS.includes(id);
 }
@@ -197,10 +245,13 @@ export type CollectionScales = Partial<Record<RunSkillId, number>>;
  * 鋒刃/增殖 是唯二進理想路線的,碰了敵人就會跟著變強。
  */
 export function bookPowerScale(id: RunSkillId, bookLevel = 0, collection: CollectionScales = {}): number {
-  // 鋒刃/增殖 一律 1:它們是唯二進理想路線的,碰了敵人就會跟著變強。
+  // 圖鑑照**元素**查,不照 id 查:圖鑑的 501 個條目綁的是六個元素,
+  // 收滿火的那幾件本來就該一起放大 fire / fire2 / fire3。
+  // 照 id 查的話二三階永遠查不到(表裡沒有那個 key),圖鑑對它們等於不存在——
+  // 而那是「安靜地少了一半加成」,查起來完全看不出來。
   if (!isElement(id) && !isActiveSkill(id)) return 1;
   const book = 1 + BOOK_POWER_PER_LEVEL * Math.min(MAX_SKILL_BOOK_LEVEL, Math.max(0, Math.floor(bookLevel)));
-  return book * Math.max(1, collection[id] ?? 1);
+  return book * Math.max(1, collection[elementOf(id)] ?? 1);
 }
 
 /**
@@ -267,10 +318,16 @@ const PER_LEVEL = {
  * `verify-lane-run.ts` 有一項在盯「一波的秒數在 3000 關之間的離散程度」,
  * 哪天結構又改回去,那一項會先紅。
  */
-const COOLDOWN_SPEC: Partial<Record<RunSkillId, { base: number; perLevel: number; min: number }>> = {
-  // 主動技能移除之後這裡是空的。**元素一款都不准有冷卻**——
-  // 「有倒數的就是主動,沒有的就是被動」是玩家掃一眼就分得出來的規則(verify 有一項在盯)。
-};
+const COOLDOWN_SPEC: Partial<Record<RunSkillId, { base: number; perLevel: number; min: number }>> = (() => {
+  const out: Partial<Record<RunSkillId, { base: number; perLevel: number; min: number }>> = {};
+  for (const [id, { tier }] of Object.entries(SKILL_TIERS) as [RunSkillId, { tier: 1 | 2 | 3 }][]) {
+    // **一階一款都不准有冷卻**:「有倒數的就是主動,沒有的就是被動」是玩家掃一眼
+    // 就分得出來的規則,破一次例(土曾經是「每 N 秒擋一整波」)整條規則就沒人信了。
+    if (tier === 1) continue;
+    out[id] = tier === 2 ? { base: 15, perLevel: 1, min: 10 } : { base: 28, perLevel: 2, min: 18 };
+  }
+  return out;
+})();
 
 /** 這一款技能幾秒觸發一次。沒有冷卻的(被動)回傳 0。 */
 export function skillCooldownSeconds(id: RunSkillId, level: number): number {
@@ -381,6 +438,65 @@ export function earthSlowRatio(level: number): number {
   return level > 0 ? Math.min(0.5, PER_LEVEL.earthSlow * Math.min(MAX_RUN_SKILL_LEVEL, level)) : 0;
 }
 
+// ---- 二三階:主動技能 ----
+//
+// ## 為什麼「造成傷害」仍然不進理想路線
+//
+// 這是這個專案第四次用同一條規則,值得再寫一次:敵人戰力是照**這一場的最佳路線**算的,
+// 而最佳路線假設玩家**每一波全清**。所以「多清掉 N 隻」對理想玩家的價值是 0 ——
+// 他本來就把整波清光了,再給他清怪的能力,`extraKills` 也會被夾在整波隻數上。
+// 真正吃到這幾款的是**漏了幾隻的你**:越落後越有用,抬地板不抬天花板。
+//
+// 也因此傷害一律給**固定隻數**,不給百分比:百分比會隨著理想戰力一起長,
+// 等於偷偷變成一條跟敵人曲線平行的線;固定值對滾出 80 人的最佳玩家是零頭,
+// 對剩 12 個人的你是活下來。
+//
+// ## 冷卻綁秒不綁波
+//
+// 沿用既有的規則(見 skillCooldownSeconds 上面的長註解):一波的秒數在 3000 關之間
+// 差不到 1.6 倍,而綁秒玩家看得到倒數——綁波只寫得出「還要 2 波」,那不是時間單位。
+//
+// 二階 14→10 秒(一波 17 秒,所以一波放得出 1~2 次),三階 26→18 秒(兩波一次)。
+// 三階冷卻比二階長,但單次的量大一個級距:二階是「常常有一小口」,三階是「等一下有一大口」。
+
+/** 二階:每次清掉幾隻。等級提高的是量,不是頻率。 */
+export function tier2Kills(level: number): number {
+  return level > 0 ? 2 + Math.min(MAX_RUN_SKILL_LEVEL, level) : 0;
+}
+/** 三階:每次清掉幾隻。 */
+export function tier3Kills(level: number): number {
+  return level > 0 ? 5 + 2 * Math.min(MAX_RUN_SKILL_LEVEL, level) : 0;
+}
+
+/** 二三階各自的名字與一句話。用查表寫,因為 12 款的規則完全一樣、只有名字不同。 */
+const ACTIVE_FLAVOUR: Record<string, { name: string; flavour: string }> = {
+  fire2: { name: '火・爆炎', flavour: '腳邊炸開一圈火' },
+  fire3: { name: '火・煉獄', flavour: '整條跑道燒起來' },
+  metal2: { name: '金・碎片', flavour: '甩出一片金屬碎刃' },
+  metal3: { name: '金・鋒暴', flavour: '碎刃繞著隊伍轉一圈' },
+  thunder2: { name: '雷・落雷', flavour: '一道雷打在最前面那群' },
+  thunder3: { name: '雷・雷暴', flavour: '連續落雷洗過整波' },
+  ice2: { name: '冰・冰錐', flavour: '冰錐從地面刺出來' },
+  ice3: { name: '冰・暴風雪', flavour: '暴風雪蓋住整條跑道' },
+  wood2: { name: '木・荊棘', flavour: '荊棘從地面纏上來' },
+  wood3: { name: '木・森羅', flavour: '巨木貫穿整條跑道' },
+  earth2: { name: '土・落石', flavour: '前方砸下一批落石' },
+  earth3: { name: '土・地裂', flavour: '地面裂開吞掉一整排' },
+};
+
+/** 12 款主動的規格,由 SKILL_TIERS 展開——名字以外的規則 12 款完全一樣,不要逐款手寫。 */
+const ACTIVE_SPECS: RunSkillSpec[] = (Object.keys(ACTIVE_FLAVOUR) as RunSkillId[]).map((id) => {
+  const tier = skillTier(id);
+  const kills = tier === 2 ? tier2Kills : tier3Kills;
+  const { name, flavour } = ACTIVE_FLAVOUR[id];
+  return {
+    id,
+    name,
+    describe: (l: number) =>
+      `${flavour},每 ${skillCooldownSeconds(id, l)} 秒自動放一次,清掉 ${kills(l)} 隻`,
+  };
+});
+
 export const RUN_SKILLS: RunSkillSpec[] = [
   // 六元素。說明一律寫「什麼時候有用」,不是只寫數字——玩家要在 2 秒內判斷該不該拿。
   {
@@ -427,6 +543,8 @@ export const RUN_SKILLS: RunSkillSpec[] = [
  *(跟增殖「保證至少 +1 人」同一個理由)。
  */
 
+RUN_SKILLS.push(...ACTIVE_SPECS);
+
 export function runSkillSpec(id: RunSkillId): RunSkillSpec {
   const found = RUN_SKILLS.find((s) => s.id === id);
   if (!found) throw new Error(`unknown run skill: ${id}`);
@@ -464,11 +582,24 @@ export function runSkillOffers(
 ): RunSkillState[] {
   // 帶滿 10 格之後只能升級手上的——不然「廣度 vs 深度」那個決策不存在(永遠可以再拿新的)。
   const full = skills.length >= MAX_RUN_SKILL_SLOTS;
-  // 還沒解鎖的主動技能不會出現。activeCount 由 laneRun 的 activeSkillCountForStage 給——
-  // **轉職給的就是這個數字**(學生 1 款 → 5轉 全開),不是給倍率。
-  const unlocked = new Set(ACTIVE_SKILL_IDS.slice(0, Math.max(1, activeCount)));
+  // 轉職給的是「**同時帶得動幾款主動**」,不是「解鎖清單的前 N 款」。
+  //
+  // 舊版是 `ACTIVE_SKILL_IDS.slice(0, activeCount)`,那在只有四款主動時還行;
+  // 現在主動是六元素各兩款,切前 N 個等於**只解鎖火跟金**——
+  // 「沒有萬用元素也沒有廢元素」當場失效,而那是六元素設計的地基。
+  // 改成算持有數之後,轉職的獎勵仍然是實的(能同時掛幾款主動),而且對六元素完全中性。
+  const activeCap = Math.max(1, Math.min(MAX_RUN_SKILL_SLOTS, activeCount));
+  const activesHeld = skills.filter((s) => isActiveSkill(s.id)).length;
   const pool = RUN_SKILLS
-    .filter((spec) => !isActiveSkill(spec.id) || unlocked.has(spec.id))
+    // 已經帶滿主動額度的話,只能升級手上那幾款,不能再拿新的主動。
+    .filter((spec) => !isActiveSkill(spec.id) || activesHeld < activeCap
+      || skills.some((s) => s.id === spec.id))
+    // **要先有前一階**:二階要先有一階、三階要先有二階。這就是「依既有特性往上長」——
+    // 沒有這條的話第一次選擇就可能開出三階,而三階的量級是為「已經投資過這個元素」設計的。
+    .filter((spec) => {
+      const prev = previousTier(spec.id);
+      return prev === null || runSkillLevel(skills, prev) > 0;
+    })
     .filter((spec) => !full || skills.some((s) => s.id === spec.id))
     .map((spec) => ({ id: spec.id, level: runSkillLevel(skills, spec.id) + 1 }))
     .filter((o) => o.level <= MAX_RUN_SKILL_LEVEL);
@@ -638,6 +769,19 @@ export function runSkillEffects(
     }
     if (s.id === 'ice') { trade += PER_LEVEL.iceTrade * level * mx; freezeChance += freezeChanceAt(level, mx); }
     if (s.id === 'wood') regen += PER_LEVEL.woodRegen * level * mx;
+    // 二三階:主動。**清掉固定隻數**,而且吃相剋與技能書(mx 已經把兩者乘完)。
+    // 為什麼吃相剋:押對屬性要在高階更有感,不然「關卡前公開屬性順序」到後段就沒有意義了。
+    // 為什麼仍然不進理想路線:理想玩家每一波全清,多給他清怪的能力等於 0(見上面的長註解)。
+    const tier = skillTier(s.id);
+    if (tier > 1 && level > 0) {
+      const kills = (tier === 2 ? tier2Kills(level) : tier3Kills(level)) * mx;
+      actives.push({
+        id: s.id,
+        name: runSkillSpec(s.id).name,
+        cooldown: skillCooldownSeconds(s.id, level),
+        kills,
+      });
+    }
     // 土・遲滯:減速是演出(所以不吃相剋,免得剋中就直接把整波定住),
     // 少損失幾個人才是它的實際好處(所以那個吃相剋)。
     if (s.id === 'earth') { slow += earthSlowRatio(level); lossCut += PER_LEVEL.earthLossCut * level * mx; }

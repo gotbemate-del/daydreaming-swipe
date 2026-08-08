@@ -1,7 +1,7 @@
 import { StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle, G, Path, Polygon } from 'react-native-svg';
 
-import type { RunSkillId } from '../game/laneRunSkills';
+import { elementOf, skillTier, type RunSkillId } from '../game/laneRunSkills';
 
 /**
  * 技能圖示。**圓形,而且冷卻倒數就長在圖示上**。
@@ -69,9 +69,27 @@ const GLYPHS: Record<string, (color: string) => React.ReactNode> = {
   ),
 };
 
-/** 沒有字形的(之後新增的技能還沒畫)先用一個實心圓,不要拿 emoji 或文字頂替。 */
+/** 沒有字形的先用一個實心圓,不要拿 emoji 或文字頂替。 */
 function fallbackGlyph(color: string) {
   return <Circle cx={12} cy={12} r={7} fill={color} />;
+}
+
+/**
+ * 階級標記:左上角的小點,二階兩點、三階三點。
+ *
+ * **為什麼三階共用一階的字形,只加點**:同一個元素的三款是「同一件事的三個量級」,
+ * 各畫一張互不相干的圖反而讓玩家看不出它們是一家的——而「這是我投資過的那個元素」
+ * 正是技能列上最該一眼認出的事(四格裡常常有兩格是同族)。
+ * 點畫在左上是因為右下已經給等級了,而正中央是字形。
+ */
+function tierPips(tier: 2 | 3, color: string) {
+  return (
+    <G fill={color}>
+      {Array.from({ length: tier }, (_, i) => (
+        <Circle key={i} cx={3.2 + i * 4.4} cy={3.2} r={1.7} />
+      ))}
+    </G>
+  );
 }
 
 interface Props {
@@ -124,8 +142,17 @@ export function SkillIcon({ id, color, size, level = 0, cooldown = 0, ready = 0 
           transform={`translate(${size / 2 - (size * 0.52) / 2} ${size / 2 - (size * 0.52) / 2}) scale(${(size * 0.52) / 24})`}
           opacity={cooling ? 0.4 : 1}
         >
-          {(GLYPHS[id] ?? fallbackGlyph)(color)}
+          {(GLYPHS[elementOf(id)] ?? fallbackGlyph)(color)}
         </G>
+        {/* 階級標記畫在字形外面、用整個 viewBox 的座標,所以它不會跟著字形一起縮 */}
+        {skillTier(id) > 1 && (
+          <G
+            transform={`translate(${size * 0.13} ${size * 0.13}) scale(${(size * 0.36) / 24})`}
+            opacity={cooling ? 0.5 : 1}
+          >
+            {tierPips(skillTier(id) as 2 | 3, color)}
+          </G>
+        )}
       </Svg>
 
       {/* 冷卻中壓一個秒數在正中央:有人要的是「還有幾秒」的精確值,環只給概略。 */}
