@@ -442,14 +442,28 @@ export function engageRange(rowIndex: number, index: number): number {
   return VISIBLE_AHEAD * FIRE_RANGE_RATIO * jitter;
 }
 
-// ---- 地形 ----
-// 每一關換一種地面。純粹是視覺,不影響任何數值——但少了它整條跑道就是一塊深色底,
+// ---- 場景底圖 ----
+// **一個大關一張底圖**(1-1 到 1-10 都是同一張,2-1 到 2-10 換下一張)。
+// 純粹是視覺,不影響任何數值——但少了它整條跑道就是一塊深色底,
 // 玩家沒有「我在往前跑」以外的任何場景感,關卡之間也長得一模一樣。
-export type TerrainId = 'grass' | 'dirt' | 'asphalt' | 'stone';
-export const TERRAINS: TerrainId[] = ['grass', 'dirt', 'asphalt', 'stone'];
-export function terrainForStage(stage: number): TerrainId {
-  const index = Math.max(0, Math.floor((stage - 1) / 2)) % TERRAINS.length;
-  return TERRAINS[index];
+//
+// 為什麼綁大關不綁小關:大關才是玩家心裡的「章節」(x-10 是魔王關,打完才換地方)。
+// 綁小關的話一個章節裡場景換十次,反而讓「我還在同一個地方打」這件事消失。
+// 上一版是每 2 個小關換一次配色,那個節奏對不上任何一條關卡結構的邊界。
+//
+// 只有 id 在這一層,圖片資源在 components/stageBackdrops.ts —— game/ 必須能在 Node
+// 單獨跑,不准 import 任何 RN 資源(CLAUDE.md 的分層鐵律)。
+export type BackdropId =
+  | 'grass' | 'jungle' | 'sand' | 'snow' | 'darkstone'
+  | 'asphalt' | 'town' | 'alley' | 'nightmarket' | 'sewer';
+/** 大關順序。**這一串就是 scripts/shrink-backdrops.py 的 ORDER,兩邊要一致。** */
+export const BACKDROPS: BackdropId[] = [
+  'grass', 'jungle', 'sand', 'snow', 'darkstone',
+  'asphalt', 'town', 'alley', 'nightmarket', 'sewer',
+];
+/** 大關編號 → 那個大關的底圖。用完 BACKDROPS.length 個大關就循環回第一張。 */
+export function backdropForStage(stage: number): BackdropId {
+  return BACKDROPS[(chapterOfStage(stage) - 1) % BACKDROPS.length];
 }
 
 // ---- 大魔王 ----

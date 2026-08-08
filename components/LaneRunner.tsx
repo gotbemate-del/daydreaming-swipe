@@ -11,7 +11,7 @@ import {
   MISS_MESSAGE,
   runLength,
   stageLabel,
-  terrainForStage,
+  backdropForStage,
   totalAttack,
   ELITE_MASS,
   VISIBLE_AHEAD,
@@ -20,8 +20,8 @@ import {
   type WaveMonster,
   type RunRow,
   type RunStart,
-  type TerrainId,
 } from '../game/laneRun';
+import { STAGE_BACKDROPS } from './stageBackdrops';
 import {
   describeRunSkill, runSkillSpec, ELEMENT_COUNTERS, isActiveSkill, FREEZE_MS,
   type CollectionScales, type RunSkillId,
@@ -192,19 +192,20 @@ const SQUAD_SLOTS = [
   { dx: 52, dy: -50, scale: 0.72 },
 ];
 
-// 地面。純視覺,每一關換一種,讓關卡之間不會長得一模一樣。
-const TERRAIN_STYLE: Record<TerrainId, { base: string; speck: string; edge: string }> = {
-  grass: { base: '#22301f', speck: '#33452b', edge: '#3d4a33' },
-  dirt: { base: '#2e2620', speck: '#3d322a', edge: '#4a3c31' },
-  asphalt: { base: '#20202a', speck: '#2a2a36', edge: '#46465a' },
-  stone: { base: '#262630', speck: '#33333f', edge: '#454554' },
-};
-// 地面碎點:位置固定(不亂數),整片跟著跑動往下捲。密度夠看得出在前進就好,不必鋪滿。
-const SPECKS = Array.from({ length: 26 }, (_, i) => ({
-  x: ((i * 37) % 100) / 100,
-  phase: (i * 61) % 520,
-  size: 3 + (i % 3) * 2,
-}));
+/*
+ * 底圖上要疊一層暗色紗(`STAGE_BACKDROPS[...].scrim`),沒有它畫面會壞在一個具體的地方:
+ * 底圖是滿版的場景圖(夜市的霓虹燈、雪原的白),而閘門、怪、傷害數字全是小尺寸的像素圖
+ * 疊在上面——底圖一亮,前景就讀不出來了,玩家看得到「很漂亮的街景」但看不到
+ * 「下一排要站哪一格」,而**那正是這遊戲唯一要看的東西**。
+ *
+ * 兩個決定記在這裡:
+ *   - 用半透明的紗,不是把圖本身調暗。調暗只能 build-time 產圖(CSS filter 在 RNW 上
+ *     會被丟掉,這個坑記在 CLAUDE.md),而且同一張圖以後想拿去別的地方用就沒得調了。
+ *   - **紗的濃度逐張不同,而且是產生檔算出來的**,不是這一層挑一個好看的數字:
+ *     這批圖本身的亮度差三倍以上(草原 0.15、荒漠 0.52),套同一個透明度的話,
+ *     荒漠那幾個大關的地面比草原亮三倍,同一組前景的可讀性完全不一樣。
+ *     計算在 scripts/shrink-backdrops.py 的 SCRIM_TARGET。
+ */
 
 interface Props {
   stage: number;
@@ -289,6 +290,23 @@ export function LaneRunner({
   const panResponder = useMemo(
     () =>
       PanResponder.create({
+        /**
+         * 無條件收下,**包含右鍵**——這不是漏掉,是查過之後刻意的。
+         *
+         * react-native-web 在 responder 系統那一層就先擋掉非主鍵了
+         * (`useResponderEvents/utils.js` 的 `isPrimaryPointerDown`:mousedown 只有
+         * `button === 0` 而且沒按修飾鍵才算數,所以 macOS 的 ctrl+click 也一起擋掉),
+         * 右鍵根本走不到這裡。
+         *
+         * **不要在這裡加 `e.nativeEvent.button !== 0` 的保險。** RNW 組給 responder 的
+         * nativeEvent 是自己拼的一個物件,裡面**沒有 button 這個欄位**
+         * (`createResponderEvent.js`),讀出來永遠是 undefined,條件永遠成立——
+         * 程式看起來更嚴謹,實際上一行都沒生效。這正是 CLAUDE.md 記過的那類坑
+         * (`box.bottom`、RNW 的 filter)。
+         *
+         * 右鍵真正會造成的傷害是「系統選單蓋住前方那一排閘門」,那個在
+         * hooks/useNoContextMenu.ts 擋掉,不在這裡。
+         */
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
         onPanResponderGrant: () => {
@@ -374,7 +392,29 @@ export function LaneRunner({
   // 由後往前畫(slice 之後 reverse),主角才會蓋在隊友上面而不是被壓在後面。
   // 由後往前畫,最前面那一隻才會蓋在後排上面。
   const drawn = units.map((form, i) => ({ form, slot: SQUAD_SLOTS[i], spiking: isSpiking(i) })).reverse();
-  const terrain = TERRAIN_STYLE[terrainForStage(stage)];
+  const backdrop = STAGE_BACKDROPS[backdropForStage(stage)];
+  /**
+   * 底圖一格畫多高,以及這一刻捲到哪裡。
+   *
+   * 捲動速率**一定要跟世界座標同一組換算**(bottomYFor 的那一組),不能自己挑一個好看的倍率:
+   * 地面比物件慢的話,怪看起來像在冰上滑;快的話像地面在追著怪跑。兩者都會讓
+   * 「我在往前跑」這件事變得說不出哪裡怪。
+   */
+  const groundScroll = (distance * (headY + SPAWN_MARGIN)) / VISIBLE_AHEAD;
+  const backdropHeight = trackWidth > 0 ? trackWidth / backdrop.aspect : 0;
+  const backdropShift = backdropHeight > 0 ? groundScroll % backdropHeight : 0;
+  /**
+   * 要疊幾份才蓋得住整條跑道,以及第一份的頂邊在哪。
+   *
+   * 兩件事都踩過:
+   *   - **份數不能寫死 2。** 圖比跑道矮的時候(378px 的正方形圖配 500px 的跑道)兩份不夠。
+   *   - **要往下鋪,不是往上鋪。** 第一版是 `backdropShift - backdropHeight * k`,
+   *     k 越大越往上——所以不管疊幾份,最下面永遠停在 `backdropShift + backdropHeight`,
+   *     跑道底部固定露出一條純底色的黑帶,而**勇者剛好就站在那一段**。
+   *     現在是把第一份推到畫面上緣之外(頂邊 <= 0),然後一路往下鋪。
+   */
+  const backdropTop = backdropShift - backdropHeight;
+  const backdropTiles = backdropHeight > 0 ? Math.ceil(trackHeight / backdropHeight) + 1 : 0;
   const incoming = wave ? upcoming.find((r) => r.index === wave.rowIndex)?.nodes[0].enemy : undefined;
 
   /**
@@ -811,7 +851,7 @@ export function LaneRunner({
         // 測試要抓跑道就用這個,不要靠「高度剛好是 500」之類的特徵去猜——那種選取器
         // 一改版面就失效,而且會靜靜地選到外層容器,量出一堆看起來合理但錯誤的數字。
         testID="lane-track"
-        style={[styles.track, { backgroundColor: terrain.base }]}
+        style={[styles.track, { backgroundColor: backdrop.base }]}
         onLayout={(e) => {
           const { width, height } = e.nativeEvent.layout;
           trackWidthRef.current = width;
@@ -819,11 +859,39 @@ export function LaneRunner({
         }}
         {...panResponder.panHandlers}
       >
+        {/*
+          大關底圖。一張圖鋪不滿整條跑道(圖是有限高的,跑道要無限往下捲),所以疊好幾份,
+          每一份往上錯開一個圖高。份數由跑道高度決定(backdropTiles),**不隨跑的距離長**——
+          捲動只動 backdropShift 這一個數字,所以跑到第幾波都是同樣這幾個 View。
+
+          `ready` 之前不畫:trackWidth 是 0 的時候 backdropHeight 也是 0,每一份會疊在同一點,
+          玩家會看到一格閃爍。
+        */}
+        {ready && (
+          <View style={styles.laneLines} pointerEvents="none">
+            {Array.from({ length: backdropTiles }, (_, k) => (
+              <Image
+                key={k}
+                source={backdrop.source}
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  width: trackWidth,
+                  height: backdropHeight,
+                  top: backdropTop + backdropHeight * k,
+                }}
+                resizeMode="stretch"
+              />
+            ))}
+            <View style={[styles.laneLines, { backgroundColor: backdrop.scrim }]} />
+          </View>
+        )}
+
         <View style={styles.laneLines} pointerEvents="none">
           {Array.from({ length: LANE_COUNT }, (_, i) => (
             <View
               key={i}
-              style={[styles.laneLine, { borderRightColor: terrain.edge }, state.lane === i && styles.laneLineActive]}
+              style={[styles.laneLine, { borderRightColor: backdrop.edge }, state.lane === i && styles.laneLineActive]}
             />
           ))}
         </View>
@@ -832,25 +900,9 @@ export function LaneRunner({
             而且它是畫面上唯一靜止的東西——動的是物件,不是線。 */}
         <View style={[styles.contactLine, { top: headY }]} pointerEvents="none" />
 
-        {/* 地面碎點:草皮的草叢、土地的石礫、柏油路的補丁。跟著跑動往下捲,是「地面在動」的主要線索。 */}
-        <View style={styles.laneLines} pointerEvents="none">
-          {SPECKS.map((sp, i) => (
-            <View
-              key={i}
-              style={{
-                position: 'absolute',
-                left: sp.x * trackWidth,
-                top: ((distance * 1.6 + sp.phase) % (trackHeight + 40)) - 40,
-                width: sp.size,
-                height: Math.max(2, Math.round(sp.size * 0.6)),
-                borderRadius: 1,
-                backgroundColor: terrain.speck,
-              }}
-            />
-          ))}
-        </View>
-
-        {/* 往下流動的路面虛線:唯一在告訴玩家「角色正在前進」的東西,拿掉之後畫面會像靜止的。 */}
+        {/* 往下流動的路面虛線:標出兩條跑道的界線。底圖上線之前它還兼著「角色正在前進」的
+            唯一線索,現在那件事由底圖捲動負責,但界線本身仍然是**判定**的一部分——
+            玩家要知道自己站在哪一格,不能只靠底圖的紋理去猜。 */}
         <View style={styles.laneLines} pointerEvents="none">
           {Array.from({ length: LANE_COUNT - 1 }, (_, i) =>
             DASH_PHASES.map((phase) => (
@@ -859,9 +911,9 @@ export function LaneRunner({
                 style={[
                   styles.dash,
                   {
-                    backgroundColor: terrain.edge,
+                    backgroundColor: backdrop.edge,
                     left: laneWidth * (i + 1) - 1,
-                    top: ((distance * 1.6 + phase) % (trackHeight + DASH_LENGTH)) - DASH_LENGTH,
+                    top: ((groundScroll + phase) % (trackHeight + DASH_LENGTH)) - DASH_LENGTH,
                   },
                 ]}
               />

@@ -10,13 +10,13 @@ import {
   rowsForStage, wavesForStage, stageLabel, chapterOfStage, levelOfStage, enemyPowerRatioForStage,
   LEVELS_PER_CHAPTER, WAVES_PER_LEVEL, LONG_LEVEL_WAVES, EASY_RATIO, lastEnemyRowIndex, isBossStage,
   GATE_WIDTH, GATE_WIDTH_MIN, gateWidthForStage, trapHalveWeightForStage, heroWaveEveryForStage,
-  gateSpan, hitsGate, MONSTER_EDGE, SPECIES_PER_WAVE, START_OFFSET, terrainForStage,
+  gateSpan, hitsGate, MONSTER_EDGE, SPECIES_PER_WAVE, START_OFFSET, backdropForStage,
   ENEMY_POWER_RATIO, ENEMY_UNITS_PER_HERO, goodGateGrowthAt, gatesBeforeRow, isTrapGate, runSeconds, ELITE_MASS, ELITE_HITS, absorbedFrom,
   applyGate, gateLabel, DOUBLE_GATES_PER_RUN, GEAR_STEP, doubleGatesForStage, LONG_LEVEL_RATIO_SCALE,
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
   createRocks, hitsRock, applyRockHit, rowDistances, battleDistance, isEnemyRowIndex, VISIBLE_AHEAD,
   ROCKS_PER_RUN_MIN, ROCKS_PER_RUN_MAX, ROCK_HERO_LOSS, ROCK_GRAZE_MESSAGE, ACTIVE_THROWERS,
-  TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane, MIN_WAVE_SIZE,
+  BACKDROPS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane, MIN_WAVE_SIZE,
   HERO_WAVE_ELEMENT_SALT, waveElementsForStage, hazardsFor, hitByHazard, HAZARD_WIDTH, HAZARD_LOSS_HEROES, expectedHazardHits, ENEMY_THROW_INTERVAL_MS,
   battleSecondsPerWave, engageRange, FIRE_RANGE_RATIO,
   type Lane, type RunState, type WaveBoost,
@@ -361,11 +361,22 @@ check('踩到就生效', landed.message !== '沒碰到');
 check('人越多丟越密', volleyRate(1) < volleyRate(9) && volleyRate(9) < volleyRate(64));
 check('投擲密度有封頂(不會變成彈幕)', volleyRate(10000) === volleyRate(16) && volleyRate(1) === 1);
 
-// --- 地面 ---
-check('每一關都有地面,而且會輪替',
-  new Set([1, 3, 5, 7].map(terrainForStage)).size === TERRAINS.length,
-  [1, 3, 5, 7].map(terrainForStage).join(' → '));
-check('同一關永遠是同一種地面', terrainForStage(9) === terrainForStage(9));
+// --- 場景底圖 ---
+// 底圖綁**大關**:一個大關十個小關共用一張,打完 x-10 才換地方。
+// 綁錯層級(綁小關)的症狀是一個章節裡場景換十次,而這一項就是在擋那件事。
+{
+  const chapter1 = Array.from({ length: LEVELS_PER_CHAPTER }, (_, i) => backdropForStage(i + 1));
+  check('同一個大關的十個小關共用一張底圖',
+    new Set(chapter1).size === 1, `1-1…1-10 → ${chapter1[0]}`);
+  const heads = Array.from({ length: BACKDROPS.length }, (_, c) => backdropForStage(c * LEVELS_PER_CHAPTER + 1));
+  check('每個大關換一張,而且不重複',
+    new Set(heads).size === BACKDROPS.length, heads.join(' → '));
+  check('底圖用完之後循環回第一張',
+    backdropForStage(BACKDROPS.length * LEVELS_PER_CHAPTER + 1) === BACKDROPS[0]);
+  // 大關的最後一個小關(魔王關)必須還是同一張:換在魔王之前等於提前預告「這裡結束了」。
+  check('魔王關與同一個大關的其他小關同一張底圖',
+    backdropForStage(LEVELS_PER_CHAPTER) === backdropForStage(1));
+}
 
 // --- 打掉幾隻 vs 少幾個人:碰撞互換的核心 ---
 // 「漏過來的隻數」與「被換掉的人數」必須是同一件事的兩種說法,兩邊各自算就會漂,
