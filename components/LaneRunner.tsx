@@ -24,6 +24,7 @@ import {
   type BackdropId,
 } from '../game/laneRun';
 import { STAGE_BACKDROPS } from './stageBackdrops';
+import { SkillIcon } from './SkillIcon';
 import { Settings, type AudioSettings } from './Settings';
 import { MapDrawToast } from './MapDrawToast';
 import { playSfx } from '../hooks/useSfx';
@@ -67,6 +68,8 @@ const HERO_BODY_HEIGHT = 44;
  * 人多的時候投擲間隔只有 90ms,那樣就永遠回不到待機。
  */
 const HERO_SPIKE_MS = 130;
+/** 技能列那一排圓的直徑。34 是「環看得出走到哪」與「一排塞得下 6 顆」的交界。 */
+const SKILL_ICON_SIZE = 34;
 // 只給 headY 當基準用(見下方 form 那段的說明):版面錨點固定用基本型,合體不會讓它位移。
 const HERO_HEIGHT = heroBoxHeight(HERO_BODY_HEIGHT);
 const HERO_BOTTOM = 10;
@@ -843,31 +846,20 @@ export function LaneRunner({
   }
 
   /**
-   * 技能列的一格。冷卻用「從下往上填滿」表示——填滿 = 可以放了。
+   * 技能列的一格。**圓形,冷卻長在圖示上**(見 components/SkillIcon.tsx)。
    *
-   * 為什麼不畫冷卻環:環要嘛靠 SVG 的 strokeDasharray(多一個相依),要嘛靠疊四個方塊
-   * 硬湊(在 30px 的格子裡看不出是環)。直條的填滿在這個尺寸下反而更好讀,
-   * 而且跟上面的進度條是同一種語彙。
+   * 舊版是「方格 + 從下往上填滿的暗色遮罩 + 底下一行秒數」,三個元素在講同一件事。
+   * 玩家掃技能列的時候要找的是「哪一顆好了」,而圓最快分辨的是**形狀完整度**:
+   * 環畫滿了就是好了,不必讀秒也不必比較填滿高度。
+   *
+   * 舊註解寫「不畫冷卻環是因為要多一個相依」——那個相依(react-native-svg)後來
+   * 為了別的東西已經進來了,所以那個理由早就不成立。
    */
   function renderSkillSlot(s: CarriedSkill) {
-    const tint = elementColor(s.id) ?? (isActiveSkill(s.id) ? '#e0a95c' : '#9691a5');
-    const cooling = s.cooldown > 0 && s.ready > 0;
+    const tint = elementColor(s.id) ?? '#e0a95c';
     return (
-      <View
-        key={s.id}
-        accessibilityLabel={`技能 ${s.name} ${s.level}`}
-        style={[styles.skillSlot, { borderColor: tint }]}
-      >
-        {cooling && (
-          <View
-            pointerEvents="none"
-            style={[styles.skillCooling, { height: `${Math.min(100, (s.ready / s.cooldown) * 100)}%` }]}
-          />
-        )}
-        {/* 名字取第一個字:八元素是火金雷冰木土光暗、四主動是爆貫號壁、被動是鋒增,十四款彼此不重複。
-            用文字而不是圖示是因為技能沒有素材,而圖示鐵則禁止拿 emoji 頂替。 */}
-        <Text style={[styles.skillGlyph, { color: tint }]}>{s.name[0]}</Text>
-        <Text style={styles.skillSlotSub}>{cooling ? `${Math.ceil(s.ready)}s` : s.level}</Text>
+      <View key={s.id} accessibilityLabel={`技能 ${s.name} ${s.level}`} style={styles.skillSlot}>
+        <SkillIcon id={s.id} color={tint} size={SKILL_ICON_SIZE} level={s.level} cooldown={s.cooldown} ready={s.ready} />
       </View>
     );
   }
@@ -1376,23 +1368,12 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 4,
-    minHeight: 34,
+    gap: 7,
+    minHeight: 40,
   },
-  skillSlot: {
-    width: 30,
-    height: 30,
-    borderRadius: 6,
-    borderWidth: 1,
-    backgroundColor: '#2a2a35',
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
-  },
-  /** 冷卻:從下往上蓋住,退到 0 就是可以放了。 */
-  skillCooling: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#16161cd0' },
-  skillGlyph: { fontSize: 14, fontWeight: '700', lineHeight: 16 },
-  skillSlotSub: { color: '#8a8a95', fontSize: 9, lineHeight: 10 },
+  // overflow 不能設 hidden:等級的小圓刻意畫在圓的外緣上(right/bottom 是負的),
+  // 裁掉的話等級就消失了。
+  skillSlot: { alignItems: 'center', justifyContent: 'center' },
   skillBarEmpty: { color: '#8a8a95', fontSize: 11 },
   hintRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   // 齒輪。命中範圍(padding)刻意比圖大:圖只有 18px,而這顆在畫面最下緣,

@@ -614,7 +614,8 @@ scripts/      驗證腳本
 
 | 需求 | 做法 |
 |---|---|
-| 16x16 小圖示 | 從 `assets/sprites/ui/` 挑既有的 PNG(分頁圖示、鎖頭、金幣都已經有) |
+| 16x16 小圖示 | 從 `assets/sprites/ui/` 挑既有的 PNG(分頁圖示、鎖頭、金幣、齒輪都已經有) |
+| 技能圖示 | 手寫 SVG 字形,見 `components/SkillIcon.tsx` 的 `GLYPHS`(圓形 + 冷卻環) |
 | 面板外框、進度環、大尺寸橫幅 | 手寫 SVG + `react-native-svg` |
 
 純排版符號 `✕`(關閉)、`✓`(已完成)、`→`(前往)不算 emoji,但不要擴大使用。
