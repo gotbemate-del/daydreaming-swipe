@@ -1959,6 +1959,14 @@ export interface WaveBoost {
   /** 這一波的損失少扣幾個人(土・遲滯:怪衝得慢,撞上來的比較少) */
   lossCut?: number;
   /**
+   * 跑圖途中已經先扣掉幾個人(怪走到你身上那一刻就扣,見 useLaneRun)。
+   *
+   * **這是預付,不是另一套規則。** 結算仍然照 leakLoss 算總額,只補差額——
+   * 預付多了就退回去。沒有這個欄位的話(模擬器、驗證腳本)整條路徑跟以前一模一樣,
+   * 所以難度曲線一格都不會動。
+   */
+  leakAdvance?: number;
+  /**
    * 這一波有幾隻**曾經進到射程寬度內**(見 FIRE_WIDTH)。擊殺數會被它夾住:
    * 打不到的那幾隻,戰力再高也清不掉。
    *
@@ -1990,6 +1998,18 @@ export interface WaveBoost {
  * 玩家會看到「明明都打完了還是漏了一隻」——而那是最難查的一種不一致,
  * 因為兩邊分開看都完全合理。
  */
+/**
+ * 漏了 `leaked` 隻要換掉幾個勇者。**唯一一份公式**——跑圖途中逐隻預扣與結算補差額
+ * 都走這一支,各寫一份的話畫面上扣的跟結算算的會慢慢岔開(CLAUDE.md 記過同一種錯)。
+ */
+export function leakLoss(leaked: number, cost: number, tradeRate: number, lossCut = 0): number {
+  return Math.max(
+    0,
+    Math.ceil((Math.max(0, leaked) * Math.max(1, cost)) / Math.max(BASE_TRADE_RATE, tradeRate))
+      - Math.floor(Math.max(0, lossCut)),
+  );
+}
+
 export function extraKills(_enemy: EnemyEffect, boost: WaveBoost, own: number): number {
   return Math.max(0, boost.kills ?? 0)
     + Math.ceil(own * Math.max(0, boost.chainRatio ?? 0));
@@ -2081,12 +2101,22 @@ export function resolveEnemy(
   next.heroes += rallied;
   // 土・遲滯:怪衝得慢,撞上來的少幾個。**固定值**,跟冰的兌換率(乘數)互補——
   // 前期一波才三五隻的時候固定值最有感,後期大波則是乘數比較值錢。
-  const lost = Math.max(
-    0,
-    Math.ceil((leaked * cost) / Math.max(BASE_TRADE_RATE, next.tradeRate))
-      - Math.floor(Math.max(0, boost.lossCut ?? 0)),
-  );
+  //
+  // **這一波總共該扣幾個人**,由 leakLoss 算——那是唯一一份公式。
+  //
+  // 跑圖途中「怪走到你身上」已經先扣過一部分了(boost.leakAdvance,見 useLaneRun),
+  // 所以這裡只補**剩下的差額**。先扣的那些是**預付**,這一行才是權威:
+  // 預付多了就退回去,少了就補齊,總額永遠等於 leakLoss 的結果。
+  //
+  // 為什麼要這樣拆而不是乾脆「逐隻扣、結算不管」:逐隻扣的總額是跑圖途中
+  // 實際命中累積出來的,而敵人曲線是照 waveKillCount 這條**公式**校準的,
+  // 兩者本來就會有零頭差。讓公式當權威,難度曲線就一格都不會動
+  //(模擬器不給 leakAdvance,所以它走的路徑跟以前完全一樣)。
+  const total = leakLoss(leaked, cost, next.tradeRate, boost.lossCut);
+  const advance = Math.max(0, Math.floor(boost.leakAdvance ?? 0));
+  const lost = total - advance;
   const before = totalAttack(next);
+  // lost 可能是負的(預付超收),那時候這一行就是把多扣的退回去。
   next.heroes = next.heroes - lost;
   // 這裡曾經有「光・復活」與「暗・吸取」。光與暗整組移除了,兩者都不要加回來:
   // 復活是**事後**把死亡取消掉,玩家看到的是「我死了但沒死」,那一刻沒有任何畫面可以演;
@@ -2098,9 +2128,11 @@ export function resolveEnemy(
   const delta = next.heroes - (state.heroes);
   return {
     state: next,
+    // 訊息寫的是**這一波總共**扣了幾個,不是這一行扣了幾個——玩家在意的是這一波的代價,
+    // 而預付的那幾個他已經一隻一隻看著被撞掉了。
     message: missed > 0
-      ? `漏了 ${leaked} 隻 -${lost} 人(${missed} 隻沒掃到)`
-      : `漏了 ${leaked} 隻 -${lost} 人`,
+      ? `漏了 ${leaked} 隻 -${total} 人(${missed} 隻沒掃到)`
+      : `漏了 ${leaked} 隻 -${total} 人`,
     heroDelta: delta,
     attackDelta: totalAttack(next) - before,
   };

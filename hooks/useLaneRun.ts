@@ -34,6 +34,7 @@ import {
   isCritHit,
   procRoll,
   extraKills,
+  leakLoss,
   engageRange,
   createRocks,
   hitsRock,
@@ -337,6 +338,12 @@ interface WaveRuntime {
    * 會在最後一波一次結算掉,玩家看到的是「魔王莫名其妙被秒了」。
    */
   fired: { kills: number; immune: boolean };
+  /** 每一隻走到勇者身上了沒(不管死活)。走到了才算數,而且只算一次。 */
+  arrived: boolean[];
+  /** 走到你身上而且**還活著**的有幾隻(= 這一波到目前為止漏了幾隻)。 */
+  leaked: number;
+  /** 因為上面那些已經先扣掉幾個人。結算時當 boost.leakAdvance 交出去。 */
+  advance: number;
   /** 這一波有哪幾隻曾經進到射程寬度內。擊殺數會被它的大小夾住(見 laneRun 的 FIRE_WIDTH)。 */
   covered: Set<number>;
 }
@@ -569,6 +576,7 @@ export function useLaneRun(
    */
   function boostFor(
     heroWave: boolean, fired: WaveRuntime['fired'], fx: RunSkillEffects, covered?: number,
+    leakAdvance = 0,
   ): WaveBoost {
     const boost: WaveBoost = {};
     // 勇者波:投擲傷害在跑圖途中就逐發扣過了(見 EnemyShot),一定要告訴 resolveEnemy
@@ -585,6 +593,8 @@ export function useLaneRun(
     if (fx.lossCut > 0) boost.lossCut = fx.lossCut;
     if (fired.immune) boost.immune = true;
     if (covered !== undefined) boost.coveredUnits = covered;
+    // 跑圖途中已經先扣掉的那幾個。結算只補差額,總額仍然由 leakLoss 說了算。
+    if (leakAdvance > 0) boost.leakAdvance = leakAdvance;
     return boost;
   }
 
@@ -790,6 +800,9 @@ export function useLaneRun(
         burningUntil: new Array(enemy.units).fill(0),
         hitCount: 0,
         fired: { kills: 0, immune: false },
+        arrived: new Array(enemy.units).fill(false),
+        leaked: 0,
+        advance: 0,
         covered: new Set<number>(),
       };
       waveRef.current = current;
@@ -839,9 +852,58 @@ export function useLaneRun(
     );
     // 打得倒的是「覆蓋到的那幾隻裡最前面的 kills 隻」,所以要照覆蓋順序判斷,
     // 不能用索引大小——沒被覆蓋的那幾隻夾在中間的話,索引比較不成立。
-    const isDown = (i: number) => current!.covered.has(i)
-      && [...current!.covered].filter((k) => k < i).length < kills
-      && current!.hitsOn[i] >= current!.hitsPerUnit;
+    // 「這一隻**注定會倒**」——戰力算得掉它,只是可能還沒挨滿刀。
+    const willDie = (i: number) => current!.covered.has(i)
+      && [...current!.covered].filter((k) => k < i).length < kills;
+    const isDown = (i: number) => willDie(i) && current!.hitsOn[i] >= current!.hitsPerUnit;
+
+    // --- 走到你身上的怪:**當場扣人** ---
+    //
+    // 先前這裡什麼都沒有:沒打死的怪走到勇者身上就不再畫,而整筆損失要等到跑完整個
+    // 戰鬥段、抵達敵人排才一次結算。實測那個落差是**第 1 關 13.9 秒、第 100 關 5.6 秒**——
+    // 玩家看著怪穿過自己什麼事都沒有,然後過了十幾秒莫名其妙少一票人。
+    // 這跟「敵人的武器只存在畫面層」是同一種 bug(CLAUDE.md 記過),解法也一樣:
+    // 讓它在**碰到的那一刻**發生。
+    //
+    // 扣的是**預付**,不是另一套規則:總額仍然由結算的 leakLoss 說了算,
+    // 這裡先付、那裡補差額(預付多了就退回去)。所以難度曲線一格都沒動,
+    // 而模擬器根本不走這條路徑(它沒有 tick,也不會設 leakAdvance)。
+    {
+      let deduct = 0;
+      for (let i = 0; i < current.monsters.length; i++) {
+        if (current.arrived[i]) continue;
+        if (current.monsters[i].distance > travelled) continue; // 還沒走到
+        current.arrived[i] = true;
+        // **判斷要用「注定會倒」而不是「已經倒了」。**
+        //
+        // 怪是一路衝過來的,而刀是一把一把丟的——排在最前面那幾隻常常在還沒挨滿刀之前
+        // 就走到你身上了。用 isDown 判的話它們會被算成漏接,但結算的公式
+        //(waveKillCount)算的是**整段戰鬥打得掉幾隻**,那幾隻在公式裡是死的。
+        // 兩邊不一致的後果實測過:第 1 關第一波、1 個勇者,第一隻怪一碰到就把你扣死,
+        // 而改動前那一波是穩過的——等於難度被悄悄改掉了。
+        if (willDie(i)) continue;
+        // 射程外的那幾隻「沒掃到」,它們不扣人也不給吸收(見 resolveEnemy 的 missed),
+        // 所以也不能算進預付。
+        if (!current.covered.has(i)) continue;
+        current.leaked += 1;
+        const want = leakLoss(
+          current.leaked,
+          enemyEffect.leakCost ?? 1,
+          stateRef.current.tradeRate,
+          fx.lossCut,
+        );
+        deduct += Math.max(0, want - current.advance);
+        current.advance = want;
+      }
+      if (deduct > 0) {
+        setLastHazardAt(now); // 扣人一定要有畫面上的訊號,不然數字動了玩家也不知道
+        setState((prev) => {
+          if (prev.phase !== 'running') return prev;
+          const heroes = Math.max(0, prev.heroes - deduct);
+          return heroes <= 0 ? { ...prev, heroes: 0, phase: 'dead' } : { ...prev, heroes };
+        });
+      }
+    }
 
     // --- 丟武器 ---
     // 打不倒的也照丟。丟到打得倒的都倒了就停手的話,剩下那段路上小怪一直衝過來、勇者卻站著
@@ -1092,7 +1154,7 @@ export function useLaneRun(
           const fx = runSkillEffects(runSkills, waveElement, bookLevel, collection);
           const current = waveRef.current;
           boost = current !== null && current.rowIndex === due.index
-            ? boostFor(current.heroWave, current.fired, fx, current.covered.size)
+            ? boostFor(current.heroWave, current.fired, fx, current.covered.size, current.advance)
             : boostFor(due.nodes[0].enemy?.heroWave === true, NO_FIRED, fx);
           if (runSkills.some((s) => s.level > 0 && ELEMENT_COUNTERS[s.id] === waveElement)) {
             setLastStrike({ at: Date.now(), ids: [], names: ['剋'], kills: 0 });

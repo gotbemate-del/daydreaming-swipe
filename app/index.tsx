@@ -232,6 +232,43 @@ export default function HomeScreen() {
     });
   }
 
+  /**
+   * 重新再來。**換 runKey 就等於整場重來**——LaneRunner 每一場都是一個新實例,
+   * 跑到一半的狀態(波次、飛行中的武器、已結算的排、計時起點)全部跟著實例走,
+   * 所以不必也不該在原地一項一項 reset(漏掉其中一項就會「上一場的怪出現在這一場」)。
+   *
+   * **這一場的金幣與掉落刻意不結算。** 玩家自己按的重來,還沒跑完就不算跑過;
+   * 而且結算了才重來的話,反覆重開第一波就能刷圖鑑掉落。
+   *
+   * 無限副本是**整輪**重來不是這一關重來:只重開這一關等於把「不能重試」那條規則
+   * 從後門打開(卡在第 8 關就一直重開第 8 關),而那條規則就是無限副本的全部壓力來源。
+   */
+  function restartRun() {
+    if (mode === 'endless') {
+      setSurvivalStage(survivalFrom);
+      setSurvivalStreak(0);
+      setSurvivalWaves(0);
+      setSurvivalCoins(0);
+      setSurvivalBackdrop(drawBackdrop(null));
+      setMapDrawOpen(true);
+    }
+    setRunKey((k) => k + 1);
+  }
+
+  /**
+   * 放棄遊戲。**走跟陣亡完全一樣的路徑**,不另外做一條:
+   * 一般模式回主介面且關卡不前進,無限副本進結算畫面(撐到哪就算到哪)。
+   *
+   * 為什麼放棄也要結算生存分數:玩家撐了十幾波才按放棄,把那些波數丟掉等於懲罰
+   * 「主動結束」,而他真正想要的只是「不要再打下去」——那跟陣亡是同一件事的兩種到達方式。
+   *
+   * 統計交空的:放棄的那一場**不算跑過**(金幣與掉落也不結算,見 restartRun),
+   * 任務計數器跟著同一條規則,不然「放棄」會變成刷任務進度的捷徑。
+   */
+  function quitRun() {
+    onRunFinish('dead', 0, 0, { goodGates: 0, misses: 0, runSkillPicks: 0, rocksDodged: 0 });
+  }
+
   function onRunFinish(result: 'cleared' | 'dead', earned: number, waves: number, stats: RunStats) {
     update((prev) => ({ ...prev, coins: prev.coins + earned }));
     rollRunDrops(result === 'cleared', mode);
@@ -477,6 +514,8 @@ export default function HomeScreen() {
             : null
         }
         onFinish={onRunFinish}
+        onRestart={restartRun}
+        onQuit={quitRun}
       />
     </View>
   );

@@ -71,8 +71,9 @@ const HERO_BODY_HEIGHT = 44;
  * 人多的時候投擲間隔只有 90ms,那樣就永遠回不到待機。
  */
 const HERO_SPIKE_MS = 130;
-/** 金・擴散命中那一下的方塊閃光大小。 */
-const SPREAD_SIZE = 14;
+/** 金・擴散甩出去的那一把畫多大,以及命中閃光的大小。刀比玩家投擲的小一號(它是擴散不是主攻)。 */
+const SPREAD_SIZE = 20;
+const SPREAD_BURST = 12;
 /** 技能列那一排圓的直徑。34 是「環看得出走到哪」與「一排塞得下 6 顆」的交界。 */
 const SKILL_ICON_SIZE = 34;
 // 只給 headY 當基準用(見下方 form 那段的說明):版面錨點固定用基本型,合體不會讓它位移。
@@ -278,6 +279,14 @@ interface Props {
    */
   mapDraw?: { onRedraw: () => void; onDone: () => void } | null;
   /**
+   * 暫停面板上的兩顆:重新再來 / 放棄遊戲。**都由 app 層執行**——
+   * 「這一場」的生命週期是 app 層在管的(runKey、生存模式的累計、存檔),
+   * 在跑圖裡自己重置等於再發明一套,而漏掉其中一項的症狀是
+   *「上一場的東西出現在這一場」(CLAUDE.md 記過,所以每一場都換 key 重新掛載)。
+   */
+  onRestart?: () => void;
+  onQuit?: () => void;
+  /**
    * 這一場結束(通關或陣亡)。coins 是這一場賺到的,由 app 層累加起來帶回主介面。
    * waves 是這一關實際打完幾波——生存模式的分數是**累計波數**,而死在第 3 波跟
    * 死在第 9 波差很多,只回傳「過了沒」會把那個差別整個丟掉。
@@ -287,7 +296,7 @@ interface Props {
 
 export function LaneRunner({
   stage, job, start, onFinish, bookLevel = 0, survivalWavesBefore = null, collection = {},
-  audio, onChangeAudio, backdropOverride = null, mapDraw = null,
+  audio, onChangeAudio, backdropOverride = null, mapDraw = null, onRestart, onQuit,
 }: Props) {
   /**
    * 設定面板開著的時候跑圖停住。
@@ -709,40 +718,53 @@ export function LaneRunner({
           />
         );
       }
-      // 金・擴散:命中當下往旁邊甩出去的碎刃。畫成一條短的金色斜線 + 目標身上閃一下,
-      // 跟雷的連鎖(長線、會轉折)刻意分開——兩款都是「跳到旁邊」,不畫得不一樣就分不出誰在作用。
+      // 金・擴散:命中當下往旁邊甩出去的碎刃。
+      //
+      // **畫真的在飛的一把刀,不要畫連起來的線。** 第一版是一條 2px 的細線從命中的那隻
+      // 拉到旁邊那隻——那讀起來是**光束**,不是「甩出去的碎刃」:線的兩端同時存在、
+      // 而且一出現就是完整長度,眼睛看到的是「兩隻被連起來了」。
+      // 現在是一把武器圖沿著那條路徑飛過去(跟玩家投擲的武器同一套 weaponArt 與 -45 度慣例),
+      // 到站那一刻才閃一下——先有東西飛過去,才有命中,順序跟因果一致。
       if (e.kind === 'spread') {
         const from = e.from !== undefined ? posOf(e.from) : null;
-        const r = SPREAD_SIZE * (1 - age);
+        if (!from) return null;
+        // 前 70% 在飛,後 30% 是命中的閃光。
+        const fly = Math.min(1, age / 0.7);
+        const x = from.x + (to.x - from.x) * fly;
+        const y = from.y + (to.y - from.y) * fly;
+        const art = weaponArt(job?.archetype ?? null, state.gear, e.id);
+        const box = {
+          left: x - SPREAD_SIZE / 2,
+          top: y - SPREAD_SIZE / 2,
+          width: SPREAD_SIZE,
+          height: SPREAD_SIZE,
+          // 武器圖是朝右上的(-45 度是既有慣例),再加上飛行方向才會刀尖朝前。
+          transform: [{ rotate: `${(Math.atan2(to.y - from.y, to.x - from.x) * 180) / Math.PI - 45}deg` }],
+        };
         return (
           <View key={`fx-${e.id}`} pointerEvents="none">
-            {from && (() => {
-              const dx = to.x - from.x;
-              const dy = to.y - from.y;
-              const len = Math.max(2, Math.hypot(dx, dy));
-              const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
-              return (
-                <View
-                  style={[
-                    styles.spreadShard,
-                    {
-                      left: (from.x + to.x) / 2 - len / 2,
-                      top: (from.y + to.y) / 2 - 1,
-                      width: len,
-                      opacity: 0.9 * (1 - age),
-                      transform: [{ rotate: `${angle}deg` }],
-                    },
-                  ]}
-                />
-              );
-            })()}
-            <View
-              style={[
-                styles.spreadBurst,
-                { left: to.x - r / 2, top: to.y - r / 2, width: r, height: r, opacity: 1 - age,
-                  transform: [{ rotate: '45deg' }] },
-              ]}
+            <Image source={art} resizeMode="contain" style={[styles.pixelArt, styles.floating, box]} />
+            {/* 染成金屬色:一眼看得出這一把是擴散出去的,不是玩家丟的那幾把 */}
+            <Image
+              source={art}
+              resizeMode="contain"
+              style={[styles.pixelArt, styles.floating, box, { tintColor: '#c9c4b0', opacity: 0.75 }]}
             />
+            {age > 0.7 && (
+              <View
+                style={[
+                  styles.spreadBurst,
+                  {
+                    left: to.x - SPREAD_BURST / 2,
+                    top: to.y - SPREAD_BURST / 2,
+                    width: SPREAD_BURST,
+                    height: SPREAD_BURST,
+                    opacity: (1 - age) / 0.3,
+                    transform: [{ rotate: '45deg' }],
+                  },
+                ]}
+              />
+            )}
           </View>
         );
       }
@@ -1295,6 +1317,9 @@ export function LaneRunner({
           audio={audio}
           onChangeAudio={onChangeAudio}
           paused
+          survival={continuous}
+          onRestart={onRestart && (() => { setSettingsOpen(false); onRestart(); })}
+          onQuit={onQuit && (() => { setSettingsOpen(false); onQuit(); })}
           onClose={() => setSettingsOpen(false)}
         />
       )}
@@ -1479,8 +1504,7 @@ const styles = StyleSheet.create({
   /** 燃燒:目標身上一團橘光,由大縮小。 */
   burnGlow: { position: 'absolute', backgroundColor: '#c8674a', zIndex: 12 },
   /** 連鎖:兩隻怪之間的一條線。長度與角度由兩點算出來(見 renderElementFx)。 */
-  /** 金・擴散:甩過去的碎刃(細短線)與命中那一下的方塊閃光。 */
-  spreadShard: { position: 'absolute', height: 2, backgroundColor: '#c9c4b0', borderRadius: 1, zIndex: 12 },
+  /** 金・擴散:命中那一下的方塊閃光(飛過去的那一把用 weaponArt,不是色塊)。 */
   spreadBurst: { position: 'absolute', backgroundColor: '#c9c4b0', zIndex: 12 },
   chainBolt: { position: 'absolute', height: 2, backgroundColor: '#f2e6a0', borderRadius: 1, zIndex: 12 },
   /** 凍結:炸開的那一圈。 */
