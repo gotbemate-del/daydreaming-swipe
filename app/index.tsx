@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { JobChoice } from '../components/JobChoice';
@@ -95,7 +95,43 @@ function drawBackdrop(avoid: BackdropId | null): BackdropId {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
+/** 讀存檔中 / 還沒掛載時的畫面。兩種情況畫的是同一件事,所以只寫一份。 */
+function Loading() {
+  return (
+    <View style={styles.screen}>
+      <Text style={styles.loading}>載入存檔…</Text>
+    </View>
+  );
+}
+
+/**
+ * 掛載之前不畫遊戲本體。
+ *
+ * `app.json` 的 `web.output` 是 **static**:建置時 Expo 會在 **Node 裡**把畫面先渲染成 HTML。
+ * 而 `useBgm` 呼叫的 `useAudioPlayer` 在**建構的當下**就會去做一個 media element
+ * (`AudioPlayerWeb` 的 constructor → `_createMediaElement()`),Node 裡沒有 `document`
+ * 也沒有 `Audio`,那一下就丟例外——整個 Suspense boundary 在伺服器端失敗,
+ * 匯出的 index.html 裡會留下 `<!--$!-->`(React 的「這個 boundary 壞了」標記),
+ * 瀏覽器接手時就印一行 **React #419**。
+ *
+ * 症狀很容易被當成沒事:畫面**看起來完全正常**(React 會退回純用戶端渲染,自己重畫一次),
+ * 只有 console 多一行壓縮過的錯誤碼。代價是預先渲染的 HTML 整段作廢——首屏等於白等一輪,
+ * 而且真正的錯誤訊息被 `<!--$!-->` 吃掉,以後任何在 SSR 階段壞掉的東西都會長成同一行 #419。
+ *
+ * 解法不是去 try/catch 那個播放器,是**根本不要在伺服器上畫遊戲**:
+ * 伺服器輸出的就是這個 Loading,而瀏覽器第一次 render(mounted 還是 false)畫的也是它——
+ * 兩邊一模一樣,所以 hydration 對得起來,effect 跑完才換成真正的遊戲。
+ *
+ * 順帶一提這跟既有的 `loaded` 旗標是同一條規則的兩半:那一條擋的是「存檔還沒讀完就開始玩」,
+ * 這一條擋的是「還沒進到瀏覽器就開始畫」。兩個都畫同一個 Loading,不會閃兩次。
+ */
 export default function HomeScreen() {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  return mounted ? <Game /> : <Loading />;
+}
+
+function Game() {
   const { save, loaded, update } = useSave();
   const { stage, coins } = save;
   const job = toLaneJob(save.job);
@@ -359,13 +395,7 @@ export default function HomeScreen() {
 
   // 讀存檔是非同步的,讀完之前一律不畫遊戲——先畫 1-1 再跳回真正的進度,
   // 玩家有可能在那一瞬間按下「開始闖關」,結束時就把預設值寫回去,進度整個被蓋掉。
-  if (!loaded) {
-    return (
-      <View style={styles.screen}>
-        <Text style={styles.loading}>載入存檔…</Text>
-      </View>
-    );
-  }
+  if (!loaded) return <Loading />;
 
   if (screen === 'codex') {
     return (

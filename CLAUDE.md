@@ -749,6 +749,25 @@ scripts/      驗證腳本
 - **「進過這個副本沒有」要在進去的那一刻記,不是通關才記。** 任務寫的是「進一次」,
   而玩家第一次進去很可能會死。
 
+**靜態輸出(web.output: static)**
+- **`expo-audio` 的播放器不能在伺服器端建構,而它壞掉的樣子只有一行 `React #419`。**
+  `web.output` 是 `static`,所以建置時 Expo 會在 **Node 裡**先把畫面渲染成 HTML;而
+  `useBgm` 呼叫的 `useAudioPlayer` 在**建構的當下**就會做一個 media element
+  (`AudioPlayerWeb` 的 constructor → `_createMediaElement()`),Node 裡沒有 `document`
+  也沒有 `Audio`,那一下就丟例外。整個 Suspense boundary 在伺服器端失敗,匯出的
+  `index.html` 會留下 **`<!--$!-->`**(React 的「這個 boundary 壞了」標記),
+  瀏覽器接手時印一行壓縮過的 **React #419**。
+  **最麻煩的是它看起來沒事**:React 會退回純用戶端渲染、自己重畫一次,畫面完全正常,
+  只有 console 多一行錯誤碼。代價是預先渲染的 HTML 整段作廢(首屏白等一輪),
+  而且**真正的錯誤訊息被 `<!--$!-->` 吃掉了**——以後任何在 SSR 階段壞掉的東西
+  都會長成同一行 #419,查起來完全沒有線索。
+  解法不是去 try/catch 那個播放器,是**根本不要在伺服器上畫遊戲**:`HomeScreen` 現在只做
+  「掛載了沒」,沒掛載就畫 `Loading`,掛載後才畫 `<Game />`。伺服器輸出的是 Loading、
+  瀏覽器第一次 render 畫的也是 Loading,兩邊一致所以 hydration 對得起來。
+  這跟既有的 `loaded` 旗標是同一條規則的兩半:那條擋「存檔還沒讀完就開始玩」,
+  這條擋「還沒進到瀏覽器就開始畫」,而且兩個畫的是同一個 Loading,不會閃兩次。
+  **驗收方式是看匯出的 HTML 有沒有 `<!--$!-->`**,不是看畫面——畫面永遠是好的。
+
 **版面(續)**
 - **`PixelFrame` 的內距要走 `padding` prop,不能寫在 `style` 裡。** `style` 給的是外框那一層,
   而內容另有自己的 `padding`(預設 20),兩層會疊起來——卡片高度直接多一倍。
