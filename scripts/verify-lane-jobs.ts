@@ -30,11 +30,19 @@ check('轉職發生在第 5/30/80/160/260 大關結束',
 check('第 5 階之後不再轉職', tierAfter(2700) === null && tierAfter(2600) === 5);
 check('沒通關、或不是大關結尾都不會轉職',
   !isPromotionStage(0) && !isPromotionStage(4) && !isPromotionStage(6) && !isPromotionStage(49));
-// 轉職給的是**招式格**不是倍率:學生 1 款主動,每轉一階多一款。
-check('轉職解鎖的是主動技能款數(不是戰力倍率)',
+// 主動技能已全部移除,所以「轉職給招式格」那條路暫時沒有東西可給——
+// 轉職現在回到唯一的獎勵:**起跑數值**(戰力倍率與兌換率,見 runStartFor)。
+// activeSkillCountForStage 的階梯還在(1/2/3/4/5 款),等主動技能加回來就能直接接上。
+check('轉職的階梯還在(主動技能加回來就能直接接上)',
   activeSkillCountForStage(1) === 1 && activeSkillCountForStage(51) === 2
   && activeSkillCountForStage(301) === 3 && activeSkillCountForStage(2601) >= 4,
   [1, 51, 301, 801, 1601, 2601].map((s) => `${s}關:${activeSkillCountForStage(s)}款`).join(' '));
+// 但那個階梯現在開不出東西來,所以要盯住「轉職仍然有獎勵」——不然玩家轉了職什麼都沒拿到。
+check('轉職仍然給得出起跑數值(階級越高倍率越高)', (() => {
+  const t1 = runStartFor({ archetype: 'physicalMelee', branch: 'A', tier: 1 });
+  const t5 = runStartFor({ archetype: 'physicalMelee', branch: 'A', tier: 5 });
+  return t5.attackMultiplier > t1.attackMultiplier && t5.tradeRate > t1.tradeRate;
+})());
 
 // --- 選項 ---
 const firstChoices = jobChoices(null, 1);
