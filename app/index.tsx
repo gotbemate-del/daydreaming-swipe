@@ -163,11 +163,20 @@ export default function HomeScreen() {
       const found = rollDrops(bits, dropCountForRun(cleared), rng);
       for (const index of found) addItem(bits, index);
       setJustFound(found);
-      const gotBook = cleared && Math.random() < bookDropChance(bits);
+      // **通關一定給一本技能書**,圖鑑的掉落率則變成「再多一本」的機率(2%~12%)。
+      //
+      // 從「機率掉一本」改成「保證給一本」,是因為上限從 5 級開到 100 級:
+      // 照舊的 2%~12% 要練滿得打上千場,那條線等於不存在。現在是一關一本,
+      // 100 關練滿一輪——而總共有 3000 個小關,所以它是一條長期但走得完的線。
+      //
+      // 陣亡不給:技能書是**通關的獎勵**。陣亡照樣掉圖鑑碎片(那是給卡關的人的),
+      // 兩者分工不同——碎片讓卡關的人有進展,技能書讓過關的人變強。
+      const bonusBook = cleared && Math.random() < bookDropChance(bits);
+      const gained = (cleared ? 1 : 0) + (bonusBook ? 1 : 0);
       return {
         ...prev,
         collected: encodeCollection(bits),
-        books: gotBook ? Math.min(MAX_SKILL_BOOK_LEVEL, prev.books + 1) : prev.books,
+        books: Math.min(MAX_SKILL_BOOK_LEVEL, prev.books + gained),
       };
     });
   }

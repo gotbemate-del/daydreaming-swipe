@@ -20,14 +20,14 @@
 
 import { LEVELS_PER_CHAPTER, LONG_LEVEL_WAVES, TOTAL_CHAPTERS, WAVES_PER_LEVEL } from './laneRun';
 import { MAX_SKILL_LEVEL, MAX_SKILL_SLOTS, SKILLS, type SkillId, type SkillState } from './laneSkills';
-import { MAX_SKILL_BOOK_LEVEL } from './laneRunSkills';
+import { MAX_SKILL_BOOK_LEVEL, rescaleLegacyBookLevel } from './laneRunSkills';
 import { decodeCollection, encodeCollection } from './collection';
 
 /**
  * 存檔格式版本。**改動任何欄位的意義就要 +1,並在 MIGRATIONS 補一條。**
  * 只是新增一個「有預設值的欄位」不必升版:readSave 會幫沒有的欄位補預設值。
  */
-export const SAVE_VERSION = 4;
+export const SAVE_VERSION = 5;
 
 /** localStorage / AsyncStorage 的 key。改這個等於讓所有人的存檔消失,不要改。 */
 export const SAVE_KEY = 'daydreaming-swipe/save';
@@ -67,8 +67,11 @@ export interface SaveData {
   /** 跨場累積的金幣。 */
   coins: number;
   /**
-   * 技能書等級。生存模式掉的就是這個,**只往上開元素與主動的等級上限與選項保證**
-   * (見 laneRunSkills 的 MAX_SKILL_BOOK_LEVEL)——它碰不到理想路線,所以敵人不會跟著變強。
+   * 技能書等級(0 ~ 100)。**放大元素與主動的效果幅度**,見 laneRunSkills 的 bookBonus。
+   *
+   * 主要來源是「每通一關給一本」,生存模式的門檻再給前面幾級當助跑。
+   * 它碰不到理想路線(元素與主動全部在理想路線之外),所以敵人不會跟著變強——
+   * 這也是它敢開到 100 級的原因,而永久技能只敢給 +45%。
    */
   books: number;
   /** 生存模式的最佳紀錄:一輪連續撐過幾**波**。純紀錄,不影響數值。 */
@@ -192,6 +195,15 @@ const MIGRATIONS: Record<number, (raw: Record<string, unknown>) => Record<string
     version: 4,
     bestSurvival: Math.round(readNumber(raw.bestSurvival, 0) * WAVES_PER_LEVEL),
   }),
+  // v4 → v5:技能書上限從 5 級開到 100 級,而且曲線換成冪次(見 laneRunSkills 的 bookBonus)。
+  // **舊等級要換算成「放大倍率相同」的新等級**:直接沿用數字的話,舊玩家的滿書
+  // 會從 x1.75 掉到 x1.18,那是一次他完全不知道原因的削弱。
+  // (5 級 → 37 級、3 級 → 19 級、1 級 → 5 級。)
+  4: (raw) => ({
+    ...raw,
+    version: 5,
+    books: rescaleLegacyBookLevel(readNumber(raw.books, 0)),
+  }),
 };
 
 /** 遷移用的寬鬆數字讀取。遷移函式拿到的是還沒驗證過的 raw,所以不能假設型別。 */
@@ -274,6 +286,14 @@ export function readSave(text: string | null | undefined): { save: SaveData; mig
  *
  * 而且刻意用「一輪連續撐過幾波」而不是「累積打了幾波」:生存模式的壓力就在**不能失手**,
  * 用累積的話它會退化成「多打幾次就有」,跟一般模式沒兩樣。
+ */
+/**
+ * 生存模式的技能書門檻(撐過幾波)。
+ *
+ * 技能書上限從 5 級變成 100 級之後,這一串只給得起前面幾級——**那是刻意的**:
+ * 主要來源改成「每通一關給一本」(見 app 的 rollRunDrops),生存模式給的是
+ * **前期的一段助跑**,讓還沒累積很多通關數的人也有東西可拿。
+ * 門檻本身沒動,只是它在整條 100 級的曲線上佔的比例變小了。
  */
 export const SURVIVAL_BOOK_THRESHOLDS = [30, 60, 100, 150, 210];
 

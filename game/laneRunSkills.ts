@@ -227,9 +227,51 @@ export const MAX_RUN_SKILL_LEVEL = 5;
  * 真要做「選項品質」,得做成**玩家自己決定的重抽**(花一次重抽換一個保證的元素):
  * 那是攤在檯面上的取捨,而不是暗中把選項換掉——留給之後做。
  */
-export const MAX_SKILL_BOOK_LEVEL = 5;
-/** 每一級技能書把元素與主動的效果放大幾成。 */
-const BOOK_POWER_PER_LEVEL = 0.15;
+export const MAX_SKILL_BOOK_LEVEL = 100;
+
+/**
+ * 技能書滿級時,元素與主動的效果總共放大幾成。
+ *
+ * 1.5 = 滿級 x2.5。**這個數字可以放心給,而且理由跟幅度無關**:技能書只放大
+ * 元素與主動,而那兩類全部在理想路線之外(理想玩家每一波全清,清怪的能力對他等於 0)。
+ * 敵人不會跟著長,所以它是純粹的「抬地板」——只幫會失誤的人。
+ * 這也是為什麼它敢開到 100 級,而永久技能只敢給 +45%(那一條進理想路線)。
+ */
+const MAX_BOOK_BONUS = 1.5;
+
+/**
+ * 曲線的形狀。0.7 < 1 = **前段給得快、後段變慢**。
+ *
+ *   1 級 +6% / 10 級 +30% / 25 級 +55% / 50 級 +92% / 100 級 +150%
+ *
+ * 為什麼不是線性:100 級的東西如果每一級都一樣多,前 20 級的玩家(也就是絕大多數人)
+ * 感覺到的是「每次 +1.5%,根本沒差」——而技能書是通關的主要獎勵,拿到卻無感等於沒給。
+ * 前段陡的話第一本就 +6%,看得出來。
+ *
+ * 為什麼不用指數飽和(1 - e^-kl):那種曲線最後一段幾乎是平的,滿級前 20 級跟滿級
+ * 差不到 1%,「練滿」這件事就沒有意義了。冪次曲線末段仍然在爬。
+ */
+const BOOK_CURVE = 0.7;
+
+/**
+ * 舊制(上限 5 級、每級 +15%)的等級,換算成新曲線上**放大倍率相同**的等級。
+ *
+ * 存檔遷移用。不換算的話,舊玩家的滿書會從 x1.75 掉到 x1.18 —— 那是一次
+ * 沒人說得出理由的削弱,而且他完全不知道發生了什麼(這款在 bestSurvival
+ * 從「關」改成「波」的時候踩過同一個坑,見 game/save.ts 的 v3 → v4)。
+ */
+export function rescaleLegacyBookLevel(oldLevel: number): number {
+  const bonus = 0.15 * Math.min(5, Math.max(0, Math.floor(oldLevel)));
+  if (bonus <= 0) return 0;
+  return Math.round(MAX_SKILL_BOOK_LEVEL * (bonus / MAX_BOOK_BONUS) ** (1 / BOOK_CURVE));
+}
+
+/** 技能書到這一級時,效果放大幾成(0 = 沒有加成)。 */
+export function bookBonus(level: number): number {
+  const l = Math.min(MAX_SKILL_BOOK_LEVEL, Math.max(0, Math.floor(level)));
+  if (l <= 0) return 0;
+  return MAX_BOOK_BONUS * (l / MAX_SKILL_BOOK_LEVEL) ** BOOK_CURVE;
+}
 
 /**
  * 圖鑑給的放大倍率:**技能 id → 倍率**。
@@ -250,8 +292,7 @@ export function bookPowerScale(id: RunSkillId, bookLevel = 0, collection: Collec
   // 照 id 查的話二三階永遠查不到(表裡沒有那個 key),圖鑑對它們等於不存在——
   // 而那是「安靜地少了一半加成」,查起來完全看不出來。
   if (!isElement(id) && !isActiveSkill(id)) return 1;
-  const book = 1 + BOOK_POWER_PER_LEVEL * Math.min(MAX_SKILL_BOOK_LEVEL, Math.max(0, Math.floor(bookLevel)));
-  return book * Math.max(1, collection[elementOf(id)] ?? 1);
+  return (1 + bookBonus(bookLevel)) * Math.max(1, collection[elementOf(id)] ?? 1);
 }
 
 /**

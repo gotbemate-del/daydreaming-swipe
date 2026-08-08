@@ -10,7 +10,7 @@ import {
   type SaveData,
 } from '../game/save';
 import { WAVES_PER_LEVEL } from '../game/laneRun';
-import { MAX_SKILL_BOOK_LEVEL } from '../game/laneRunSkills';
+import { MAX_SKILL_BOOK_LEVEL, bookBonus, rescaleLegacyBookLevel } from '../game/laneRunSkills';
 import {
   addItem, collectedCount, decodeCollection, emptyCollection, encodeCollection, hasItem,
   rollDrops, TOTAL_ITEMS,
@@ -55,6 +55,25 @@ check('音樂開關存得住,而且壞掉的值退回「開著」',
   readSave(writeSave(full)).save.bgmOff === true
   && readSave(JSON.stringify({ version: SAVE_VERSION, bgmOff: 'yes' })).save.bgmOff === false
   && readSave(JSON.stringify({ version: SAVE_VERSION })).save.bgmOff === false);
+
+// --- 技能書從 5 級開到 100 級(v4 → v5)---
+// 舊等級要換算成「放大倍率相同」的新等級,不能直接沿用數字——沿用的話舊玩家的滿書
+// 會從 x1.75 掉到 x1.18,而他完全不知道發生了什麼(bestSurvival 從關改成波時踩過同一個坑)。
+{
+  const legacy = (books: number) =>
+    readSave(JSON.stringify({ version: 4, stage: 100, coins: 0, books })).save.books;
+  check('舊技能書等級換算成倍率相同的新等級',
+    [0, 1, 2, 3, 4, 5].every((old) =>
+      Math.abs((1 + bookBonus(legacy(old))) - (1 + 0.15 * old)) < 0.02),
+    [0, 3, 5].map((o) => `${o}級 x${(1 + 0.15 * o).toFixed(2)} → ${legacy(o)}級 x${(1 + bookBonus(legacy(o))).toFixed(2)}`).join(' / '));
+  check('換算之後不會超過新上限', legacy(5) <= MAX_SKILL_BOOK_LEVEL);
+  check('技能書上限是 100(跟裝備同一個量級)', MAX_SKILL_BOOK_LEVEL === 100);
+  // 曲線本身:前段給得快、後段變慢,但末段仍然在爬(不是平的,不然「練滿」沒有意義)。
+  check('技能書曲線單調上升,而且前段比後段陡',
+    bookBonus(1) > 0 && bookBonus(100) > bookBonus(99)
+    && bookBonus(10) - bookBonus(0) > bookBonus(100) - bookBonus(90),
+    `1級 +${(bookBonus(1) * 100).toFixed(0)}% / 50級 +${(bookBonus(50) * 100).toFixed(0)}% / 100級 +${(bookBonus(100) * 100).toFixed(0)}%`);
+}
 
 // --- 音量 ---
 // 音量是小數,而存檔裡其他數字全是整數——用 readInt 讀的話 0.35 會被 Math.floor 成 0,
@@ -152,10 +171,15 @@ survives('技能是 0 級 -> 當成沒學',
 survives('技能欄位不是陣列 -> 空的',
   JSON.stringify({ version: 1, skills: 'forge' }), (s) => s.skills.length === 0);
 
+// 現行版本的存檔被改大 -> 夾回上限。**要用現行版號**:舊版號會先走 v4 → v5 的換算
+// (那一步本來就會把數字壓回舊制的 0~5 再放大),測不到「夾回上限」這件事。
 survives('技能書被改超過上限 -> 夾回上限',
-  JSON.stringify({ version: 2, books: 999 }), (s) => s.books === MAX_SKILL_BOOK_LEVEL);
+  JSON.stringify({ version: SAVE_VERSION, books: 999 }), (s) => s.books === MAX_SKILL_BOOK_LEVEL);
 survives('技能書是負數 -> 夾回 0',
-  JSON.stringify({ version: 2, books: -3 }), (s) => s.books === 0);
+  JSON.stringify({ version: SAVE_VERSION, books: -3 }), (s) => s.books === 0);
+// 舊版號被改大也要收得住:換算的輸入先夾回舊制上限(5),所以結果是舊制滿書的等值等級。
+survives('舊版存檔的技能書被改大 -> 換算成舊制滿書的等值等級',
+  JSON.stringify({ version: 4, books: 999 }), (s) => s.books === rescaleLegacyBookLevel(5));
 
 // --- 圖鑑 ---
 // 圖鑑是 5668 個 bit 壓成 base64,而它跟其他欄位一樣是玩家改得動的字串。
@@ -196,8 +220,11 @@ check('掉落優先給還沒收到的(不然 5668 件會一直掉重複的)', ((
 // v1 存檔:上一版正式格式,沒有 books / bestSurvival(生存模式那時還不存在)。
 const v2 = JSON.stringify({ version: 2, stage: 120, coins: 9, job: null, skills: [], books: 2, bestSurvival: 7 });
 const fromV2 = readSave(v2);
+// books 會在 v4 → v5 那一步被換算(2 級 → 10 級),所以這裡比的是**倍率**不是數字:
+// 比數字的話等於把「不准換算」寫進驗證,而換算正是那一步要做的事。
 check('v2 存檔一路升上來之後進度全留著,圖鑑是空的',
-  fromV2.save.stage === 120 && fromV2.save.books === 2
+  fromV2.save.stage === 120
+  && Math.abs(bookBonus(fromV2.save.books) - 0.15 * 2) < 0.02
   && collectedCount(decodeCollection(fromV2.save.collected)) === 0
   && fromV2.save.version === SAVE_VERSION);
 // v3 → v4:生存模式的分數從**關**換成**波**。不換算的話,撐過 21 關的老玩家會變成
@@ -206,7 +233,7 @@ const v3 = JSON.stringify({
   version: 3, stage: 120, coins: 9, job: null, skills: [], books: 5, bestSurvival: 21, collected: '',
 });
 const fromV3 = readSave(v3);
-check('v3 → v4:生存紀錄從「關」換算成「波」,技能書等級不會掉',
+check('v3 → v4:生存紀錄從「關」換算成「波」,技能書的放大倍率不會掉',
   fromV3.save.bestSurvival === 21 * WAVES_PER_LEVEL
   && booksForSurvival(fromV3.save.bestSurvival) === 5,
   `21 關 → ${fromV3.save.bestSurvival} 波,技能書 ${booksForSurvival(fromV3.save.bestSurvival)} 級`);
