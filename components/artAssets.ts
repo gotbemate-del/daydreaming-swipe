@@ -181,6 +181,23 @@ export const LOCK_ICON: ImageSourcePropType = require('../assets/sprites/ui/icon
  * 而「有東西可以領」是任務系統唯一需要一眼認出來的狀態。
  */
 export const QUEST_ICON: ImageSourcePropType = require('../assets/sprites/ui/icon_gift.png');
+
+/**
+ * 閘門的卷軸外框:上軸 / 紙身 / 下軸三片。
+ *
+ * **產生檔**(`scripts/make-gate-scroll.py`),來源是 `ui/frames/easteregg` 那組框的
+ * 上下邊——它本來就是一段卷軸(金色軸桿 + 羊皮紙),只是帶著深色留白而且是 RGB 沒有 alpha,
+ * 直接貼到跑道上會蓋出一條不透明的暗帶。切成三片之後**只有紙身會被拉長**,
+ * 軸桿的高度固定,金屬高光才不會糊掉(跟 PixelFrame 的九宮格同一個道理)。
+ *
+ * 為什麼不用 `PixelFrame`:那一個一格要畫八張圖(四角四邊),而閘門一排兩個、
+ * 畫面上同時有好幾排——一排十六張。卷軸只要三張,一排六張。
+ */
+export const GATE_SCROLL = {
+  top: require('../assets/sprites/ui/frames/gate/scroll_top.png') as ImageSourcePropType,
+  body: require('../assets/sprites/ui/frames/gate/scroll_body.png') as ImageSourcePropType,
+  bottom: require('../assets/sprites/ui/frames/gate/scroll_bottom.png') as ImageSourcePropType,
+};
 /** 技能書。技能書副本的圖示,也是狀態列上技能書等級的圖示。 */
 export const BOOK_ICON: ImageSourcePropType = require('../assets/sprites/ui/icon_skillbook.png');
 /** 金幣。主介面顯示身上有多少錢。 */

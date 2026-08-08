@@ -42,7 +42,7 @@ import { tutorialRulesFor } from '../game/laneTutorial';
 import { PixelFrame } from './PixelFrame';
 import {
   heroBoxHeight, heroForm, squadForms, monsterArt, weaponArt, jobHeroArt, ROCK_ART,
-  elementColor, elementLabel, monsterAnim, jobHeroAnim, animFrameIndex, GEAR_ICON,
+  elementColor, elementLabel, monsterAnim, jobHeroAnim, animFrameIndex, GEAR_ICON, GATE_SCROLL,
 } from './artAssets';
 
 // 跑道畫面。角色固定在跑道底部、物件由上往下逼近——這是「角色在跑」最省效能的表現方式:
@@ -91,6 +91,14 @@ const SPAWN_MARGIN = 72;
  */
 const GATE_CULL_PAST = 0;
 const GATE_HEIGHT = 50;
+/**
+ * 卷軸兩端軸桿畫多高。
+ *
+ * 固定值不是比例:軸桿是一根有厚度的金屬棒,它在 50px 高的閘門與 60px 高的閘門上
+ * 應該一樣粗。用比例的話閘門一變高軸桿就跟著變胖,看起來像另一種東西。
+ * 7px 是照原圖的比例(80x5 的上軸貼到約 120px 寬)換算的。
+ */
+const SCROLL_ROD_H = 7;
 const MONSTER_SIZE = 42;
 /** 大魔王畫多大。要一眼看出「這不是小怪」,但不能寬到蓋掉兩條跑道。 */
 const BOSS_SIZE = 132;
@@ -545,6 +553,27 @@ export function LaneRunner({
             { left: span.from * trackWidth, width: (span.to - span.from) * trackWidth, top, height: GATE_HEIGHT },
           ]}
         >
+          {/*
+            卷軸外框(見 artAssets 的 GATE_SCROLL)。三張圖:上軸、紙身、下軸,
+            **只有紙身被拉長**——軸桿高度固定,金屬高光才不會糊掉。
+
+            順序很重要:紙身先畫(墊在最底下),兩根軸桿後畫壓在它上面,接縫才不會露出來。
+          */}
+          <Image source={GATE_SCROLL.body} resizeMode="stretch" style={styles.gateScrollBody} />
+          <Image source={GATE_SCROLL.top} resizeMode="stretch" style={styles.gateScrollTop} />
+          <Image source={GATE_SCROLL.bottom} resizeMode="stretch" style={styles.gateScrollBottom} />
+          {/*
+            好壞的顏色**疊在卷軸上面**,不是換一張圖。
+
+            這一層是必要的:卷軸讓兩格長得一模一樣,而閘門的第一要務是**一眼分辨好壞**
+            (原本靠的就是綠框/紅框)。純美術換上去等於把那個訊號拿掉,而這款一排只有
+            一兩秒可以決定,玩家沒有時間讀字。
+
+            做法是半透明色層而不是 tintColor:tintColor 會把整張圖塗成單色,羊皮紙的紋理
+            全部消失;而 CSS filter 在 react-native-web 上會被直接丟掉(CLAUDE.md 記過,
+            症狀是「程式看起來完全正確,畫面卻一點變化都沒有」)。
+          */}
+          <View style={[styles.gateWash, trap ? styles.gateWashTrap : styles.gateWashGood]} />
           <Text style={styles.gateText} numberOfLines={2}>
             {node.gate ? gateLabel(node.gate) : ''}
           </Text>
@@ -1393,13 +1422,38 @@ const styles = StyleSheet.create({
   gate: {
     position: 'absolute',
     borderRadius: 8,
+    // 卷軸是絕對定位的三張圖,不裁的話會蓋過圓角(四個角會冒出方的紙)。
+    overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
     paddingHorizontal: 2,
   },
+  // 底色留著當**圖還沒載進來時的墊底**:卷軸是三張 PNG,第一次進跑道那幾格會有一瞬間
+  // 只有框沒有內容,墊一層原本的深綠/深紅比露出後面的底圖乾淨。
   gateGood: { backgroundColor: '#243a2a', borderColor: '#5ec26a' },
   gateTrap: { backgroundColor: '#3a2323', borderColor: '#e05050' },
+  // 卷軸三片。
+  //
+  // **寬高要寫死,不能用 left:0 + right:0 去撐。** react-native-web 的 Image 是靠
+  // background-size 實作 resizeMode 的,而「左右都釘住」在它眼裡不構成一個確定的寬度——
+  // 實測圖會用**原圖的 80px 自然寬**畫,右邊 45% 整片露出底色,而且完全沒有警告。
+  // 這跟 CLAUDE.md 記過的「RN 的 Image 只給 left/right 不會被拉寬」(PixelFrame 那條)
+  // 是同一個坑的第二次現身:那一次的解法是外面包一層 View,這裡因為高度本來就固定,
+  // 直接把 width:'100%' 與 height 寫出來更短。
+  gateScrollBody: {
+    position: 'absolute',
+    left: 0,
+    top: SCROLL_ROD_H,
+    width: '100%',
+    height: GATE_HEIGHT - SCROLL_ROD_H * 2,
+  },
+  gateScrollTop: { position: 'absolute', left: 0, top: 0, width: '100%', height: SCROLL_ROD_H },
+  gateScrollBottom: { position: 'absolute', left: 0, bottom: 0, width: '100%', height: SCROLL_ROD_H },
+  // 好壞的色層。0.34 是量出來的:再淡一點在小螢幕上分不出綠紅,再濃一點羊皮紙的紋理就沒了。
+  gateWash: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 },
+  gateWashGood: { backgroundColor: 'rgba(94,194,106,0.34)' },
+  gateWashTrap: { backgroundColor: 'rgba(224,80,80,0.34)' },
   gateText: { color: '#f2f2f2', fontSize: 13, fontWeight: '700', textAlign: 'center' },
   floating: { position: 'absolute' },
   // 傷害數字。固定寬度 + 置中,數字位數變多才不會整串往左偏(left 是用「怪的位置 - 40」算的)。
