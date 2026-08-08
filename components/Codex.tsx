@@ -5,7 +5,7 @@ import {
   bookDropChance, collectedCount, collectionScales, decodeCollection, entryProgress, TOTAL_ITEMS,
 } from '../game/collection';
 import { CODEX_ENTRIES, MAX_ELEMENT_BONUS, MAX_ENTRY_LEVEL } from '../game/codexEntries';
-import { ELEMENTS } from '../game/laneRunSkills';
+import { bookLevelOf, ELEMENTS, MAX_SKILL_BOOK_LEVEL, type ElementBooks } from '../game/laneRunSkills';
 import { EQUIPMENT_SLOT_LABELS } from './slotLabels';
 import { elementColor, elementLabel } from './artAssets';
 import { itemIcon } from './itemIcons';
@@ -31,7 +31,8 @@ const ICON = 40;
 interface Props {
   /** 存檔裡的圖鑑字串(base64 bitset)。 */
   collected: string;
-  books: number;
+  /** 技能書等級,六個元素各自一份。跟圖鑑的屬性加成畫在一起(同一條軸)。 */
+  books: ElementBooks;
   onDone: () => void;
 }
 
@@ -85,13 +86,19 @@ export function Codex({ collected, books, onDone }: Props) {
             <View key={id} style={styles.elementBox}>
               <Text style={[styles.elementName, { color: elementColor(id) }]}>{elementLabel(id)}</Text>
               <Text style={[styles.elementValue, bonus > 0 && styles.elementValueOn]}>+{bonus}%</Text>
+              {/* 技能書跟圖鑑是同一條軸(兩個都只放大這個屬性的效果),所以畫在同一格底下。
+                  分成兩排的話玩家要自己把「火的裝備」跟「火的書」連起來,而它們本來就是一件事。 */}
+              <Text style={[styles.bookLevel, bookLevelOf(books, id) > 0 && styles.bookLevelOn]}>
+                書 {bookLevelOf(books, id)}
+              </Text>
             </View>
           );
         })}
       </View>
       <Text style={styles.sub}>
         屬性傷害加成,每件湊齊 +{MAX_ENTRY_LEVEL}%,單一屬性最多 +{Math.round(MAX_ELEMENT_BONUS * 100)}%
-        {'  ·  '}技能書掉落 {(bookDropChance(bits) * 100).toFixed(0)}%(目前 {books} 級)
+        {'  ·  '}技能書每屬性最多 {MAX_SKILL_BOOK_LEVEL} 級
+        {'  ·  '}技能書掉落 {(bookDropChance(bits) * 100).toFixed(0)}%
       </Text>
 
       <View style={styles.tabs}>
@@ -175,6 +182,8 @@ const styles = StyleSheet.create({
   elementName: { fontSize: 13, fontWeight: '700' },
   elementValue: { color: '#5a5a66', fontSize: 10 },
   elementValueOn: { color: '#5ec26a', fontWeight: '700' },
+  bookLevel: { color: '#5a5a66', fontSize: 10 },
+  bookLevelOn: { color: '#9691a5' },
 
   tabs: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, justifyContent: 'center' },
   tab: { paddingHorizontal: 9, paddingVertical: 4, borderRadius: 6, backgroundColor: '#2a2a35' },

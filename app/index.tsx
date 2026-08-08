@@ -16,16 +16,17 @@ import type { AudioSettings } from '../components/Settings';
 import { booksForSurvival, TOTAL_STAGES, type SavedJob } from '../game/save';
 import {
   addItem, bookDropChance, collectedCount, collectionScales, decodeCollection, dropCountForRun,
-  encodeCollection, rollDrops,
+  encodeCollection, rollDrops, rollDropsForElement,
 } from '../game/collection';
-import { MAX_SKILL_BOOK_LEVEL } from '../game/laneRunSkills';
+import { addBooks, totalBookLevels } from '../game/laneRunSkills';
+import { elementLabel } from '../components/artAssets';
 import { Codex } from '../components/Codex';
 import { SurvivalResult } from '../components/SurvivalResult';
 import { DungeonSelect } from '../components/DungeonSelect';
 import { Quests } from '../components/Quests';
 import {
-  ARMORY_DROPS, ARMORY_DROPS_FAILED, dungeonCost, dungeonSpec, GRIMOIRE_BOOKS,
-  type DungeonId,
+  clearsLeft, dayIndex, dungeonCost, dungeonSpec, elementOfDay, isDailyDungeon,
+  rollDungeonReward, type DungeonId,
 } from '../game/dungeons';
 import {
   activeQuest, addCounters, claimQuest, dungeonCounter, questViews, runCounters,
@@ -188,7 +189,8 @@ function Game() {
    */
   const questCtx: QuestContext = {
     stage,
-    books: save.books,
+    // 任務問的是「技能書練到什麼程度」,逐屬性之後那是六條線的總和。
+    books: totalBookLevels(save.books),
     bestSurvival: save.bestSurvival,
     collected: collectedCount(decodeCollection(save.collected)),
     promoted: save.job !== null,
@@ -228,6 +230,8 @@ function Game() {
 
   /** 剛撿到的那幾件(結算完顯示一下,不然玩家不會發現圖鑑有在長)。 */
   const [justFound, setJustFound] = useState<number[]>([]);
+  /** 剛拿到幾本技能書。副本一次給 5~15 本,不寫出來玩家不會發現(它只讓數字動一格)。 */
+  const [justBooks, setJustBooks] = useState(0);
 
   /**
    * 剛跑完的單場副本結果。
@@ -243,40 +247,55 @@ function Game() {
    * **陣亡也掉**(只是少)——完全不掉的話,卡關的人會完全沒有進展,
    * 而圖鑑正是拿來讓卡關的人有事做的。
    */
-  function rollRunDrops(cleared: boolean, runMode: Mode) {
-    update((prev) => {
-      const bits = decodeCollection(prev.collected);
-      const rng = () => Math.random();
-      // 裝備副本就是「掉落量的副本」:它不改難度、不改規則,只把這一項乘上去。
-      // 這是副本之間唯一該有的差別(見 game/dungeons.ts 的鐵則)。
-      const count = runMode === 'armory'
-        ? (cleared ? ARMORY_DROPS : ARMORY_DROPS_FAILED)
-        : dropCountForRun(cleared);
-      const found = rollDrops(bits, count, rng);
-      for (const index of found) addItem(bits, index);
-      setJustFound(found);
-      // **通關一定給一本技能書**,圖鑑的掉落率則變成「再多一本」的機率(2%~12%)。
-      //
-      // 從「機率掉一本」改成「保證給一本」,是因為上限從 5 級開到 100 級:
-      // 照舊的 2%~12% 要練滿得打上千場,那條線等於不存在。現在是一關一本,
-      // 100 關練滿一輪——而總共有 3000 個小關,所以它是一條長期但走得完的線。
-      //
-      // 陣亡不給:技能書是**通關的獎勵**。陣亡照樣掉圖鑑碎片(那是給卡關的人的),
-      // 兩者分工不同——碎片讓卡關的人有進展,技能書讓過關的人變強。
-      //
-      // 技能書副本給的是 GRIMOIRE_BOOKS 本(一次抵好幾關),**而且不推進關卡**——
-      // 那才是它跟「再打一關」的差別:用金幣換技能書,代價是原地打轉。
-      // 給 1 本的話它跟一般通關完全一樣,還要收入場費,就沒有存在的理由了。
-      const bonusBook = cleared && Math.random() < bookDropChance(bits);
-      const gained = runMode === 'grimoire'
-        ? (cleared ? GRIMOIRE_BOOKS : 0)
+  /**
+   * 一場跑完的掉落。**回傳這一場實際拿到什麼**,不是只寫進存檔。
+   *
+   * 為什麼要回傳:結果訊息要寫「火屬技能書 +12」,而那個數字如果只透過 setState 傳,
+   * 同一個 tick 裡讀到的會是**上一場**的值(state 要下一次 render 才更新)——
+   * 症狀是「每次結算都顯示上一場的數字」,而且它看起來只是偶爾對不上,很難聯想到時序。
+   *
+   * 抽落用的是 `save.collected`(目前這一格的狀態)而不是 update 裡的 prev:
+   * 這一輪只有前面那一次加金幣的 update 在排隊,它不動圖鑑,所以兩者相同。
+   */
+  function rollRunDrops(cleared: boolean, runMode: Mode): { books: number; items: number[] } {
+    const bits = decodeCollection(save.collected);
+    const rng = () => Math.random();
+    // 兩個每日副本掉的是**當日屬性**的東西,而且量是 5~15(見 game/dungeons.ts)。
+    // 裝備副本只從那個屬性的碎片裡抽:整個 5668 件的圈上過濾會退化成繞幾千步,
+    // 所以走 rollDropsForElement(它先把候選攤成清單再抽)。
+    const today = elementOfDay();
+    const items = runMode === 'armory'
+      ? (cleared ? rollDropsForElement(bits, rollDungeonReward(rng), today, rng) : [])
+      : rollDrops(bits, dropCountForRun(cleared), rng);
+
+    // 技能書。三條來源各自不同,而且**全部給當日屬性**:
+    //
+    //   一般跑圖   通關保證 1 本 + 圖鑑機率再一本
+    //   技能書副本 通關 5~15 本
+    //   裝備副本   不給書(它產的是碎片)
+    //
+    // 為什麼一般跑圖也集中給當日屬性而不是六個平分:平分的話每一本只剩六分之一的份量,
+    // 而 bookBonus 前段陡的設計就是要讓「第一本就有感」。集中給也讓「今天是火」
+    // 這件事在主線裡一樣成立,不只在副本裡。
+    const bonusBook = cleared && Math.random() < bookDropChance(bits);
+    const books = runMode === 'grimoire'
+      ? (cleared ? rollDungeonReward(rng) : 0)
+      : runMode === 'armory'
+        ? 0
         : (cleared ? 1 : 0) + (bonusBook ? 1 : 0);
+
+    setJustFound(items);
+    setJustBooks(books);
+    update((prev) => {
+      const next = decodeCollection(prev.collected);
+      for (const index of items) addItem(next, index);
       return {
         ...prev,
-        collected: encodeCollection(bits),
-        books: Math.min(MAX_SKILL_BOOK_LEVEL, prev.books + gained),
+        collected: encodeCollection(next),
+        books: books > 0 ? addBooks(prev.books, today, books) : prev.books,
       };
     });
+    return { books, items };
   }
 
   /**
@@ -318,7 +337,7 @@ function Game() {
 
   function onRunFinish(result: 'cleared' | 'dead', earned: number, waves: number, stats: RunStats) {
     update((prev) => ({ ...prev, coins: prev.coins + earned }));
-    rollRunDrops(result === 'cleared', mode);
+    const drops = rollRunDrops(result === 'cleared', mode);
     // 任務計數器。**每一場都記,副本也記**——任務問的是「你做過這件事沒有」,
     // 而在副本裡吃到的閘門跟在主線吃到的是同一件事。
     // 魔王只算主線:副本跑的關卡是「目前進度」,而那一關可能剛好是魔王關,
@@ -333,9 +352,15 @@ function Game() {
         // 分數的單位是**波**不是關:生存模式是一條連續的跑圖,關卡只是中途換難度的刻度,
         // 而玩家心裡數的是「我撐過幾波」。
         // 技能書照「歷史最好的那一次」給,不是這一次:不然玩家可以刷短輪湊次數。
+        // 逐屬性之後這一份給的是**當日屬性**,跟其他所有來源同一條規則。
         update((prev) => {
           const best = Math.max(prev.bestSurvival, totalWaves);
-          return { ...prev, bestSurvival: best, books: Math.max(prev.books, booksForSurvival(best)) };
+          const owed = booksForSurvival(best) - booksForSurvival(prev.bestSurvival);
+          return {
+            ...prev,
+            bestSurvival: best,
+            books: owed > 0 ? addBooks(prev.books, elementOfDay(), owed) : prev.books,
+          };
         });
         setScreen('survivalOver');
         return;
@@ -355,10 +380,27 @@ function Game() {
     // 設計的,拿它推進度等於繞過主線的難度曲線。
     if (mode !== 'normal') {
       const spec = dungeonSpec(mode);
+      // **通關才記次數,失敗不記。** 每日次數的單位是「通關」——打輸了還要扣一次的話,
+      // 卡關的玩家會連試都不敢試,而副本本來就是給他用的。
+      if (result === 'cleared' && isDailyDungeon(mode)) {
+        const today = dayIndex();
+        update((prev) => {
+          // 跨日就從頭數起。這裡是唯一會寫 dungeonDay 的地方,寫的一律是「今天」。
+          const base = prev.dungeonDay === today ? prev.dungeonClears : {};
+          return {
+            ...prev,
+            dungeonDay: today,
+            dungeonClears: { ...base, [mode]: (base[mode] ?? 0) + 1 },
+          };
+        });
+      }
       setLastResult(null);
       setDungeonNote(result === 'cleared'
-        ? `${spec.name}通關 · ${spec.reward}`
-        : `${spec.name}失敗,獎勵少一些`);
+        // 寫**實際拿到多少**,不是寫規則。5~15 是隨機的,只複述「5~15 本」等於沒講。
+        ? `${spec.name}通關 · ${mode === 'grimoire'
+            ? `${elementLabel(elementOfDay())}屬技能書 +${drops.books}`
+            : `${elementLabel(elementOfDay())}屬裝備 +${drops.items.length}`}`
+        : `${spec.name}失敗,今天的次數沒被扣掉`);
       setScreen('menu');
       return;
     }
@@ -379,6 +421,9 @@ function Game() {
    * 而那看起來像懲罰(實際上他只是付了門票)。先扣則是一次單純的交易。
    */
   function enterDungeon(id: DungeonId) {
+    // 次數守在這一層,不是只靠畫面把按鈕變灰:畫面的判斷跟真正的扣除是兩份程式,
+    // 而「按鈕看起來能點但其實不該點」是最難查的一種 bug(存檔也是玩家改得動的)。
+    if (clearsLeft(save.dungeonDay, save.dungeonClears, id) <= 0) return;
     const cost = dungeonCost(id, stage);
     update((prev) => ({ ...prev, coins: Math.max(0, prev.coins - cost) }));
     // 「進過這個副本沒有」是任務要問的事,所以在**進去的那一刻**就記,不是通關才記——
@@ -471,6 +516,8 @@ function Game() {
           stage={stage}
           coins={coins}
           bestSurvival={save.bestSurvival}
+          dungeonDay={save.dungeonDay}
+          dungeonClears={save.dungeonClears}
           onEnter={enterDungeon}
           onDone={() => setScreen('menu')}
         />
@@ -514,6 +561,7 @@ function Game() {
             setScreen('run');
           }}
           justFound={justFound}
+          justBooks={justBooks}
           audio={audio}
           onChangeAudio={changeAudio}
           quest={activeQuest(questCtx, save.questsClaimed)}
@@ -540,7 +588,7 @@ function Game() {
         stage={mode === 'endless' ? survivalStage : stage}
         job={job}
         start={applySkills(runStartFor(job), skills)}
-        bookLevel={save.books}
+        books={save.books}
         collection={collectionScales(decodeCollection(save.collected))}
         survivalWavesBefore={mode === 'endless' ? survivalWaves : null}
         audio={audio}

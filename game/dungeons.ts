@@ -33,8 +33,16 @@
 // 兩個單場副本收入場費,金幣才第一次變成資源。無限副本刻意**免費**:
 // 它是挑戰模式,收費等於「想拚一次還要先繳錢」,而且它本來就有「死了就結束」的代價。
 
+import type { RunSkillId } from './laneRunSkills';
+
 /** 三種副本。`endless` 就是原本的生存模式(存檔裡的 bestSurvival 仍然是它的紀錄)。 */
 export type DungeonId = 'endless' | 'grimoire' | 'armory';
+
+/** 有「每日屬性 + 每日次數」的那兩個副本。無限副本不受限,它產的是紀錄不是資源。 */
+export const DAILY_DUNGEONS: DungeonId[] = ['grimoire', 'armory'];
+export function isDailyDungeon(id: DungeonId): boolean {
+  return DAILY_DUNGEONS.includes(id);
+}
 
 export const DUNGEON_IDS: DungeonId[] = ['endless', 'grimoire', 'armory'];
 
@@ -70,20 +78,115 @@ const UNLOCK = {
   armory: 13,
 } as const;
 
+
+
+// ---- 每日屬性與次數 ----
+//
+// ## 為什麼要有「今天開哪一個」
+//
+// 技能書與圖鑑的加成都是**逐屬性**的(火的書只放大火系三階,火的裝備只放大火)。
+// 如果兩個副本隨時都能打、而且六個屬性任選,玩家的最佳解永遠是「一路把最強的那個屬性
+// 練到滿」——另外五個永遠不會被碰,而「沒有萬用元素也沒有廢元素」是六元素設計的地基。
+//
+// 每天固定開一個之後,養成的形狀變成**六條線輪流前進**:今天是火就推火,想推雷要等。
+// 它同時給了「每天回來看一下」一個理由,而這個理由不是離線收益(那條是明文禁止的)——
+// 沒登入的那幾天什麼都不會自己長,只是那幾天的額度沒用到而已。
+//
+// ## 日界線用本地時間
+//
+// 用 UTC 的話,亞洲的玩家會在早上八點換日——那是一個沒有人會覺得是「新的一天」的時刻。
+// 本地午夜是唯一符合直覺的界線,代價是玩家改系統時鐘就能多打幾輪。
+// 這款是單機、沒有付費、沒有排行榜,那個代價換到的體感遠比防弊值錢;
+// 真要防也防不了(存檔本來就在 localStorage 裡,玩家改得動)。
+//
+// ## 次數存的是「哪一天 + 打了幾次」,不是「還剩幾次」
+//
+// 存剩餘次數的話,跨日要有人負責把它加回去——而那個「有人」只能是某次讀存檔或某個計時器,
+// 兩個都會漏(玩家整天沒開遊戲、或開著遊戲跨過午夜)。存「哪一天」則是**自我修復**的:
+// 只要今天的日期跟存檔裡的不一樣,今天的次數就是 0,不需要任何人去重設它。
+
+/** 每天每個副本最多通關幾次。 */
+export const DUNGEON_DAILY_CLEARS = 5;
+
 /**
- * 技能書副本通關給幾本。
+ * 每日屬性的輪替順序。**照相剋環走**(金→木→土→冰→火→雷),不是隨機也不是 ELEMENTS 的順序。
  *
- * **必須大於 1,不然這個副本沒有存在的理由。** 一般跑圖通關本來就保證給一本
- * (見 app 的 rollRunDrops),所以給 1 本等於「跟再打一關一模一樣,但要多付入場費」。
- *
- * 3 本是「一場抵三關」:玩家用金幣換掉兩關的時間,而代價是**這一場不推進進度**——
- * 那才是這個副本真正的交換條件(想衝技能書就得原地打轉)。
- *
- * 不隨關卡成長:技能書上限是 100 級,而它碰不到理想路線(只放大元素與主動的效果幅度,
- * 見 laneRunSkills 的 bookBonus),所以給得快一點不會讓遊戲變簡單。
- * 固定值的好處是「一場換三本」這句話在第 3 關與第 3000 關都成立,玩家不必重新學一次匯率。
+ * 照環走的好處是它可預測:玩家看到今天是土,就知道明天是冰、後天是火——
+ * 「我想練火,還要等兩天」是一句他自己算得出來的話。隨機的話每天都要重新查,
+ * 而「等它輪到」這件事就無法規劃了。
  */
-export const GRIMOIRE_BOOKS = 3;
+export const DAILY_ELEMENT_CYCLE: RunSkillId[] = ['metal', 'wood', 'earth', 'ice', 'fire', 'thunder'];
+
+/**
+ * 這個時間點是「第幾天」。**本地午夜換日**(見檔頭)。
+ *
+ * 用 `Date.UTC(年, 月, 日)` 而不是 `now / 86400000`:後者是 UTC 的日界線,
+ * 而我們要的是本地日曆上的那一天。先把本地的年月日取出來、再當成 UTC 去算,
+ * 就得到一個「本地日曆天」的序號——跨時區搬家不會憑空多一天或少一天。
+ */
+export function dayIndex(now: number = Date.now()): number {
+  const d = new Date(now);
+  if (Number.isNaN(d.getTime())) return 0;
+  return Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000);
+}
+
+/** 今天開哪一個屬性。 */
+export function elementOfDay(day: number = dayIndex()): RunSkillId {
+  const n = DAILY_ELEMENT_CYCLE.length;
+  return DAILY_ELEMENT_CYCLE[((Math.floor(day) % n) + n) % n];
+}
+
+/** 第 n 天之後開哪一個屬性。畫面用它寫「火要等 2 天」。 */
+export function elementInDays(ahead: number, day: number = dayIndex()): RunSkillId {
+  return elementOfDay(day + Math.max(0, Math.floor(ahead)));
+}
+
+/** 想練這個屬性還要等幾天(今天就開的話是 0)。 */
+export function daysUntilElement(element: RunSkillId, day: number = dayIndex()): number {
+  const n = DAILY_ELEMENT_CYCLE.length;
+  for (let i = 0; i < n; i++) if (elementOfDay(day + i) === element) return i;
+  return 0;
+}
+
+/**
+ * 今天這個副本已經打完幾次。
+ *
+ * `savedDay` 跟今天對不上就是 0 —— **包含存檔比今天新的情況**(玩家把時鐘往回調)。
+ * 「不一樣就歸零」比「只有變新才歸零」單純,而且不會產生「次數卡在用完的狀態回不來」
+ * 這種修不好的存檔。
+ */
+export function clearsToday(
+  savedDay: number, clears: Partial<Record<DungeonId, number>>, id: DungeonId, today: number = dayIndex(),
+): number {
+  if (savedDay !== today) return 0;
+  return Math.max(0, Math.floor(clears[id] ?? 0));
+}
+
+/** 今天這個副本還剩幾次。沒有每日限制的副本回 Infinity。 */
+export function clearsLeft(
+  savedDay: number, clears: Partial<Record<DungeonId, number>>, id: DungeonId, today: number = dayIndex(),
+): number {
+  if (!isDailyDungeon(id)) return Infinity;
+  return Math.max(0, DUNGEON_DAILY_CLEARS - clearsToday(savedDay, clears, id, today));
+}
+
+/**
+ * 一次通關給幾本 / 幾件。
+ *
+ * 5~15 的區間是刻意的:固定值的話「今天打完了」就只是一個算得出來的數字,
+ * 而每一場都有一點落差,五場下來才有「今天手氣不錯」。
+ * **這個隨機性放在這裡是安全的**——它完全不進理想路線(技能書與圖鑑都只放大元素,
+ * 而元素在理想路線之外),所以它動的只有獎勵,一格難度都沒碰到。
+ * 對比之下,閘門的爆發格就**不准**這樣抽(見 laneRun 的 DOUBLE_GATES_PER_RUN:
+ * 那個會讓玩家覺得「這場運氣好」而不是「我選得好」)。
+ */
+export const DUNGEON_REWARD_MIN = 5;
+export const DUNGEON_REWARD_MAX = 15;
+
+export function rollDungeonReward(rng: () => number = Math.random): number {
+  const span = DUNGEON_REWARD_MAX - DUNGEON_REWARD_MIN;
+  return DUNGEON_REWARD_MIN + Math.floor(Math.max(0, Math.min(0.999999, rng())) * (span + 1));
+}
 
 const SPECS: Record<DungeonId, DungeonSpec> = {
   endless: {
@@ -98,16 +201,16 @@ const SPECS: Record<DungeonId, DungeonSpec> = {
   grimoire: {
     id: 'grimoire',
     name: '技能書副本',
-    reward: `通關必得技能書 ${GRIMOIRE_BOOKS} 本`,
-    rule: '單場,打目前進度的那一關;不推進進度',
+    reward: `通關得當日屬性的技能書 ${DUNGEON_REWARD_MIN}~${DUNGEON_REWARD_MAX} 本`,
+    rule: `每天開一個屬性,最多通關 ${DUNGEON_DAILY_CLEARS} 次;不推進進度`,
     continuous: false,
     unlockStage: UNLOCK.grimoire,
   },
   armory: {
     id: 'armory',
     name: '裝備副本',
-    reward: '通關掉一整批裝備碎片',
-    rule: '單場,打目前進度的那一關',
+    reward: `通關掉當日屬性的裝備 ${DUNGEON_REWARD_MIN}~${DUNGEON_REWARD_MAX} 件`,
+    rule: `每天開一個屬性,最多通關 ${DUNGEON_DAILY_CLEARS} 次;不推進進度`,
     continuous: false,
     unlockStage: UNLOCK.armory,
   },
@@ -121,18 +224,6 @@ export function dungeonSpec(id: DungeonId): DungeonSpec {
 export function isDungeonUnlocked(id: DungeonId, stage: number): boolean {
   return stage > SPECS[id].unlockStage;
 }
-
-/**
- * 裝備副本一場掉幾件碎片。
- *
- * 一般跑圖通關是 3 件(`dropCountForRun`),這裡給 12——**四倍,不是十倍**。
- * 圖鑑有 5668 件、501 個條目,給太多的話一個下午就收滿,而圖鑑是拿來給卡關的人
- * 長期有事做的東西(它抬地板:屬性加成與技能書掉落率,兩個都在理想路線之外)。
- * 四倍的意思是「想補圖鑑就來這裡,比亂打快很多,但還是要打很多場」。
- */
-export const ARMORY_DROPS = 12;
-/** 裝備副本陣亡也掉一些,理由跟一般跑圖一樣:完全不掉的話卡關的人會毫無進展。 */
-export const ARMORY_DROPS_FAILED = 3;
 
 
 

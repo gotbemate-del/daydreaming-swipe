@@ -4,9 +4,12 @@ import { BOOK_ICON, COIN_ICON, LOCK_ICON, TAB_ICONS } from './artAssets';
 import { PixelFrame } from './PixelFrame';
 import { playSfx } from '../hooks/useSfx';
 import {
-  canEnterDungeon, dungeonCost, dungeonSpec, DUNGEON_IDS, isDungeonUnlocked, type DungeonId,
+  canEnterDungeon, clearsLeft, daysUntilElement, dungeonCost, dungeonSpec, DUNGEON_DAILY_CLEARS,
+  DUNGEON_IDS, elementOfDay, isDailyDungeon, isDungeonUnlocked, type DungeonId,
 } from '../game/dungeons';
 import { stageLabel } from '../game/laneRun';
+import { ELEMENTS } from '../game/laneRunSkills';
+import { elementColor, elementLabel } from './artAssets';
 
 // 副本選擇。分頁列的「副本」點下去先到這裡,再選要進哪一個。
 //
@@ -27,6 +30,9 @@ interface Props {
   coins: number;
   /** 無限副本的最佳紀錄(波)。0 就不顯示。 */
   bestSurvival: number;
+  /** 存檔裡那筆副本次數屬於哪一天,以及各打了幾次。跨日的歸零由 clearsLeft 現算。 */
+  dungeonDay: number;
+  dungeonClears: Partial<Record<DungeonId, number>>;
   onEnter: (id: DungeonId) => void;
   onDone: () => void;
 }
@@ -42,7 +48,14 @@ function iconFor(tabId: string) {
   return TAB_ICONS.find((t) => t.id === tabId)!.art;
 }
 
-export function DungeonSelect({ stage, coins, bestSurvival, onEnter, onDone }: Props) {
+export function DungeonSelect({
+  stage, coins, bestSurvival, dungeonDay, dungeonClears, onEnter, onDone,
+}: Props) {
+  const today = elementOfDay();
+  // **照「還要幾天」排,不照 ELEMENTS 的順序排。** 這一排要被讀成日曆
+  // (今天 → 明天 → 後天…),而 ELEMENTS 的順序是給別的地方用的;
+  // 照它排的話畫面上是「火1天 金3天 雷2天 冰今天」,玩家得自己重新排一次才看得懂。
+  const upcoming = [...ELEMENTS].sort((a, b) => daysUntilElement(a) - daysUntilElement(b));
   return (
     <View style={styles.wrapper}>
       <View style={styles.topBar}>
@@ -63,12 +76,50 @@ export function DungeonSelect({ stage, coins, bestSurvival, onEnter, onDone }: P
         </View>
       </View>
 
+      {/*
+        今天開哪一個屬性,以及接下來幾天輪到誰。
+
+        **要把整個輪替畫出來,不能只寫今天那一個。** 技能書與圖鑑的加成都是逐屬性的,
+        所以「我想練火」是一個真的計畫;只寫今天的話,玩家每天都得自己記昨天是什麼,
+        而「還要等幾天」是他規劃的唯一依據。照相剋環走就是為了讓這一排可以被讀成日曆。
+      */}
+      <View style={styles.dayRow}>
+        <Text style={styles.dayLabel}>今日屬性</Text>
+        <View style={styles.dayChips}>
+          {upcoming.map((id) => {
+            const wait = daysUntilElement(id);
+            const open = wait === 0;
+            return (
+              <View
+                key={id}
+                style={[
+                  styles.dayChip,
+                  open
+                    ? { borderColor: elementColor(id), backgroundColor: `${elementColor(id)}33` }
+                    : styles.dayChipOff,
+                ]}
+              >
+                <Text style={[styles.dayChipText, open && { color: elementColor(id), fontWeight: '700' }]}>
+                  {elementLabel(id)}
+                </Text>
+                {/* 沒輪到的標「還要幾天」。標「鎖住」的話玩家不知道要等多久,
+                    而等待的長度正是他要不要今天就打的依據。 */}
+                <Text style={styles.dayChipWait}>{open ? '今天' : `${wait}天`}</Text>
+              </View>
+            );
+          })}
+        </View>
+      </View>
+
       <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
         {DUNGEON_IDS.map((id) => {
           const spec = dungeonSpec(id);
           const unlocked = isDungeonUnlocked(id, stage);
           const cost = dungeonCost(id, stage);
           const affordable = canEnterDungeon(id, stage, coins);
+          const daily = isDailyDungeon(id);
+          const left = clearsLeft(dungeonDay, dungeonClears, id);
+          const outOfClears = daily && left <= 0;
           return (
             // padding 要走 PixelFrame 的 prop,不能寫在 style 裡:style 給的是外框那一層,
             // 內容那一層另有自己的 padding(預設 20),兩層會疊起來,卡片高度多一倍。
@@ -102,16 +153,29 @@ export function DungeonSelect({ stage, coins, bestSurvival, onEnter, onDone }: P
               {id === 'endless' && bestSurvival > 0 && (
                 <Text style={styles.record}>最佳紀錄 {bestSurvival} 波</Text>
               )}
+              {/* 每日副本要寫清楚「今天拿的是哪一個屬性」與「還剩幾次」。
+                  兩個都是進去之前就該知道的事——打完才發現拿到不想要的屬性最糟。 */}
+              {daily && unlocked && (
+                <Text style={styles.dailyLine}>
+                  今天產出:<Text style={{ color: elementColor(today) }}>{elementLabel(today)}</Text>
+                  {'  ·  '}
+                  <Text style={outOfClears ? styles.dailyOut : styles.dailyLeft}>
+                    剩 {left}/{DUNGEON_DAILY_CLEARS} 次
+                  </Text>
+                </Text>
+              )}
 
               {unlocked ? (
                 <Pressable
                   accessibilityLabel={`進入 ${spec.name}`}
-                  disabled={!affordable}
-                  style={affordable ? styles.enterButton : styles.enterButtonOff}
+                  disabled={!affordable || outOfClears}
+                  style={affordable && !outOfClears ? styles.enterButton : styles.enterButtonOff}
                   onPress={() => { playSfx('click'); onEnter(id); }}
                 >
-                  <Text style={affordable ? styles.enterLabel : styles.enterLabelOff}>
-                    {affordable ? '進入' : '金幣不足'}
+                  {/* 次數用完排在金幣不足前面:次數是今天無論如何都解決不了的,
+                      而錢不夠再去打一場就有了。先講那個擋得比較死的。 */}
+                  <Text style={affordable && !outOfClears ? styles.enterLabel : styles.enterLabelOff}>
+                    {outOfClears ? '今天的次數用完了' : affordable ? '進入' : '金幣不足'}
                   </Text>
                 </Pressable>
               ) : (
@@ -146,6 +210,23 @@ const styles = StyleSheet.create({
     backgroundColor: '#2a2a35', borderWidth: 1, borderColor: '#3a3448',
   },
   closeLabel: { color: '#f2f2f2', fontSize: 14, fontWeight: '700' },
+
+  // 今日屬性那一排。chip 做小(跟主介面的本關屬性同一個尺寸邏輯):六個一排,
+  // 375 寬的手機上不能擠成兩行,不然會把下面的卡片推下去。
+  dayRow: { width: '100%', alignItems: 'center', gap: 3 },
+  dayLabel: { color: '#8a8a95', fontSize: 11 },
+  dayChips: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 4 },
+  dayChip: {
+    minWidth: 40, paddingHorizontal: 4, paddingVertical: 3,
+    borderRadius: 5, borderWidth: 1, alignItems: 'center',
+  },
+  dayChipOff: { borderColor: '#3a3448', backgroundColor: '#2a2a35' },
+  dayChipText: { fontSize: 11, color: '#8a8a95' },
+  dayChipWait: { fontSize: 9, color: '#5a5a66' },
+
+  dailyLine: { color: '#9691a5', fontSize: 12 },
+  dailyLeft: { color: '#5ec26a', fontWeight: '600' },
+  dailyOut: { color: '#e05050', fontWeight: '600' },
 
   list: { flex: 1, width: '100%' },
   listContent: { gap: 8, paddingBottom: 12 },

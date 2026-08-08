@@ -274,6 +274,56 @@ export function bookBonus(level: number): number {
 }
 
 /**
+ * 技能書等級:**六個元素各自一份**(0 ~ MAX_SKILL_BOOK_LEVEL)。
+ *
+ * ## 為什麼要逐屬性
+ *
+ * 技能書副本改成「每天固定開一個屬性」之後,單一的全域等級會讓那個屬性變成純粹的
+ * 門票顏色——今天開火還是開雷,拿到的東西一模一樣,玩家沒有任何理由在意。
+ * 逐屬性之後「今天是火」才真的是一則消息:它決定你今天能推進哪一條線。
+ *
+ * 而且這跟**圖鑑早就在做的事**是同一個形狀(`collectionScales` 也是逐元素累積),
+ * 兩層養成用同一套心智模型:想讓火變強,就去收火的裝備、打火的技能書副本。
+ *
+ * ## 為什麼可以放心給
+ *
+ * 理由跟單一等級時完全一樣,而且逐屬性之後更保險:元素技能全部在**理想路線之外**
+ * (理想玩家每一波全清,清怪的能力對他等於 0),所以敵人一格都不會跟著長。
+ * `verify-lane-skills` 有一項直接證明「六個元素全部練滿,理想戰力曲線一模一樣」。
+ */
+export type ElementBooks = Partial<Record<RunSkillId, number>>;
+
+/** 一份全新的(全部 0)。回傳新物件,呼叫端改它不會污染別人。 */
+export function emptyBooks(): ElementBooks {
+  return {};
+}
+
+/**
+ * 某一款技能吃到的技能書等級。
+ *
+ * **照 `elementOf(id)` 查,不照 id 查**——理由跟圖鑑那邊一字不差:二三階的 id
+ * (`fire2` / `fire3`)不會出現在表裡,照 id 查的話它們永遠是 0 級,
+ * 等於**一半的技能安靜地少了整層加成**,而畫面上完全看不出來。
+ */
+export function bookLevelOf(books: ElementBooks, id: RunSkillId): number {
+  if (!isElement(id) && !isActiveSkill(id)) return 0;
+  const raw = books[elementOf(id)] ?? 0;
+  return Math.min(MAX_SKILL_BOOK_LEVEL, Math.max(0, Math.floor(raw)));
+}
+
+/** 加幾本到某一個元素上,回傳新物件(夾在上限內)。 */
+export function addBooks(books: ElementBooks, element: RunSkillId, count: number): ElementBooks {
+  if (!isElement(element) || !Number.isFinite(count) || count <= 0) return { ...books };
+  const next = Math.min(MAX_SKILL_BOOK_LEVEL, (books[element] ?? 0) + Math.floor(count));
+  return { ...books, [element]: next };
+}
+
+/** 六個元素的等級加起來。畫面上要一個「總進度」的數字時用它。 */
+export function totalBookLevels(books: ElementBooks): number {
+  return ELEMENTS.reduce((n, e) => n + bookLevelOf(books, e), 0);
+}
+
+/**
  * 圖鑑給的放大倍率:**技能 id → 倍率**。
  *
  * 從單一數字改成查表,是因為圖鑑改成「一個條目綁一個屬性」之後,八元素各自累積
@@ -286,13 +336,15 @@ export type CollectionScales = Partial<Record<RunSkillId, number>>;
  * 技能書 x 圖鑑把元素/主動的效果放大多少。**只乘在元素與主動上**——
  * 鋒刃/增殖 是唯二進理想路線的,碰了敵人就會跟著變強。
  */
-export function bookPowerScale(id: RunSkillId, bookLevel = 0, collection: CollectionScales = {}): number {
-  // 圖鑑照**元素**查,不照 id 查:圖鑑的 501 個條目綁的是六個元素,
-  // 收滿火的那幾件本來就該一起放大 fire / fire2 / fire3。
-  // 照 id 查的話二三階永遠查不到(表裡沒有那個 key),圖鑑對它們等於不存在——
+export function bookPowerScale(
+  id: RunSkillId, books: ElementBooks = {}, collection: CollectionScales = {},
+): number {
+  // 技能書與圖鑑**都照元素查,不照 id 查**:圖鑑的 501 個條目綁的是六個元素,
+  // 收滿火的那幾件本來就該一起放大 fire / fire2 / fire3;技能書逐屬性之後同理。
+  // 照 id 查的話二三階永遠查不到(表裡沒有那個 key),兩層加成對它們等於不存在——
   // 而那是「安靜地少了一半加成」,查起來完全看不出來。
   if (!isElement(id) && !isActiveSkill(id)) return 1;
-  return (1 + bookBonus(bookLevel)) * Math.max(1, collection[elementOf(id)] ?? 1);
+  return (1 + bookBonus(bookLevelOf(books, id))) * Math.max(1, collection[elementOf(id)] ?? 1);
 }
 
 /**
@@ -809,12 +861,12 @@ export interface ActiveTrigger {
  * 這正是我們要的:敵人曲線不能跟著相剋跑,不然它就變成「大家都有的東西」而不是選擇。
  */
 /**
- * @param bookLevel 技能書等級(生存模式掉的)
+ * @param books 技能書等級,**六個元素各自一份**(見 ElementBooks)
  * @param collection 裝備圖鑑給的放大倍率(技能 id → 倍率,查不到就是 1)。跟技能書同一條軸——
  *   兩者都只乘在元素與主動上,所以都不進理想路線(見 game/collection.ts 的說明)。
  */
 export function runSkillEffects(
-  skills: RunSkillState[], waveElement?: RunSkillId, bookLevel = 0, collection: CollectionScales = {},
+  skills: RunSkillState[], waveElement?: RunSkillId, books: ElementBooks = {}, collection: CollectionScales = {},
 ): RunSkillEffects {
   let attack = 0;
   let heroes = 0;
@@ -835,7 +887,7 @@ export function runSkillEffects(
     // 八元素:每一款的規則都不一樣,而且全部只在「失誤了」才生效。
     // mx 是這一個元素對上這一波屬性的倍率(剋中放大、被剋削弱),逐元素各算各的。
     // 相剋(逐元素)乘上技能書的放大。兩者都只碰元素/主動,所以都不進理想路線。
-    const mx = elementMatchup(s.id, waveElement) * bookPowerScale(s.id, bookLevel, collection);
+    const mx = elementMatchup(s.id, waveElement) * bookPowerScale(s.id, books, collection);
     // 火:純持續傷害,**不再保證每波帶走幾隻**(舊的 fireKills 已移除)。
     // 擴散隻數不吃相剋——它是演出,剋中就直接燒滿整波的話,「火燒得漂亮」又會等於難度降低。
     if (s.id === 'fire') burnSpread += burnSpreadTargets(level);

@@ -216,6 +216,49 @@ export function rollDrops(bits: Uint8Array, count: number, rng: () => number): n
   return out;
 }
 
+/**
+ * 只從**某一個屬性**的條目裡抽掉落。裝備副本用的就是這一支。
+ *
+ * 為什麼不重用 `rollDrops` 再過濾:那一支是在**整個 5668 件的圈**上找下一個沒收到的,
+ * 過濾之後會退化成「大部分的位置都不合格」——收到後期要繞幾千步才找得到一件,
+ * 而且屬性越冷門繞得越久。這裡先把該屬性的碎片攤成一份候選清單再抽,
+ * 步數只跟那個屬性的件數有關。
+ *
+ * 跟 `rollDrops` 一樣**優先掉還沒收到的**:圖鑑的樂趣是「又多一件」,
+ * 而副本一次掉 5~15 件,不去重的話一整批可能全是重複的,玩家會以為副本壞了。
+ * 那個屬性收滿了就回空陣列(呼叫端要看得出來,才能提示玩家換一天再來)。
+ */
+export function rollDropsForElement(
+  bits: Uint8Array, count: number, element: RunSkillId, rng: () => number,
+): number[] {
+  const pool: number[] = [];
+  for (const entry of CODEX_ENTRIES) {
+    if (entry.element !== element) continue;
+    for (const index of entry.fragments) if (!hasItem(bits, index)) pool.push(index);
+  }
+  if (pool.length === 0) return [];
+  // 洗牌之後取前幾個。逐個亂數挑再去重的話,count 接近 pool.length 時會一直撞到重複。
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, Math.max(0, Math.floor(count)));
+}
+
+/** 某一個屬性底下總共有幾件、收到幾件。畫面拿它顯示「火 132/940」。 */
+export function elementProgress(bits: Uint8Array, element: RunSkillId): { got: number; total: number } {
+  let got = 0;
+  let total = 0;
+  for (const entry of CODEX_ENTRIES) {
+    if (entry.element !== element) continue;
+    for (const index of entry.fragments) {
+      total += 1;
+      if (hasItem(bits, index)) got += 1;
+    }
+  }
+  return { got, total };
+}
+
 /** 圖鑑裡的一件。畫面拿它顯示名稱與顏色。 */
 export function itemAt(index: number) {
   return EQUIPMENT_ITEMS[index];

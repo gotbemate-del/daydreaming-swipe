@@ -55,7 +55,7 @@ import {
   applyRunSkillPick, ELEMENT_COUNTERS, isElement, learnRunSkill, runSkillEffects, runSkillOffersAt,
   runSkillSpec, hasCooldown, skillCooldownSeconds, FREEZE_MS, BURN_DPS_RATIO, BURN_DURATION_MS,
   type CollectionScales,
-  type RunSkillState, type RunSkillId, type RunSkillEffects, type ActiveTrigger,
+  type RunSkillState, type RunSkillId, type RunSkillEffects, type ActiveTrigger, type ElementBooks,
 } from '../game/laneRunSkills';
 import type { RunStats } from '../game/quests';
 
@@ -352,12 +352,12 @@ interface WaveRuntime {
 // 自己 reset 要記得清掉的東西有八個(波次、飛行中的武器、已結算的排、計時起點…),
 // 漏掉任何一個就會出現「上一場的怪出現在這一場」這種難查的殘留。
 /**
- * @param bookLevel 技能書等級。**只影響玩家側**(元素/主動的等級上限與選項保證),
+ * @param books 技能書等級,六個元素各自一份。**只影響玩家側**(放大元素的效果),
  *   `createRun` 完全不知道它——這正是它不會把敵人養大的原因(見 laneRunSkills 的
  *   MAX_SKILL_BOOK_LEVEL)。傳進理想路線就會變成「數字在動、體感沒動」。
  */
 export function useLaneRun(
-  stage: number, start: RunStart = DEFAULT_RUN_START, bookLevel = 0, collection: CollectionScales = {},
+  stage: number, start: RunStart = DEFAULT_RUN_START, books: ElementBooks = {}, collection: CollectionScales = {},
   /**
    * 畫面層要求暫停(打開設定面板、生存模式開頭抽地圖)。
    *
@@ -813,7 +813,7 @@ export function useLaneRun(
 
     // 這一波的技能效果。**每個 tick 重算**:波次中途選了新技能、或是吃到閘門讓戰力變了,
     // 畫面上能打倒幾隻就要立刻跟著變(相剋也在這一層逐元素結算完)。
-    const fx = runSkillEffects(runSkillsRef.current, current.element, bookLevel, collection);
+    const fx = runSkillEffects(runSkillsRef.current, current.element, books, collection);
     fireActives(current, fx, now);
 
     // 凍住的那幾隻跟著玩家一起前進 = 畫面上停在原地不再逼近。
@@ -1151,7 +1151,7 @@ export function useLaneRun(
           const waveElement = due.nodes[0].enemy?.element;
           // 相剋是**逐元素**的:結算的時候就把這一波的屬性交給 runSkillEffects,
           // 剋中的那個元素放大、被剋的那個削弱,其他元素與主動技能一律不動。
-          const fx = runSkillEffects(runSkills, waveElement, bookLevel, collection);
+          const fx = runSkillEffects(runSkills, waveElement, books, collection);
           const current = waveRef.current;
           boost = current !== null && current.rowIndex === due.index
             ? boostFor(current.heroWave, current.fired, fx, current.covered.size, current.advance)

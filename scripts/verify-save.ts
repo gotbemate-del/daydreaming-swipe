@@ -10,7 +10,10 @@ import {
   type SaveData,
 } from '../game/save';
 import { WAVES_PER_LEVEL } from '../game/laneRun';
-import { MAX_SKILL_BOOK_LEVEL, bookBonus, rescaleLegacyBookLevel } from '../game/laneRunSkills';
+import {
+  ELEMENTS, MAX_SKILL_BOOK_LEVEL, bookBonus, bookLevelOf, rescaleLegacyBookLevel, totalBookLevels,
+} from '../game/laneRunSkills';
+import { DUNGEON_DAILY_CLEARS, clearsLeft, dayIndex, elementOfDay, DAILY_ELEMENT_CYCLE } from '../game/dungeons';
 import {
   addItem, collectedCount, decodeCollection, emptyCollection, encodeCollection, hasItem,
   rollDrops, TOTAL_ITEMS,
@@ -40,7 +43,7 @@ const full: SaveData = {
   job: { archetype: 'magicRanged', branch: 'B', tier: 3 },
   skills: [{ id: 'forge', level: 5 }, { id: 'toughen', level: 2 }],
   coins: 98765,
-  books: 3,
+  books: { fire: 42, metal: 7 },
   bestSurvival: 42,
   bgmOff: true,
   bgmVolume: 0.5,
@@ -48,6 +51,8 @@ const full: SaveData = {
   collected: encodeCollection((() => { const b = emptyCollection(); addItem(b, 0); addItem(b, 5000); return b; })()),
   questsClaimed: ['clear-1-1', 'open-settings'],
   questCounters: { goodGates: 47, settingsOpened: 2 },
+  dungeonDay: 20300,
+  dungeonClears: { grimoire: 2, armory: 5 },
 };
 const round = readSave(writeSave(full)).save;
 check('存進去再讀回來一模一樣', JSON.stringify(round) === JSON.stringify(full), JSON.stringify(round));
@@ -63,8 +68,10 @@ check('音樂開關存得住,而且壞掉的值退回「開著」',
 // 舊等級要換算成「放大倍率相同」的新等級,不能直接沿用數字——沿用的話舊玩家的滿書
 // 會從 x1.75 掉到 x1.18,而他完全不知道發生了什麼(bestSurvival 從關改成波時踩過同一個坑)。
 {
+  // v6 → v7 之後 books 是六個元素各自一份,而 v4 的那個數字會**平均給六個**
+  // (舊制放大的是全部元素,只給一個等於削弱)。所以這裡取其中一個來比倍率。
   const legacy = (books: number) =>
-    readSave(JSON.stringify({ version: 4, stage: 100, coins: 0, books })).save.books;
+    bookLevelOf(readSave(JSON.stringify({ version: 4, stage: 100, coins: 0, books })).save.books, 'fire');
   check('舊技能書等級換算成倍率相同的新等級',
     [0, 1, 2, 3, 4, 5].every((old) =>
       Math.abs((1 + bookBonus(legacy(old))) - (1 + 0.15 * old)) < 0.02),
@@ -176,13 +183,23 @@ survives('技能欄位不是陣列 -> 空的',
 
 // 現行版本的存檔被改大 -> 夾回上限。**要用現行版號**:舊版號會先走 v4 → v5 的換算
 // (那一步本來就會把數字壓回舊制的 0~5 再放大),測不到「夾回上限」這件事。
-survives('技能書被改超過上限 -> 夾回上限',
-  JSON.stringify({ version: SAVE_VERSION, books: 999 }), (s) => s.books === MAX_SKILL_BOOK_LEVEL);
+survives('技能書被改超過上限 -> 逐屬性夾回上限',
+  JSON.stringify({ version: SAVE_VERSION, books: { fire: 999, metal: 5 } }),
+  (s) => bookLevelOf(s.books, 'fire') === MAX_SKILL_BOOK_LEVEL && bookLevelOf(s.books, 'metal') === 5);
 survives('技能書是負數 -> 夾回 0',
-  JSON.stringify({ version: SAVE_VERSION, books: -3 }), (s) => s.books === 0);
+  JSON.stringify({ version: SAVE_VERSION, books: { fire: -3 } }), (s) => bookLevelOf(s.books, 'fire') === 0);
+survives('不認得的屬性 key 會被丟掉,認得的留著',
+  JSON.stringify({ version: SAVE_VERSION, books: { fire: 8, nosuch: 50, forge: 30 } }),
+  (s) => bookLevelOf(s.books, 'fire') === 8 && totalBookLevels(s.books) === 8);
+// books 還是一個數字(遷移沒跑到、或有人手改存檔)-> 後備行為是**六個都拿到那一級**,
+// 不是全部歸零。歸零等於默默沒收玩家整條養成。
+survives('技能書被改成一個數字 -> 六個元素都拿到那一級,不是歸零',
+  JSON.stringify({ version: SAVE_VERSION, books: 30 }),
+  (s) => ELEMENTS.every((id) => bookLevelOf(s.books, id) === 30));
 // 舊版號被改大也要收得住:換算的輸入先夾回舊制上限(5),所以結果是舊制滿書的等值等級。
 survives('舊版存檔的技能書被改大 -> 換算成舊制滿書的等值等級',
-  JSON.stringify({ version: 4, books: 999 }), (s) => s.books === rescaleLegacyBookLevel(5));
+  JSON.stringify({ version: 4, books: 999 }),
+  (s) => bookLevelOf(s.books, 'fire') === rescaleLegacyBookLevel(5));
 
 // --- 圖鑑 ---
 // 圖鑑是 5668 個 bit 壓成 base64,而它跟其他欄位一樣是玩家改得動的字串。
@@ -227,7 +244,7 @@ const fromV2 = readSave(v2);
 // 比數字的話等於把「不准換算」寫進驗證,而換算正是那一步要做的事。
 check('v2 存檔一路升上來之後進度全留著,圖鑑是空的',
   fromV2.save.stage === 120
-  && Math.abs(bookBonus(fromV2.save.books) - 0.15 * 2) < 0.02
+  && Math.abs(bookBonus(bookLevelOf(fromV2.save.books, 'fire')) - 0.15 * 2) < 0.02
   && collectedCount(decodeCollection(fromV2.save.collected)) === 0
   && fromV2.save.version === SAVE_VERSION);
 // v3 → v4:生存模式的分數從**關**換成**波**。不換算的話,撐過 21 關的老玩家會變成
@@ -248,7 +265,7 @@ const v1 = JSON.stringify({ version: 1, stage: 88, coins: 500, job: null, skills
 const fromV1 = readSave(v1);
 check('v1 存檔升到 v2 之後進度全留著,新欄位補 0',
   fromV1.save.stage === 88 && fromV1.save.coins === 500 && fromV1.save.skills[0]?.level === 2
-  && fromV1.save.books === 0 && fromV1.save.bestSurvival === 0 && fromV1.save.version === SAVE_VERSION,
+  && totalBookLevels(fromV1.save.books) === 0 && fromV1.save.bestSurvival === 0 && fromV1.save.version === SAVE_VERSION,
   JSON.stringify(fromV1.save));
 check('v1 存檔會回報 migrated', fromV1.migrated === true);
 check('v1 升上來之後再讀一次就穩定了', readSave(writeSave(fromV1.save)).migrated === false);
@@ -287,7 +304,7 @@ check('v4 → v5:任務欄位補空值,進度不動',
   && fromV4.save.version === SAVE_VERSION);
 check('v4 老玩家升上來之後,已經達成的任務是「可領獎」不是「已領」', (() => {
   const ctx = {
-    stage: fromV4.save.stage, books: fromV4.save.books, bestSurvival: fromV4.save.bestSurvival,
+    stage: fromV4.save.stage, books: totalBookLevels(fromV4.save.books), bestSurvival: fromV4.save.bestSurvival,
     collected: 0, promoted: false, counters: fromV4.save.questCounters,
   };
   return claimableCount(ctx, fromV4.save.questsClaimed) > 0;
@@ -302,17 +319,17 @@ check('v4 老玩家升上來之後,已經達成的任務是「可領獎」不是
     version: 5, stage: 80, coins: 1, job: null, skills: [], books: 37, bestSurvival: 0, collected: '',
   });
   const got = readSave(v5).save;
-  check('v5 → v6:只補任務欄位,技能書等級原封不動(換算不會跑第二次)',
-    got.books === 37 && got.version === SAVE_VERSION
+  check('v5 → v7:只補任務/副本欄位,技能書等級原封不動(換算不會跑第二次)',
+    bookLevelOf(got.books, 'fire') === 37 && got.version === SAVE_VERSION
     && got.questsClaimed.length === 0 && Object.keys(got.questCounters).length === 0,
     `books ${got.books}(應為 37)`);
   // 反過來:v4 的 5 級要被換算成 37 級,然後才進 v6。整條鏈只換算一次。
   const v4books = readSave(JSON.stringify({
     version: 4, stage: 80, coins: 1, job: null, skills: [], books: 5, bestSurvival: 0, collected: '',
   })).save;
-  check('v4 → v6:技能書換算剛好跑一次(5 級 → 37 級,不是 100 級)',
-    v4books.books === 37 && v4books.version === SAVE_VERSION,
-    `books ${v4books.books}`);
+  check('v4 → v7:技能書換算剛好跑一次(5 級 → 37 級,不是 100 級)',
+    bookLevelOf(v4books.books, 'fire') === 37 && v4books.version === SAVE_VERSION,
+    `books.fire ${bookLevelOf(v4books.books, 'fire')}`);
 }
 
 // 任務欄位一樣是「來路不明的 JSON」:不認得的 id / key 要丟掉,但**不能丟掉整份**。
@@ -345,6 +362,55 @@ check('newSave 的任務欄位不會共用同一份(改一份不會污染另一�
   return b.questsClaimed.length === 0 && b.questCounters.goodGates === undefined
     && DEFAULT_SAVE.questsClaimed.length === 0;
 })());
+
+// --- v6 → v7:技能書逐屬性 + 每日副本次數 ---
+// 舊的那一級放大的是**全部**元素,所以等值換算是六個都給那一級。除以六的話,
+// 老玩家一升版每個元素都掉一大截,而他完全不知道原因(這款踩過兩次同型的坑)。
+{
+  const v6 = JSON.stringify({
+    version: 6, stage: 200, coins: 5, job: null, skills: [], books: 40,
+    bestSurvival: 0, collected: '', questsClaimed: [], questCounters: {},
+  });
+  const got = readSave(v6).save;
+  check('v6 → v7:單一等級平均給六個元素(不是除以六)',
+    ELEMENTS.every((id) => bookLevelOf(got.books, id) === 40) && got.version === SAVE_VERSION,
+    ELEMENTS.map((id) => `${id}:${bookLevelOf(got.books, id)}`).join(' '));
+  // 老玩家升上來當天要有滿額度:dungeonDay 補 0(不可能等於今天),所以次數是滿的。
+  check('v6 → v7:老玩家升上來當天,副本次數是滿的',
+    clearsLeft(got.dungeonDay, got.dungeonClears, 'grimoire') === DUNGEON_DAILY_CLEARS
+    && clearsLeft(got.dungeonDay, got.dungeonClears, 'armory') === DUNGEON_DAILY_CLEARS);
+}
+
+// --- 每日副本次數 ---
+// 存的是「哪一天 + 打了幾次」而不是「還剩幾次」,所以跨日是**自我修復**的:
+// 沒有任何人需要去重設它,只要日期對不上,今天的次數就是 0。
+{
+  const today = dayIndex();
+  check('同一天的次數記得住', clearsLeft(today, { grimoire: 2 }, 'grimoire') === DUNGEON_DAILY_CLEARS - 2);
+  check('跨日自動歸零(不需要任何人去重設)',
+    clearsLeft(today - 1, { grimoire: DUNGEON_DAILY_CLEARS }, 'grimoire') === DUNGEON_DAILY_CLEARS);
+  // 玩家把時鐘往回調 -> 存檔的日期比今天新。也當成「不是今天」歸零:
+  // 「不一樣就歸零」比「只有變新才歸零」單純,而且不會產生「次數卡在用完的狀態回不來」
+  // 這種修不好的存檔。多打幾輪是單機遊戲可以接受的代價,卡死不是。
+  check('存檔日期比今天新(時鐘被往回調)也歸零,不會卡死',
+    clearsLeft(today + 5, { grimoire: DUNGEON_DAILY_CLEARS }, 'grimoire') === DUNGEON_DAILY_CLEARS);
+  check('無限副本沒有每日上限', clearsLeft(today, { endless: 99 }, 'endless') === Infinity);
+  // 次數被改大也要收得住(它決定得了「今天還能不能進」)。
+  survives('副本次數被改超過上限 -> 夾回上限',
+    JSON.stringify({ version: SAVE_VERSION, dungeonClears: { grimoire: 999, nosuch: 3 } }),
+    (sv) => sv.dungeonClears.grimoire === DUNGEON_DAILY_CLEARS
+      && (sv.dungeonClears as Record<string, number>).nosuch === undefined);
+}
+
+// --- 每日屬性輪替 ---
+// 照相剋環走,六天一輪。可預測是重點:玩家看到今天是土就知道明天是冰、後天是火,
+// 「我想練火還要等兩天」是一句他自己算得出來的話。
+check('每日屬性六天一輪,而且六個元素剛好各出現一次', (() => {
+  const week = Array.from({ length: 6 }, (_, i) => elementOfDay(dayIndex() + i));
+  return new Set(week).size === 6 && elementOfDay(dayIndex() + 6) === elementOfDay(dayIndex());
+})(), DAILY_ELEMENT_CYCLE.join(' → '));
+check('負數的日期也算得出屬性(1970 之前的時鐘不會讓它爆掉)',
+  DAILY_ELEMENT_CYCLE.includes(elementOfDay(-13)));
 
 console.log(fail === 0 ? '\n全部通過' : `\n${fail} 項失敗`);
 process.exit(fail === 0 ? 0 : 1);
