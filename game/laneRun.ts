@@ -1858,11 +1858,24 @@ export interface WaveBoost {
    * 早期版本在這裡放過一個 counter 純量,結果是主動技能也被一起放大——
    * 帶對屬性等於整體 x2.5。純量會誘發這種錯誤,所以連欄位都不留。
    */
-  /** 額外清掉幾隻(火・燃燒 + 主動) */
+  /** 額外清掉幾隻(固定值:二三階主動)。 */
   kills?: number;
-  /** 額外清掉整波的幾成(金・穿透 + 貫穿) */
-  killRatio?: number;
-  /** 額外清掉「自己打倒的隻數」的幾成(雷・連鎖) */
+  /**
+   * 額外清掉「**自己打倒的隻數**」的幾成(金・擴散 + 雷・連鎖)。
+   *
+   * **這裡刻意沒有「整波的幾成」那一路。** 舊版金・擴散走的是 `killRatio`
+   *(`ceil(units * ratio)`),那條路徑的意思是「不管你多強,這一波最多幫你清掉 N%」——
+   * 它是一個**跟隊伍無關的數量天花板**,而技能組不准有那種東西(見下面那條規則)。
+   * 拆掉之後金跟雷同軸:你越強、打倒得越多,擴散跟著放大,沒有上緣。
+   *
+   * **規則:技能組不准再增設「最高數量上限」。** 想加新的清怪效果只有兩種寫法——
+   * 固定隻數(`kills`,越落後越有用)或吃自己戰果的比例(這個欄位,越強越有用)。
+   * 「整波的幾成」介於兩者之間而且兩邊的好處都拿不到:對弱的人是零頭,
+   * 對強的人是天花板,唯一的效果是讓數字看起來有在動。
+   *
+   * 注意這跟 `slow` / `freezeChance` 那種**機率上限**不是同一件事:
+   * 那兩個夾的是「發生的機率」不是「清掉幾隻」,而機率本來就只能到 1。
+   */
   chainRatio?: number;
   /** 額外補幾個勇者(號令) */
   heroes?: number;
@@ -1904,9 +1917,8 @@ export interface WaveBoost {
  * 玩家會看到「明明都打完了還是漏了一隻」——而那是最難查的一種不一致,
  * 因為兩邊分開看都完全合理。
  */
-export function extraKills(enemy: EnemyEffect, boost: WaveBoost, own: number): number {
+export function extraKills(_enemy: EnemyEffect, boost: WaveBoost, own: number): number {
   return Math.max(0, boost.kills ?? 0)
-    + Math.ceil(enemy.units * Math.max(0, boost.killRatio ?? 0))
     + Math.ceil(own * Math.max(0, boost.chainRatio ?? 0));
 }
 

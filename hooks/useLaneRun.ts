@@ -309,7 +309,7 @@ interface WaveRuntime {
    * 但「這一波多清掉幾隻」只對這一波有意義——不隨波清空的話,前面幾波累積的擊殺數
    * 會在最後一波一次結算掉,玩家看到的是「魔王莫名其妙被秒了」。
    */
-  fired: { kills: number; killRatio: number; immune: boolean };
+  fired: { kills: number; immune: boolean };
   /** 這一波有哪幾隻曾經進到射程寬度內。擊殺數會被它的大小夾住(見 laneRun 的 FIRE_WIDTH)。 */
   covered: Set<number>;
 }
@@ -528,9 +528,11 @@ export function useLaneRun(
     if (heroWave) boost.hazardResolved = true;
     // 火不再進這裡:它現在純粹是持續傷害,不保證帶走幾隻(舊的 fx.burnKills 已移除)。
     if (fired.kills > 0) boost.kills = fired.kills;
-    const ratio = fx.pierceRatio + fired.killRatio;
-    if (ratio > 0) boost.killRatio = ratio;
-    if (fx.chainRatio > 0) boost.chainRatio = fx.chainRatio;
+    // 金・擴散(pierceRatio)與雷・連鎖(chainRatio)現在**同一條軸**:都吃「自己打倒的隻數」。
+    // 金舊版走的是「整波的幾成」,那是跟隊伍無關的數量天花板,已依規則拆掉
+    // (見 laneRun 的 WaveBoost.chainRatio)。
+    const ratio = fx.pierceRatio + fx.chainRatio;
+    if (ratio > 0) boost.chainRatio = ratio;
     if (fx.regen > 0) { boost.regen = fx.regen; boost.lostSoFar = lostSoFarRef.current; }
     if (fx.lossCut > 0) boost.lossCut = fx.lossCut;
     if (fired.immune) boost.immune = true;
@@ -539,7 +541,7 @@ export function useLaneRun(
   }
 
   /** 波次還沒建起來就跑到結算點時用的空加成(理論上不會發生,視野判定比結算早很多)。 */
-  const NO_FIRED: WaveRuntime['fired'] = { kills: 0, killRatio: 0, immune: false };
+  const NO_FIRED: WaveRuntime['fired'] = { kills: 0, immune: false };
 
   /**
    * 冷卻好了的主動技能就地觸發。
@@ -565,7 +567,6 @@ export function useLaneRun(
       fired.push(a.name);
       firedIds.push(a.id);
       if (a.kills) { current.fired.kills += a.kills; killsNow += a.kills; }
-      if (a.killRatio) current.fired.killRatio += a.killRatio;
       if (a.heroes) heroesNow += Math.round(a.heroes);
       if (a.immune) current.fired.immune = true;
     }
@@ -716,7 +717,7 @@ export function useLaneRun(
         frozenUntil: new Array(enemy.units).fill(0),
         burningUntil: new Array(enemy.units).fill(0),
         hitCount: 0,
-        fired: { kills: 0, killRatio: 0, immune: false },
+        fired: { kills: 0, immune: false },
         covered: new Set<number>(),
       };
       waveRef.current = current;

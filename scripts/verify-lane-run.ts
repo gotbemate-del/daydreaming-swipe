@@ -14,7 +14,7 @@ import {
   ENEMY_POWER_RATIO, ENEMY_UNITS_PER_HERO, goodGateGrowthAt, gatesBeforeRow, isTrapGate, runSeconds, ELITE_MASS, ELITE_HITS, absorbedFrom,
   applyGate, gateLabel, DOUBLE_GATES_PER_RUN, GEAR_STEP, doubleGatesForStage, LONG_LEVEL_RATIO_SCALE,
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
-  createRocks, hitsRock, applyRockHit, rowDistances, battleDistance, isEnemyRowIndex, VISIBLE_AHEAD,
+  createRocks, hitsRock, applyRockHit, extraKills, rowDistances, battleDistance, isEnemyRowIndex, VISIBLE_AHEAD,
   ROCKS_PER_RUN_MIN, ROCKS_PER_RUN_MAX, ROCK_HERO_LOSS, ROCK_GRAZE_MESSAGE, ACTIVE_THROWERS,
   BACKDROPS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane, MIN_WAVE_SIZE,
   HERO_WAVE_ELEMENT_SALT, waveElementsForStage, hazardsFor, hitByHazard, HAZARD_WIDTH, HAZARD_LOSS_HEROES, expectedHazardHits, ENEMY_THROW_INTERVAL_MS,
@@ -650,7 +650,19 @@ check('沒帶那個元素就沒有演出參數(不會憑空多一層特效)',
   })());
 // 這一項是回歸防線:演出改版**完全沒有動**決定難度的那三個數字。
 // 火已經完全退出擊殺數(舊的 fireKills 移除),它現在純粹是持續傷害。
-check('擊殺數只剩雷 8%/級 與金 6%/級,火一隻都不保證',
+// **技能組不准有「最高數量上限」。** 金・擴散舊版是「整波的幾成」,那是一個跟隊伍無關的
+// 數量天花板(等級 2 剛好 12%):對弱的人是零頭,對強的人是上緣,兩邊的好處都拿不到。
+// 現在金跟雷同軸,只吃「你自己打倒的隻數」——這一項就是在證明整波隻數完全不影響結果。
+{
+  const boost = { chainRatio: 0.3 };
+  const at = (units: number) => extraKills({ power: 1, reward: 0, species: [], name: '', units }, boost, 20);
+  check('額外擊殺只跟「自己打倒的隻數」有關,跟整波幾隻無關',
+    at(5) === at(50) && at(50) === at(500), `5 隻 ${at(5)} / 50 隻 ${at(50)} / 500 隻 ${at(500)}`);
+  const own = (n: number) => extraKills({ power: 1, reward: 0, species: [], name: '', units: 40 }, boost, n);
+  check('打倒得越多,擴散與連鎖放大得越多(沒有上緣)',
+    own(10) < own(40) && own(40) < own(400), `10 → ${own(10)} / 40 → ${own(40)} / 400 → ${own(400)}`);
+}
+check('擊殺數只剩雷 8%/級 與金 6%/級(兩者同軸:吃自己打倒的隻數),火一隻都不保證',
   Math.abs(thunderFx.chainRatio - 0.4) < 1e-9
   && Math.abs(runSkillEffects([{ id: 'metal', level: 5 }]).pierceRatio - 0.3) < 1e-9,
   `雷 ${(thunderFx.chainRatio * 100).toFixed(0)}% / 金 ${(runSkillEffects([{ id: 'metal', level: 5 }]).pierceRatio * 100).toFixed(0)}%`);
@@ -674,7 +686,7 @@ check('冰的凍結機率吃相剋,擴散/連鎖的隻數不吃',
 const perfectWave = { power: 1, reward: 0, species: [{ id: 'blob-1', name: '史' }], name: '史', units: 6 };
 const perfectState: RunState = { ...initialRunState(1), heroes: 50, perHero: 1000 };
 const allElements: WaveBoost = {
-  kills: 5, killRatio: 0.3, chainRatio: 0.3, regen: 9, lostSoFar: 0, lossCut: 3,
+  kills: 5, chainRatio: 0.3, regen: 9, lostSoFar: 0, lossCut: 3,
 };
 check('完美玩家帶滿六元素也一模一樣(所以它們是抬地板不抬天花板)',
   resolveEnemy(perfectState, perfectWave).state.heroes
@@ -847,7 +859,7 @@ check('魔王也有屬性,而且關卡前就公開(x-10 是最值得押注的一
   `2-10 魔王 ${bossBrief[bossBrief.length - 1].element}`);
 // **相剋照樣不進理想路線**:它只放大元素,而元素只在失誤時生效。
 const counteredAll: WaveBoost = {
-  kills: 5 * COUNTER_BONUS, killRatio: 0.3 * COUNTER_BONUS, chainRatio: 0.3 * COUNTER_BONUS,
+  kills: 5 * COUNTER_BONUS, chainRatio: 0.3 * COUNTER_BONUS,
   regen: 9 * COUNTER_BONUS, lostSoFar: 0, lossCut: 3 * COUNTER_BONUS,
 };
 check('完美玩家帶對屬性也一模一樣(相剋沒有破壞結構保證)',

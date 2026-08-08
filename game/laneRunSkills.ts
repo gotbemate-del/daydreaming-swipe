@@ -316,7 +316,13 @@ const PER_LEVEL = {
   /** 增殖:隊伍人數的幾成 */
   // ---- 六元素(每一款的規則都不一樣,不是同一個東西換名字)----
   // 火沒有 fireKills 了:它現在**純粹是持續傷害**,不直接保證帶走幾隻(見 burnSpreadTargets)。
-  /** 金・擴散:每一波額外清掉整波的幾成(後期、大波才有感) */
+  /**
+   * 金・擴散:額外清掉「**你自己打倒的隻數**」的幾成。
+   *
+   * 舊版是「整波的幾成」,那是一個跟隊伍無關的數量天花板(等級 2 剛好是 12%),
+   * 而技能組不准有那種東西——見 laneRun 的 WaveBoost.chainRatio 上面那條規則。
+   * 改成吃自己的戰果之後金跟雷同軸:你越強放大越多,沒有上緣。
+   */
   metalRatio: 0.06,
   /** 雷・連鎖:額外清掉「你自己打倒的隻數」的幾成(你越強放大越多) */
   thunderRatio: 0.08,
@@ -547,7 +553,7 @@ export const RUN_SKILLS: RunSkillSpec[] = [
     id: 'metal',
     name: '金・擴散',
     describe: (l) =>
-      `命中時往旁邊 ${metalSpreadTargets(l)} 隻各擴散一次傷害,每波多清掉整波的 ${Math.round(PER_LEVEL.metalRatio * l * 100)}%`,
+      `命中時往旁邊 ${metalSpreadTargets(l)} 隻各擴散一次傷害,多清掉你打倒隻數的 ${Math.round(PER_LEVEL.metalRatio * l * 100)}%`,
   },
   {
     id: 'thunder',
@@ -744,8 +750,6 @@ export interface ActiveTrigger {
   cooldown: number;
   /** 直接清掉幾隻(固定值) */
   kills?: number;
-  /** 清掉整波的幾成(比例值) */
-  killRatio?: number;
   /** 直接補幾個勇者 */
   heroes?: number;
   /** 擋下這一波的全部損失 */
