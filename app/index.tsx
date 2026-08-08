@@ -9,6 +9,7 @@ import { isPromotionStage, runStartFor, tierAfter, type JobTier, type LaneJob } 
 import { applySkills, learnSkill, skillOffers, type SkillState } from '../game/laneSkills';
 import { useSave } from '../hooks/useSave';
 import { useBgm } from '../hooks/useBgm';
+import { useNoContextMenu } from '../hooks/useNoContextMenu';
 import { booksForSurvival, TOTAL_STAGES, type SavedJob } from '../game/save';
 import {
   addItem, bookDropChance, collectionScales, decodeCollection, dropCountForRun,
@@ -67,6 +68,10 @@ export default function HomeScreen() {
   // 背景音樂掛在這一層,**不能掛進 LaneRunner**:那個元件每一關都換 key 重新掛載,
   // 音樂會每十波從頭播一次(生存模式尤其明顯)。
   useBgm(loaded && !save.bgmOff);
+
+  // 網頁版的右鍵選單與長按選單。跟音樂同一個理由掛在這一層:LaneRunner 每一關重新掛載,
+  // 掛在裡面的話交棒的那 900ms 是沒有防護的(見 hooks/useNoContextMenu.ts)。
+  useNoContextMenu();
 
   const [screen, setScreen] = useState<Screen>('menu');
   const [runKey, setRunKey] = useState(0);
