@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { PixelFrame } from './PixelFrame';
@@ -30,9 +31,49 @@ interface Props {
   onClose: () => void;
   /** 打開這個面板的同時跑圖停住了沒。只影響文字,暫停本身由呼叫端負責。 */
   paused?: boolean;
+  /**
+   * 重新再來 / 放棄遊戲。**只有跑圖中才給**(主介面沒有「這一場」可以重來或放棄)。
+   *
+   * 兩顆都會把當下這一場丟掉,所以各自要按兩次:第一次把字換成「再按一次」,
+   * 第二次才真的執行。這裡刻意不另外開一個確認視窗——面板已經蓋在跑道上了,
+   * 再疊一層會變成「面板上的面板」,而且小螢幕上塞不下。
+   */
+  onRestart?: () => void;
+  onQuit?: () => void;
+  /** 生存模式:重來是整輪重來(不是這一關重來),文字要講清楚。 */
+  survival?: boolean;
 }
 
-export function Settings({ audio, onChangeAudio, onClose, paused = false }: Props) {
+export function Settings({
+  audio, onChangeAudio, onClose, paused = false, onRestart, onQuit, survival = false,
+}: Props) {
+  /** 哪一顆正在等第二次確認。同時只會有一顆,按另一顆會把前一顆的確認狀態取消。 */
+  const [confirming, setConfirming] = useState<'restart' | 'quit' | null>(null);
+
+  const danger = (
+    kind: 'restart' | 'quit',
+    label: string,
+    hint: string,
+    run: () => void,
+  ) => (
+    <Pressable
+      accessibilityLabel={confirming === kind ? `${label} 再按一次確認` : label}
+      style={[styles.danger, confirming === kind && styles.dangerArmed]}
+      onPress={() => {
+        playSfx('click');
+        if (confirming === kind) { run(); return; }
+        setConfirming(kind);
+      }}
+    >
+      <Text style={[styles.dangerLabel, confirming === kind && styles.dangerLabelArmed]}>
+        {confirming === kind ? '再按一次確認' : label}
+      </Text>
+      <Text style={[styles.dangerHint, confirming === kind && styles.dangerLabelArmed]}>
+        {confirming === kind ? hint : ''}
+      </Text>
+    </Pressable>
+  );
+
   return (
     <View style={styles.overlay}>
       <PixelFrame style={styles.card}>
@@ -85,11 +126,25 @@ export function Settings({ audio, onChangeAudio, onClose, paused = false }: Prop
             accessibilityLabel={paused ? '繼續' : '關閉設定'}
             onPress={() => {
               playSfx('click');
+              setConfirming(null);
               onClose();
             }}
           >
             <Text style={styles.closeLabel}>{paused ? '繼續' : '關閉'}</Text>
           </Pressable>
+
+          {/* 兩顆危險操作排在「繼續」下面:玩家打開這個面板九成是要暫停或調音量,
+              把丟掉整場的按鈕放在最後才不會手滑按到。 */}
+          {paused && onRestart && (
+            danger('restart', '重新再來',
+              survival ? '整輪從頭開始,累計波數歸零' : '這一關從頭開始',
+              onRestart)
+          )}
+          {paused && onQuit && (
+            danger('quit', '放棄遊戲',
+              survival ? '結束這一輪並看結算' : '回主介面,這一關不算過',
+              onQuit)
+          )}
         </View>
       </PixelFrame>
     </View>
@@ -126,4 +181,13 @@ const styles = StyleSheet.create({
     backgroundColor: '#3a3448', alignItems: 'center',
   },
   closeLabel: { color: '#f2f2f2', fontSize: 14, fontWeight: '700' },
+  // 危險操作:平常是暗底描邊(看得到但不搶眼),等確認的時候才轉成危險紅。
+  danger: {
+    alignSelf: 'stretch', paddingVertical: 9, borderRadius: 10, alignItems: 'center',
+    backgroundColor: '#2a2a35', borderWidth: 1, borderColor: '#e0505060',
+  },
+  dangerArmed: { backgroundColor: '#e05050', borderColor: '#e05050' },
+  dangerLabel: { color: '#e05050', fontSize: 13, fontWeight: '700' },
+  dangerLabelArmed: { color: '#16161c' },
+  dangerHint: { color: '#16161c', fontSize: 10 },
 });
