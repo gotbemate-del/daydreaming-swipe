@@ -15,7 +15,7 @@ import {
   applyGate, gateLabel, DOUBLE_GATES_PER_RUN, GEAR_STEP, doubleGatesForStage, LONG_LEVEL_RATIO_SCALE,
   CRIT_CHANCE, CRIT_MULTIPLIER, hitDamage, isCritHit,
   createRocks, hitsRock, applyRockHit, rowDistances, battleDistance, isEnemyRowIndex, VISIBLE_AHEAD,
-  ROCKS_PER_RUN_MIN, ROCKS_PER_RUN_MAX, ROCK_HERO_LOSS, ROCK_GRAZE_MESSAGE,
+  ROCKS_PER_RUN_MIN, ROCKS_PER_RUN_MAX, ROCK_HERO_LOSS, ROCK_GRAZE_MESSAGE, ACTIVE_THROWERS,
   TERRAINS, totalAttack, volleyRate, waveKillCount, waveMonsters, waveSize, worstLane, MIN_WAVE_SIZE,
   HERO_WAVE_ELEMENT_SALT, waveElementsForStage, hazardsFor, hitByHazard, HAZARD_WIDTH, HAZARD_LOSS_HEROES, expectedHazardHits, ENEMY_THROW_INTERVAL_MS,
   battleSecondsPerWave, engageRange, FIRE_RANGE_RATIO,
@@ -278,9 +278,11 @@ check('每種造型都有對應的既有素材檔(含魔王)',
 check('同一排的每一格都是同一批敵人', run.filter((r) => r.nodes.every((n) => n.kind === 'enemy'))
   .every((r) => new Set(r.nodes.map((n) => JSON.stringify(n.enemy!.species))).size === 1));
 // 精英排跳過:牠的隻數本來就是壓縮過的(同樣的戰力擠成少少幾隻),放進來比會誤判成退化。
+// **勇者波也跳過**:牠另外設了上限(MAX_HERO_WAVE_UNITS),因為每一個還站著的敵人
+// 都在丟武器,隻數直接換算成畫面上有幾條要閃的線。那個上限是刻意的,不是退化。
 const unitsByRow = run.filter((r) => r.nodes.every((n) => n.kind === 'enemy'))
   .map((r) => r.nodes[0].enemy!)
-  .filter((e) => !e.elite)
+  .filter((e) => !e.elite && !e.heroWave)
   .map((e) => e.units);
 check('越後面的波次小怪越多(數量看得出難度)', unitsByRow.every((u, i) => i === 0 || u >= unitsByRow[i - 1]),
   unitsByRow.join(' → '));
@@ -672,13 +674,25 @@ const HW_ROW = 11;
 const HW_UNITS = 12;
 check('全清 -> 一發都沒有(所以完美玩家完全不受影響)',
   hazardsFor(HW_ROW, HW_UNITS, 0).length === 0);
-check('漏幾個就有幾條線(打倒一個就少一條)',
-  [1, 3, 7, HW_UNITS].every((alive) => hazardsFor(HW_ROW, HW_UNITS, alive).length === alive));
+// 條數 = min(活口, ACTIVE_THROWERS)。**同時最多兩條就是「還閃得掉」的保證**——
+// 落點寬 HAZARD_WIDTH(0.26),兩條最多蓋掉 0.52,跑道上永遠留得下一段空的。
+// 以前這裡是「活幾個就有幾條」,站位改成雜亂之後 11 個活口的線會蓋滿整條跑道,
+// 理想玩家也閃不掉,勇者波的難度校準前提當場失效。
+check('同時最多 ACTIVE_THROWERS 條線(這就是「還閃得掉」的保證)',
+  [1, 3, 7, HW_UNITS].every((alive) =>
+    hazardsFor(HW_ROW, HW_UNITS, alive).length === Math.min(alive, ACTIVE_THROWERS)),
+  `活 ${HW_UNITS} 個 → ${hazardsFor(HW_ROW, HW_UNITS, HW_UNITS).length} 條`);
+check('任何時候跑道上都留得下一段空的(兩條蓋不滿)', (() => {
+  const hz = hazardsFor(HW_ROW, HW_UNITS, HW_UNITS);
+  const spots = Array.from({ length: 201 }, (_, i) => i / 200);
+  return spots.some((o) => !hz.some((h) => o >= h.from && o <= h.to));
+})());
 // 落點必須就是那些人站的位置——邏輯與畫面同一個算式,不然會有「看起來閃掉了卻還是被砸中」。
 const hwMonsters = waveMonsters(HW_ROW, HW_UNITS, 0, 1, 0);
 check('落點就是還站著的那幾個人的位置(邏輯與畫面同一個算式)',
   hazardsFor(HW_ROW, HW_UNITS, 3).every((h, i) => {
-    const m = hwMonsters[HW_UNITS - 3 + i];
+    // 取的是最靠近勇者的那幾個(slice(-ACTIVE_THROWERS)),所以要從尾巴數回來。
+    const m = hwMonsters[HW_UNITS - Math.min(3, ACTIVE_THROWERS) + i];
     return Math.abs((h.from + h.to) / 2 - m.offset) < 1e-9
       && Math.abs((h.to - h.from) - HAZARD_WIDTH) < 1e-9;
   }));

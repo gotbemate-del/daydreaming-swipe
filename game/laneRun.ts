@@ -377,7 +377,7 @@ const TRAP_HARSH_FROM = 501;
 const TRAP_HARSH_TO = 1200;
 /** 一開始/最後,三種陷阱裡最痛的那一種(勇者 x0.5)佔多少。 */
 const TRAP_HALVE_WEIGHT = 0.45;
-const TRAP_HALVE_WEIGHT_MAX = 0.75;
+const TRAP_HALVE_WEIGHT_MAX = 0.80;
 
 /**
  * 這一關抽到「勇者 x0.5」的機率。三種陷阱裡它最痛(一次腰斬),所以把它的比重往上推
@@ -943,7 +943,7 @@ export const MAX_WAVE_SIZE = 400;
  * 一波丟得出 576 下而只需要 144 下。**注意 `fireIntervalMs` 的 90ms 下限不是真的下限**——
  * 它後面還要除以 volleyRate,只看那個常數會誤判成「打不完」。
  */
-export const ENEMY_UNITS_PER_HERO = 2;
+export const ENEMY_UNITS_PER_HERO = 1;
 export function waveSize(idealHeroes: number): number {
   const n = Math.round(idealHeroes * ENEMY_UNITS_PER_HERO);
   return Math.min(MAX_WAVE_SIZE, Math.max(MIN_WAVE_SIZE, n));
@@ -1007,9 +1007,24 @@ export const MONSTER_EDGE = 0.08;
  * 每一排的起點由排號的雜湊決定,所以排跟排之間不會出現同一組位置。
  */
 const GOLDEN_RATIO_CONJUGATE = 0.6180339887498949;
-function offsetForWaveMonster(rowIndex: number, index: number): number {
+/**
+ * 位置再加多少雜訊(以「平均間距」為單位)。
+ *
+ * 純黃金比例序列的間距是**固定的**,所以一波看久了會看出規律——每一隻都跟前一隻差
+ * 同樣的距離,像一條斜線在跑。加上這一層雜訊之後間距忽寬忽窄,看起來才像一群怪
+ * 各跑各的。
+ *
+ * 1.6 是量出來的:間距的變異係數 0.8→0.16、1.2→0.55、1.6→0.63、2.0→0.69,
+ * 而覆蓋度到 2.0 都還是滿的(6 等分踩滿 6 段)。0.8 實機看起來仍然太整齊
+ * (使用者回報「站位太規律」),1.6 已經明顯會結塊——而結塊正是「雜亂」該有的樣子,
+ * 底層的低差異序列則保證它不會結塊到某一整段都沒有。
+ */
+const MONSTER_SCATTER = 1.6;
+function offsetForWaveMonster(rowIndex: number, index: number, size: number): number {
   const base = hashFor(rowIndex, 0, 5);
-  const t = (base + index * GOLDEN_RATIO_CONJUGATE) % 1;
+  const spacing = 1 / Math.max(1, size);
+  const noise = (hashFor(rowIndex, index, 7) - 0.5) * MONSTER_SCATTER * spacing;
+  const t = ((base + index * GOLDEN_RATIO_CONJUGATE + noise) % 1 + 1) % 1;
   return MONSTER_EDGE + t * (1 - 2 * MONSTER_EDGE);
 }
 
@@ -1024,7 +1039,7 @@ export function waveMonsters(
   rowIndex: number, size: number, rowDistance: number, speciesCount = 1, spread = 150,
 ): WaveMonster[] {
   return Array.from({ length: size }, (_, index) => {
-    const offset = offsetForWaveMonster(rowIndex, index);
+    const offset = offsetForWaveMonster(rowIndex, index, size);
     return {
       index,
       // 跑道編號現在是**從位置推回來的**,不是先挑跑道再算位置(見 offsetForWaveMonster)。
@@ -1417,6 +1432,19 @@ export function isHeroWaveRow(stage: number, rowIndex: number): boolean {
  * 所以一波打下來每個人都丟過,但任何一個瞬間都只有兩條線是危險的。
  */
 export const ACTIVE_THROWERS = 2;
+
+/**
+ * 勇者波最多幾個敵人。
+ *
+ * 一般波的隻數是**打擊手感**的旋鈕(多幾隻只是畫面密度,吸收也跟著長,難度幾乎不動);
+ * 勇者波不是——**每一個還站著的敵人都在丟武器**,所以隻數直接換算成畫面上有幾條要閃的線。
+ * 沒有上限的話第 1 關最後一波是 180 個勇者同時在丟,玩家看到的是一整片,
+ * 分不出哪裡是安全的(使用者回報的「會攻擊的瞬間一大片」)。
+ *
+ * 24 是「還數得出來、也還看得出空隙」的量。ACTIVE_THROWERS 已經限制了**同時**只有
+ * 兩條線是危險的,這個上限管的是**畫面上有多少個在動的敵人**——兩者管不同的事。
+ */
+export const MAX_HERO_WAVE_UNITS = 24;
 /** 輪到下一組投擲者要多久(毫秒)。太短會像亂數閃爍,太長會變成只有固定那兩個人在丟。 */
 export const THROWER_ROTATE_MS = 1400;
 
@@ -1463,7 +1491,14 @@ export function hazardsFor(rowIndex: number, size: number, survivors: number): {
   if (alive <= 0) return [];
   // 只要 offset,距離與怪種在這裡用不到,所以 rowDistance/spread 給 0。
   const monsters = waveMonsters(rowIndex, total, 0, 1, 0);
-  return monsters.slice(total - alive).map((m) => ({
+  // **同時只取 ACTIVE_THROWERS 條線。** 遊戲裡本來就是輪流丟(見 activeThrowers),
+  // 這裡以前卻把「所有還活著的人」全部當成同時在丟,兩邊的模型不一致。
+  //
+  // 站位改成雜亂之後這個不一致才浮出來:落點散得開,11 個活口的線就蓋滿整條跑道,
+  // 站哪裡都會被打——**理想玩家也閃不掉**,而「閃得掉」正是勇者波的難度校準前提
+  // (CLAUDE.md:同時投擲的人數上限就是「還閃得掉」的保證)。取最靠近勇者的那幾個:
+  // 他們是下一個會出手的人,跟畫面上看到的那幾條線對得起來。
+  return monsters.slice(total - alive).slice(-ACTIVE_THROWERS).map((m) => ({
     from: m.offset - HAZARD_WIDTH / 2,
     to: m.offset + HAZARD_WIDTH / 2,
   }));
@@ -1539,7 +1574,12 @@ function makeEnemyRow(
   // 變的只有「擋不下來的時候一次掉多少人」以及畫面上的體感。
   const units = elite
     ? Math.max(1, Math.round(waveSize(idealHeroes) / ELITE_MASS))
-    : waveSize(idealHeroes);
+    : heroWave
+      // **勇者波另外設上限。** 一般波多幾隻只是視覺密度,勇者波不一樣:每一個還站著的
+      // 敵人都在丟武器(見 hazardsFor),所以隻數直接換算成「畫面上同時有幾條武器線」。
+      // 沒有上限的話第 1 關最後一波是 180 個勇者一起丟,那不是難,是看不出哪裡安全。
+      ? Math.min(MAX_HERO_WAVE_UNITS, waveSize(idealHeroes))
+      : waveSize(idealHeroes);
   const enemy: EnemyEffect = {
     power,
     reward: Math.round(power * (elite ? 0.6 : 0.4)),
