@@ -15,12 +15,23 @@ import { BACKDROPS, type BackdropId } from '../game/laneRun';
 import type { AudioSettings } from '../components/Settings';
 import { booksForSurvival, TOTAL_STAGES, type SavedJob } from '../game/save';
 import {
-  addItem, bookDropChance, collectionScales, decodeCollection, dropCountForRun,
+  addItem, bookDropChance, collectedCount, collectionScales, decodeCollection, dropCountForRun,
   encodeCollection, rollDrops,
 } from '../game/collection';
 import { MAX_SKILL_BOOK_LEVEL } from '../game/laneRunSkills';
 import { Codex } from '../components/Codex';
 import { SurvivalResult } from '../components/SurvivalResult';
+import { DungeonSelect } from '../components/DungeonSelect';
+import { Quests } from '../components/Quests';
+import {
+  ARMORY_DROPS, ARMORY_DROPS_FAILED, dungeonCost, dungeonSpec, GRIMOIRE_BOOKS,
+  type DungeonId,
+} from '../game/dungeons';
+import {
+  activeQuest, addCounters, claimQuest, dungeonCounter, questViews, runCounters,
+  type QuestContext, type QuestCounters, type RunStats,
+} from '../game/quests';
+import { isBossStage } from '../game/laneRun';
 
 // 一輪的流程:
 //   主介面 →(按開始闖關)→ 跑圖 →(通關)→ 學技能 → 每 5 關再多一次轉職 → 回主介面(關卡 +1)
@@ -40,7 +51,7 @@ import { SurvivalResult } from '../components/SurvivalResult';
 // 一場跑圖 = 一個 LaneRunner 實例,每次開始都換 key 重新掛載。跑圖裡有一整套跑到一半的
 // 狀態(波次、飛行中的武器、已結算的排、計時起點),在原地 reset 很容易漏掉其中一項,
 // 症狀是「上一場的怪出現在這一場」——重新掛載沒有這個問題。
-type Screen = 'menu' | 'run' | 'survivalOver' | 'codex';
+type Screen = 'menu' | 'run' | 'survivalOver' | 'codex' | 'dungeons' | 'quests';
 
 /**
  * 生存模式:**連續闖關,死了就結束。**
@@ -52,7 +63,14 @@ type Screen = 'menu' | 'run' | 'survivalOver' | 'codex';
  * 這樣做的另一個好處是它完全不必動 createRun:難度用的就是既有的關卡曲線,
  * 不會出現「兩條各走各的指數」那類問題(CLAUDE.md 記過好幾次)。
  */
-type Mode = 'normal' | 'survival';
+/**
+ * 這一場是哪一種跑圖。
+ *
+ * `normal` 是主線(通關才前進),其餘三個是副本(見 game/dungeons.ts)。
+ * **四種用的都是同一條敵人曲線**——差別只在規則與獎勵,不准有第二條曲線
+ * (CLAUDE.md 記過好幾次:兩條各走各的指數遲早會岔開)。
+ */
+type Mode = 'normal' | DungeonId;
 
 /**
  * 存檔裡的職業 → 遊戲用的 LaneJob。兩邊刻意分開:存檔格式是對外的邊界,
@@ -128,9 +146,33 @@ export default function HomeScreen() {
   };
   const changeAudio = (patch: Partial<AudioSettings>) => update((prev) => ({ ...prev, ...patch }));
 
+  /**
+   * 任務判定要用的一切。**每次 render 現算**——任務的達成與否刻意不存進存檔
+   * (見 game/quests.ts 的檔頭:存一份就會跟本尊不同步,而症狀是「任務永遠完成不了」)。
+   */
+  const questCtx: QuestContext = {
+    stage,
+    books: save.books,
+    bestSurvival: save.bestSurvival,
+    collected: collectedCount(decodeCollection(save.collected)),
+    promoted: save.job !== null,
+    counters: save.questCounters,
+  };
+
+  /**
+   * 把一批任務計數器加進存檔。
+   *
+   * 走 `addCounters` 而不是原地 `+= 1`:存檔物件是 React state,原地改的話
+   * 參考沒變,畫面上的任務進度會停在舊值直到別的原因觸發重畫——而任務橫幅
+   * 正好是玩家會盯著看有沒有變的東西。
+   */
+  const bump = (delta: QuestCounters) =>
+    update((prev) => ({ ...prev, questCounters: addCounters(prev.questCounters, delta) }));
+
   /** 技能選完之後:該轉職就先轉職,不然直接回主介面並前進一關。 */
   function afterSkill(nextSkills: SkillState[]) {
     update((prev) => ({ ...prev, skills: nextSkills }));
+    bump({ skillsLearned: 1 });
     setOffers([]);
     const tier = isPromotionStage(stage) ? tierAfter(stage) : null;
     if (tier !== null) setPromotionTier(tier);
@@ -152,30 +194,53 @@ export default function HomeScreen() {
   const [justFound, setJustFound] = useState<number[]>([]);
 
   /**
+   * 剛跑完的單場副本結果。
+   *
+   * **不能沿用 lastResult**:主介面那一行寫的是「{stageLabel(stage - 1)} 通關」,
+   * 而副本通關**不推進 stage**,所以那個算式會少報一關(打贏 1-6 卻寫成「1-5 通關」)。
+   * 副本要講的本來也不是關卡編號,是「拿到什麼」。
+   */
+  const [dungeonNote, setDungeonNote] = useState<string | null>(null);
+
+  /**
    * 一場跑完的掉落:裝備進圖鑑,偶爾掉技能書。
    * **陣亡也掉**(只是少)——完全不掉的話,卡關的人會完全沒有進展,
    * 而圖鑑正是拿來讓卡關的人有事做的。
    */
-  function rollRunDrops(cleared: boolean) {
+  function rollRunDrops(cleared: boolean, runMode: Mode) {
     update((prev) => {
       const bits = decodeCollection(prev.collected);
       const rng = () => Math.random();
-      const found = rollDrops(bits, dropCountForRun(cleared), rng);
+      // 裝備副本就是「掉落量的副本」:它不改難度、不改規則,只把這一項乘上去。
+      // 這是副本之間唯一該有的差別(見 game/dungeons.ts 的鐵則)。
+      const count = runMode === 'armory'
+        ? (cleared ? ARMORY_DROPS : ARMORY_DROPS_FAILED)
+        : dropCountForRun(cleared);
+      const found = rollDrops(bits, count, rng);
       for (const index of found) addItem(bits, index);
       setJustFound(found);
-      const gotBook = cleared && Math.random() < bookDropChance(bits);
+      // 技能書:一般跑圖是機率(圖鑑收越多越高),**技能書副本是保證**——
+      // 那正是它存在的理由,玩家付了入場費就該拿得到,不能再讓他擲一次骰子。
+      const books = runMode === 'grimoire' && cleared
+        ? GRIMOIRE_BOOKS
+        : (cleared && Math.random() < bookDropChance(bits) ? 1 : 0);
       return {
         ...prev,
         collected: encodeCollection(bits),
-        books: gotBook ? Math.min(MAX_SKILL_BOOK_LEVEL, prev.books + 1) : prev.books,
+        books: Math.min(MAX_SKILL_BOOK_LEVEL, prev.books + books),
       };
     });
   }
 
-  function onRunFinish(result: 'cleared' | 'dead', earned: number, waves: number) {
+  function onRunFinish(result: 'cleared' | 'dead', earned: number, waves: number, stats: RunStats) {
     update((prev) => ({ ...prev, coins: prev.coins + earned }));
-    rollRunDrops(result === 'cleared');
-    if (mode === 'survival') {
+    rollRunDrops(result === 'cleared', mode);
+    // 任務計數器。**每一場都記,副本也記**——任務問的是「你做過這件事沒有」,
+    // 而在副本裡吃到的閘門跟在主線吃到的是同一件事。
+    // 魔王只算主線:副本跑的關卡是「目前進度」,而那一關可能剛好是魔王關,
+    // 算進去的話玩家會發現這個任務有時候莫名其妙自己完成了。
+    bump(runCounters(stats, mode === 'normal' && result === 'cleared' && isBossStage(stage)));
+    if (mode === 'endless') {
       setSurvivalCoins((c) => c + earned);
       const totalWaves = survivalWaves + waves;
       setSurvivalWaves(totalWaves);
@@ -193,10 +258,24 @@ export default function HomeScreen() {
       }
       // 過關就直接接下一關,中間不回主介面、不選永久技能、不轉職,**也不停下來等玩家按鈕**
       // (交棒由 LaneRunner 的 HANDOFF_MS 自己觸發)。那三件事都是「整備」,
-      // 而生存模式的核心就是沒有整備的機會。
+      // 而無限副本的核心就是沒有整備的機會。
       setSurvivalStreak((n) => n + 1);
       setSurvivalStage((st) => Math.min(TOTAL_STAGES, st + 1));
       setRunKey((k) => k + 1);
+      return;
+    }
+    // 兩個單場副本:打完就回主介面,**關卡進度一格都不動**。
+    //
+    // 這一條很重要:副本跑的是「目前進度的那一關」,通關了也不能讓 stage +1——
+    // 不然玩家可以靠副本推進主線,而副本的獎勵(技能書、碎片)是為「原地打轉」
+    // 設計的,拿它推進度等於繞過主線的難度曲線。
+    if (mode !== 'normal') {
+      const spec = dungeonSpec(mode);
+      setLastResult(null);
+      setDungeonNote(result === 'cleared'
+        ? `${spec.name}通關 · ${spec.reward}`
+        : `${spec.name}失敗,獎勵少一些`);
+      setScreen('menu');
       return;
     }
     if (result === 'dead') {
@@ -207,6 +286,38 @@ export default function HomeScreen() {
     const next = skillOffers(skills);
     if (next.length > 0) setOffers(next);
     else afterSkill(skills);
+  }
+
+  /**
+   * 進副本。入場費在**進去之前**就扣掉,不是打完才扣。
+   *
+   * 打完才扣的話,陣亡的玩家會在結果卡上同時看到「倒下了」跟「-200 金幣」,
+   * 而那看起來像懲罰(實際上他只是付了門票)。先扣則是一次單純的交易。
+   */
+  function enterDungeon(id: DungeonId) {
+    const cost = dungeonCost(id, stage);
+    update((prev) => ({ ...prev, coins: Math.max(0, prev.coins - cost) }));
+    // 「進過這個副本沒有」是任務要問的事,所以在**進去的那一刻**就記,不是通關才記——
+    // 任務寫的是「進一次」,而玩家第一次進去很可能會死。
+    bump({ [dungeonCounter(id)]: 1 });
+    playSfx('click');
+    setMode(id);
+    setLastResult(null);
+    setDungeonNote(null);
+    if (id === 'endless') {
+      // 這一輪的地圖:**開跑前抽好,整輪不再變**。抽在這一層而不是 LaneRunner 裡,
+      // 因為無限副本一關接一關、LaneRunner 每一關都重新掛載——抽在裡面的話
+      // 每過一關地圖就換一次,而抽籤要給的是「這一輪的身分」不是「這一關的裝飾」。
+      setSurvivalBackdrop(drawBackdrop(null));
+      setMapDrawOpen(true);
+      setSurvivalFrom(stage);
+      setSurvivalStage(stage);
+      setSurvivalStreak(0);
+      setSurvivalWaves(0);
+      setSurvivalCoins(0);
+    }
+    setRunKey((k) => k + 1);
+    setScreen('run');
   }
 
   // 讀存檔是非同步的,讀完之前一律不畫遊戲——先畫 1-1 再跳回真正的進度,
@@ -236,7 +347,7 @@ export default function HomeScreen() {
           previousBest={save.bestSurvival}
           diedAt={survivalStage}
           coins={survivalCoins}
-          onDone={() => { setMode('normal'); setScreen('menu'); }}
+          onDone={() => { setMode('normal'); setDungeonNote(null); setScreen('menu'); }}
         />
       </View>
     );
@@ -275,6 +386,38 @@ export default function HomeScreen() {
     );
   }
 
+  if (screen === 'dungeons') {
+    return (
+      <View style={styles.screen}>
+        <DungeonSelect
+          stage={stage}
+          coins={coins}
+          bestSurvival={save.bestSurvival}
+          onEnter={enterDungeon}
+          onDone={() => setScreen('menu')}
+        />
+      </View>
+    );
+  }
+
+  if (screen === 'quests') {
+    return (
+      <View style={styles.screen}>
+        <Quests
+          views={questViews(questCtx, save.questsClaimed)}
+          onClaim={(id) => {
+            // 領獎要照**當下**的 ctx 算一次,不是信任畫面上那顆按鈕:
+            // 存檔是玩家改得動的,而 claimQuest 對不合法的請求一律回 0(不丟例外)。
+            const got = claimQuest(questCtx, save.questsClaimed, id);
+            if (got.coins <= 0) return;
+            update((prev) => ({ ...prev, coins: prev.coins + got.coins, questsClaimed: got.claimed }));
+          }}
+          onDone={() => setScreen('menu')}
+        />
+      </View>
+    );
+  }
+
   if (screen === 'menu') {
     return (
       <View style={styles.screen}>
@@ -288,30 +431,25 @@ export default function HomeScreen() {
           onStart={() => {
             playSfx('click');
             setMode('normal');
+            setDungeonNote(null);
             setRunKey((k) => k + 1);
             setScreen('run');
           }}
           justFound={justFound}
           audio={audio}
           onChangeAudio={changeAudio}
-          onCodex={() => setScreen('codex')}
-          onSurvival={() => {
-            // 從目前進度的關卡開始:生存模式不是另一條難度曲線,是同一條的「不能失手」版本。
-            playSfx('click');
-            // 這一輪的地圖:**開跑前抽好,整輪不再變**。抽在這一層而不是 LaneRunner 裡,
-            // 因為生存模式一關接一關、LaneRunner 每一關都重新掛載——抽在裡面的話
-            // 每過一關地圖就換一次,而抽籤要給的是「這一輪的身分」不是「這一關的裝飾」。
-            setSurvivalBackdrop(drawBackdrop(null));
-            setMapDrawOpen(true);
-            setMode('survival');
-            setSurvivalFrom(stage);
-            setSurvivalStage(stage);
-            setSurvivalStreak(0);
-            setSurvivalWaves(0);
-            setSurvivalCoins(0);
-            setRunKey((k) => k + 1);
-            setScreen('run');
+          quest={activeQuest(questCtx, save.questsClaimed)}
+          dungeonNote={dungeonNote}
+          // 「開過設定沒」只有主介面這顆齒輪記得住(跑圖裡那顆在 LaneRunner 內部,
+          // 而任務提示指的就是右上角這一顆)。
+          onOpenSettings={() => bump({ settingsOpened: 1 })}
+          onCodex={() => {
+            // 「看過圖鑑沒」是任務要問的事,而圖鑑本身沒有別的地方記得住這件事。
+            bump({ codexViewed: 1 });
+            setScreen('codex');
           }}
+          onQuests={() => { playSfx('click'); setScreen('quests'); }}
+          onDungeons={() => { playSfx('click'); setScreen('dungeons'); }}
         />
       </View>
     );
@@ -320,18 +458,18 @@ export default function HomeScreen() {
   return (
     <View style={styles.screen}>
       <LaneRunner
-        key={`${mode}-${mode === 'survival' ? survivalStage : stage}-${runKey}`}
-        stage={mode === 'survival' ? survivalStage : stage}
+        key={`${mode}-${mode === 'endless' ? survivalStage : stage}-${runKey}`}
+        stage={mode === 'endless' ? survivalStage : stage}
         job={job}
         start={applySkills(runStartFor(job), skills)}
         bookLevel={save.books}
         collection={collectionScales(decodeCollection(save.collected))}
-        survivalWavesBefore={mode === 'survival' ? survivalWaves : null}
+        survivalWavesBefore={mode === 'endless' ? survivalWaves : null}
         audio={audio}
         onChangeAudio={changeAudio}
-        backdropOverride={mode === 'survival' ? survivalBackdrop : null}
+        backdropOverride={mode === 'endless' ? survivalBackdrop : null}
         mapDraw={
-          mode === 'survival' && mapDrawOpen
+          mode === 'endless' && mapDrawOpen
             ? {
                 onRedraw: () => setSurvivalBackdrop((cur) => drawBackdrop(cur)),
                 onDone: () => setMapDrawOpen(false),

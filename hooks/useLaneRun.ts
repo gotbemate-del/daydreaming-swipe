@@ -46,13 +46,17 @@ import {
   type RunState,
   type WaveMonster,
   type WaveSpecies,
+  runSkillPicksForStage,
+  isTrapGate,
+  MISS_MESSAGE,
 } from '../game/laneRun';
 import {
-  applyRunSkillPick, ELEMENT_COUNTERS, isElement, learnRunSkill, runSkillEffects, runSkillOffersAt, runSkillPicksForWave,
+  applyRunSkillPick, ELEMENT_COUNTERS, isElement, learnRunSkill, runSkillEffects, runSkillOffersAt,
   runSkillSpec, hasCooldown, skillCooldownSeconds, FREEZE_MS, BURN_DPS_RATIO, BURN_DURATION_MS,
   type CollectionScales,
   type RunSkillState, type RunSkillId, type RunSkillEffects, type ActiveTrigger,
 } from '../game/laneRunSkills';
+import type { RunStats } from '../game/quests';
 
 const TICK_MS = 33; // ~30fps
 
@@ -221,6 +225,14 @@ export interface LaneRunView {
   rows: RunRow[];
   /** 這一場路上的石頭。撞到掉人,但站哪裡都能閃(見 laneRun 的 createRocks)。 */
   rocks: RunRock[];
+  /**
+   * 這一場的任務統計快照(吃了幾個好閘門、漏接幾次…)。
+   *
+   * 做成**函式**而不是欄位:統計放在 ref 裡(它一格都不影響畫面),而 ref 的變動
+   * 不會觸發重畫,所以直接當欄位掛出去的話,拿到的永遠是第一次 render 那一刻的值。
+   * 只有跑完那一刻要讀它,函式剛好對得上這個用法。
+   */
+  readStats: () => RunStats;
   state: RunState;
   /** 已跑距離 */
   distance: number;
@@ -395,6 +407,12 @@ export function useLaneRun(
   const passedRef = useRef<Set<number>>(new Set());
   // 已經跑過的石頭(不管撞到沒撞到)。同一顆只判定一次。
   const passedRocksRef = useRef<Set<number>>(new Set());
+  /**
+   * 這一場的任務統計。**放在 ref 不放 state**:它一格都不影響畫面,放進 state 的話
+   * 每吃一個閘門就多一次重畫,而跑圖已經是 30fps 在重畫的東西了。
+   * 讀它的只有跑完那一刻的 `readStats()`。
+   */
+  const statsRef = useRef<RunStats>({ goodGates: 0, misses: 0, runSkillPicks: 0, rocksDodged: 0 });
   const feedbackKeyRef = useRef(0);
   // 戰鬥演出要讀當下的攻擊力(波次中途吃到 x2 閘門,打得掉的隻數要立刻跟著變),
   // 但它跑在 setInterval 裡,閉包抓到的會是舊的 state,所以另外鏡射一份。
@@ -697,7 +715,11 @@ export function useLaneRun(
       if (passedRocksRef.current.has(rock.index)) continue;
       passedRocksRef.current.add(rock.index);
       if (rock.distance <= from) continue; // 起跑前就在身後(防呆,正常不會發生)
-      if (!hitsRock(offsetRef.current, rock)) continue;
+      if (!hitsRock(offsetRef.current, rock)) {
+        // 閃掉了。任務要數的是「閃過幾顆」而不是「路上有幾顆」——後者跟玩家的操作無關。
+        statsRef.current.rocksDodged += 1;
+        continue;
+      }
       // stateRef 同步更新:同一格裡戰鬥演出會讀它算「打得掉幾隻」,
       // 撞掉的人必須立刻反映進去,不然這一格的擊殺數是用撞之前的戰力算的。
       const r = applyRockHit(stateRef.current);
@@ -1023,6 +1045,7 @@ export function useLaneRun(
 
   /** 選了一個。還有欠的就繼續開下一個選單,欠完了才放行。 */
   const chooseRunSkill = useCallback((choice: RunSkillState) => {
+    statsRef.current.runSkillPicks += 1;
     setRunSkills((prev) => {
       const next = learnRunSkill(prev, choice);
       // 效果在選中的當下就結算進 RunState,不做「每次讀取再乘一次」。
@@ -1076,6 +1099,13 @@ export function useLaneRun(
           }
         }
         const r = resolveRow(landed, due, offsetRef.current, boost);
+        // 任務統計。判斷用的是**這一排實際落在腳下的那個節點**,不是 r.message ——
+        // 訊息是給玩家看的字串,哪天改一個字任務就會靜靜地停止計數。
+        const landedNode = due.nodes.find((n) => n.lane === landed.lane);
+        if (landedNode?.kind === 'gate' && landedNode.gate) {
+          if (r.message === MISS_MESSAGE) statsRef.current.misses += 1;
+          else if (!isTrapGate(landedNode.gate)) statsRef.current.goodGates += 1;
+        }
         // 記帳:失去的人累加起來給木・再生當上限;復活用掉就記起來(一場一次)。
         if (r.heroDelta < 0) lostSoFarRef.current += -r.heroDelta;
         feedbackKeyRef.current += 1;
@@ -1092,7 +1122,7 @@ export function useLaneRun(
       if (isEnemyRowIndex(due.index, stage)) {
         const waveIndex = clearedWavesRef.current;
         clearedWavesRef.current += 1;
-        const picks = runSkillPicksForWave(waveIndex, totalWaves);
+        const picks = runSkillPicksForStage(stage, waveIndex, totalWaves);
         if (picks > 0) {
           const offers = runSkillOffersAt(runSkills, seed, skillOrdinalRef.current, activeSkillCountForStage(stage));
           skillOrdinalRef.current += 1;
@@ -1129,9 +1159,16 @@ export function useLaneRun(
 
   const upcoming = rows.filter((r) => !passedRef.current.has(r.index));
 
+  /**
+   * 這一場的任務統計快照。**回傳複本**:呼叫端拿到的東西會被寫進存檔,
+   * 交出 ref 本身的話,下一場的計數會直接改到已經存下去的那一份。
+   */
+  const readStats = useCallback((): RunStats => ({ ...statsRef.current }), []);
+
   return {
     rows,
     rocks,
+    readStats,
     state,
     distance,
     heroOffset,

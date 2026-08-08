@@ -37,6 +37,8 @@ import {
   HIT_NUMBER_MS, ELEMENT_FX_MS, FEEDBACK_MS, useLaneRun,
   type CarriedSkill, type ElementEvent, type HitNumber, type Projectile, type WaveView,
 } from '../hooks/useLaneRun';
+import type { RunStats } from '../game/quests';
+import { tutorialRulesFor } from '../game/laneTutorial';
 import { PixelFrame } from './PixelFrame';
 import {
   heroBoxHeight, heroForm, squadForms, monsterArt, weaponArt, jobHeroArt, ROCK_ART,
@@ -146,6 +148,18 @@ const MAX_DRAWN_MONSTERS = 64;
  * 太長就變成「還是有中斷」,而不中斷正是生存模式改版的重點。
  */
 const HANDOFF_MS = 900;
+/**
+ * 教學提示在跑道上留多久。
+ *
+ * 4.5 秒是「讀得完一句話」與「第一排閘門進視野之前」的交界:第 1 關的
+ * LEAD_IN_DISTANCE 加上第一段戰鬥段,大約 6 秒才會有東西要決定。留得再久就會變成
+ * 跟閘門搶注意力,而這款一排只有一兩秒可以決定。
+ *
+ * **一定要用 setTimeout 真的把它關掉,不能在畫的時候算「過了幾毫秒」。**
+ * 後者只在重畫的時候才跑,而跑圖一停(打開設定面板、挑技能)tick 就停了,
+ * 提示會凍在畫面上——這個專案在回饋文字上踩過一模一樣的坑(見 CLAUDE.md)。
+ */
+const TUTORIAL_TIP_MS = 4500;
 
 /** 凍住的怪疊什麼顏色。跟 artAssets 的冰屬性同色系,但更亮——它要蓋過原本的屬性染色。 */
 const FROST_COLOR = '#9fd8e8';
@@ -268,7 +282,7 @@ interface Props {
    * waves 是這一關實際打完幾波——生存模式的分數是**累計波數**,而死在第 3 波跟
    * 死在第 9 波差很多,只回傳「過了沒」會把那個差別整個丟掉。
    */
-  onFinish: (result: 'cleared' | 'dead', coins: number, waves: number) => void;
+  onFinish: (result: 'cleared' | 'dead', coins: number, waves: number, stats: RunStats) => void;
 }
 
 export function LaneRunner({
@@ -283,17 +297,34 @@ export function LaneRunner({
    * **先讓畫面別動**。所以齒輪＝暫停鈕,面板標題也直接寫「已暫停」。
    */
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /**
+   * 教學關開跑時浮的那一句(1-1 ~ 1-5 才有)。自己收掉,不等玩家關。
+   *
+   * 主介面那一列講的是「這一關要學什麼」(開跑前讀),這裡講的是**當下要做什麼**,
+   * 所以刻意寫得更短——玩家已經在跑了,長句子讀不完。
+   */
+  const tutorial = tutorialRulesFor(stage);
+  const [tipVisible, setTipVisible] = useState(tutorial !== null);
   // 抽地圖的面板也要停:它蓋在跑道上面,不停的話玩家在讀地圖名稱的那幾秒會漏掉第一排閘門。
   const drawing = mapDraw !== null;
   const run = useLaneRun(stage, start, bookLevel, collection, settingsOpen || drawing);
   const {
-    state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers, rocks,
+    state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers, rocks, readStats,
     lastShotAt, lastShotId, feedback, steer, dragTo,
     runSkills, skillOffers, pendingPicks, chooseRunSkill, lastStrike, upcomingElements,
     enemyShots, lastHazardAt, enemyThrowAt, waveNumber, totalWaves,
     elementEvents, carriedSkills,
   } = run;
   const attack = totalAttack(state);
+
+  // 教學提示自己收掉。**用真的計時器**,不是在畫的時候算過了幾毫秒——
+  // 後者在跑圖暫停(設定面板、挑技能)的時候會凍住,提示就再也不會消失。
+  useEffect(() => {
+    if (tutorial === null) return;
+    const id = setTimeout(() => setTipVisible(false), TUTORIAL_TIP_MS);
+    return () => clearTimeout(id);
+  }, [tutorial]);
+
   /** 生存模式:一條連續的跑圖,通關不停下來等玩家按鈕。 */
   const continuous = survivalWavesBefore !== null;
 
@@ -321,7 +352,7 @@ export function LaneRunner({
   }, [state.phase]);
   useEffect(() => {
     if (!continuous || state.phase !== 'cleared') return;
-    const id = setTimeout(() => finishRef.current('cleared', state.coins, totalWaves), HANDOFF_MS);
+    const id = setTimeout(() => finishRef.current('cleared', state.coins, totalWaves, readStats()), HANDOFF_MS);
     return () => clearTimeout(id);
   }, [continuous, state.phase, state.coins]);
 
@@ -1146,11 +1177,20 @@ export function LaneRunner({
                   state.phase === 'cleared' ? 'cleared' : 'dead',
                   state.coins,
                   state.phase === 'cleared' ? totalWaves : waveNumber,
+                  readStats(),
                 )}
               >
                 <Text style={styles.againLabel}>{state.phase === 'cleared' ? '繼續' : '回主介面'}</Text>
               </Pressable>
             </PixelFrame>
+          </View>
+        )}
+
+        {/* 教學提示。畫在跑道**下半部**(勇者頭頂上方一段),不畫在上緣:
+            上緣是閘門與怪進場的地方,提示擺在那裡會蓋掉玩家最需要提早看到的東西。 */}
+        {tutorial !== null && tipVisible && (
+          <View pointerEvents="none" style={styles.tutorialTip}>
+            <Text style={styles.tutorialTipText}>{tutorial.tip}</Text>
           </View>
         )}
 
@@ -1201,7 +1241,16 @@ export function LaneRunner({
       */}
       <View style={styles.skillBar}>
         {carriedSkills.length === 0
-          ? <Text style={styles.skillBarEmpty}>打完一波就能挑技能</Text>
+          // 教學關的前兩關**根本不給場內技能**(見 game/laneTutorial.ts),
+          // 那兩關寫「打完一波就能挑技能」是騙人的——玩家會一路等到終點都等不到面板,
+          // 然後合理地認為這個功能壞了。空欄位的文字必須跟這一關實際的規則一致。
+          ? (
+            <Text style={styles.skillBarEmpty}>
+              {tutorial !== null && !tutorial.runSkills
+                ? '這一關沒有場內技能 —— 專心看閘門'
+                : '打完一波就能挑技能'}
+            </Text>
+          )
           : carriedSkills.map(renderSkillSlot)}
       </View>
 
@@ -1286,6 +1335,24 @@ const styles = StyleSheet.create({
   },
   progressTrack: { height: 4, borderRadius: 2, backgroundColor: '#2a2a35', overflow: 'hidden' },
   progressFill: { height: '100%', backgroundColor: '#e0a95c' },
+  // 教學提示。絕對定位在跑道底部往上一段,寬度自己撐開但兩側留白,
+  // 免得長句在 375 寬的手機上貼到邊緣。
+  tutorialTip: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    bottom: 128,
+    zIndex: 30,
+    backgroundColor: 'rgba(42,42,53,0.92)',
+    borderWidth: 1,
+    borderColor: '#e0a95c',
+    borderRadius: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+  },
+  tutorialTipText: { color: '#f2f2f2', fontSize: 13, fontWeight: '600', textAlign: 'center' },
+
   alertRow: { height: 16, alignItems: 'center', justifyContent: 'center' },
   alertText: { color: '#e05050', fontSize: 12, fontWeight: '700' },
   track: {

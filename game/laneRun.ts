@@ -24,6 +24,9 @@ import {
 } from './laneRunSkills';
 import type { JobTier } from './combat';
 import type { Rarity } from './trigger';
+// 教學關(1-1 ~ 1-5)逐關開放機制。**單向依賴**:laneTutorial 不准 import 這個檔,
+// 不然就是循環相依(laneJobs 那邊踩過同一個坑)。
+import { tutorialRulesFor } from './laneTutorial';
 
 // 兩條跑道。三條的時候「中間」是個安全的預設位置,玩家不動也常常沒事;兩條沒有中立選項,
 // 每一排都是二選一,一定要表態——這才是短影音廣告裡那種節奏。
@@ -445,6 +448,10 @@ const TRAP_HALVE_WEIGHT_MAX = 0.80;
  * 就等於把「踩錯一格」的代價往上推,而**完全不踩錯的人一點感覺都沒有**。
  */
 export function trapHalveWeightForStage(stage: number): number {
+  // 教學關要等 1-5 才放腰斬。前面幾關的陷阱一律是「扣掉一個固定的量」——
+  // 玩家看得到自己少了幾個人,而腰斬是**比例**,同一個框在不同時間的痛感完全不同,
+  // 那要先有「人數會滾雪球」的體感才讀得懂。
+  if (tutorialRulesFor(stage)?.halveTrap === false) return 0;
   const t = Math.min(1, Math.max(0, (stage - TRAP_HARSH_FROM) / (TRAP_HARSH_TO - TRAP_HARSH_FROM)));
   return TRAP_HALVE_WEIGHT + t * (TRAP_HALVE_WEIGHT_MAX - TRAP_HALVE_WEIGHT);
 }
@@ -618,8 +625,17 @@ export function levelOfStage(stage: number): number {
 export function stageLabel(stage: number): string {
   return `${chapterOfStage(stage)}-${levelOfStage(stage)}`;
 }
-/** 這一小關有幾波敵人。 */
+/**
+ * 這一小關有幾波敵人。
+ *
+ * 教學關(1-1 ~ 1-4)自己帶波數(5/6/8/10),因為它們身上的機制比較少——
+ * 只有閘門的那一關拿 10 波去跑等於讓玩家在學會之後再等兩分鐘(見 laneTutorial 的檔頭)。
+ * 關卡長度會跟著波數走而不是被拉平,那是 targetSecondsForStage 在管的事。
+ * 1-5 照通則走 20 波(編號是 5 的倍數),它是畢業考也是第一個加倍長的小關。
+ */
 export function wavesForStage(stage: number): number {
+  const tutorial = tutorialRulesFor(stage);
+  if (tutorial !== null) return tutorial.waves;
   return levelOfStage(stage) % 5 === 0 ? LONG_LEVEL_WAVES : WAVES_PER_LEVEL;
 }
 /**
@@ -657,9 +673,24 @@ export const LONG_ENEMY_EVERY = 2;
  *
  * 用秒回推距離而不是寫死距離:跑速從 45 爬到 111,寫死的話後期小關會只剩一分半。
  */
+/**
+ * 這一小關要跑幾秒。
+ *
+ * 通則是「一般 180 秒、加倍長的 360 秒」,而**教學關按波數等比縮短**:
+ * 波數是它們唯一縮短的東西,秒數不跟著縮的話,5 波的 1-1 會把每一波的戰鬥段
+ * 拉長成 36 秒——關卡總長沒變,只是怪衝過來的路變兩倍遠,那比原本更難熬。
+ * 照波數等比之後每一波仍然是約 18 秒(跟正式關卡同一個節奏),
+ * 短的是**關卡**不是**節奏**,所以玩家在 1-1 學到的手感在 1-6 照樣適用。
+ */
+export function targetSecondsForStage(stage: number): number {
+  const waves = wavesForStage(stage);
+  if (tutorialRulesFor(stage) !== null) return (TARGET_LEVEL_SECONDS * waves) / WAVES_PER_LEVEL;
+  return TARGET_LEVEL_SECONDS * (waves === LONG_LEVEL_WAVES ? 2 : 1);
+}
+
 export function battleSecondsPerWave(stage: number): number {
   const waves = wavesForStage(stage);
-  const target = TARGET_LEVEL_SECONDS * (waves === LONG_LEVEL_WAVES ? 2 : 1);
+  const target = targetSecondsForStage(stage);
   // **一個波週期就是整段戰鬥段。** 閘門排現在夾在戰鬥段裡面(見 rowDistances),
   // 不再另外佔一段時間,所以不用再扣 gateSeconds。
   return Math.max(2, target / waves);
@@ -814,6 +845,11 @@ export const EASY_RATIO = 0.18;
 export const LONG_LEVEL_RATIO_SCALE = 1;
 
 export function enemyPowerRatioForStage(stage: number): number {
+  // 教學關自己指定容錯係數,不走下面那條斜坡。斜坡是照**小關編號**內插的,
+  // 它假設每一關一樣長;而 1-5 是加倍長的小關,失誤複利之後同樣的係數會硬得多
+  // (實測 90% 準確率只剩 29% 過關,跟大魔王關差不多)。見 laneTutorial 的 enemyPowerRatio。
+  const tutorial = tutorialRulesFor(stage);
+  if (tutorial !== null) return tutorial.enemyPowerRatio;
   const long = wavesForStage(stage) === LONG_LEVEL_WAVES ? LONG_LEVEL_RATIO_SCALE : 1;
   const chapter = chapterOfStage(stage);
   if (chapter > 1) return ENEMY_POWER_RATIO * long;
@@ -857,6 +893,9 @@ export const DOUBLE_GATES_PER_RUN = 2;
 const DOUBLE_GATE_RATE = DOUBLE_GATES_PER_RUN / (WAVES_PER_LEVEL * (ENEMY_EVERY - 1));
 
 export function doubleGatesForStage(stage: number): number {
+  // 教學關要等 1-5 才放爆發格:它是「這一格特別好」而不是一條新規則,
+  // 而在還沒學會比較兩格好壞之前,一個特別好的格子只是又一種看不懂的東西。
+  if (tutorialRulesFor(stage)?.doubleGates === false) return 0;
   const totalGates = rowsForStage(stage) - wavesForStage(stage);
   return Math.max(1, Math.round(totalGates * DOUBLE_GATE_RATE));
 }
@@ -922,8 +961,13 @@ export function goodGateGrowthAt(gates: number): number {
   return (b.heroes * b.perHero) / (a.heroes * a.perHero);
 }
 
-function pickGoodGate(rng: () => number, gateDepth: number, isDouble: boolean): GateEffect {
+function pickGoodGate(
+  rng: () => number, gateDepth: number, isDouble: boolean, gearGates: boolean,
+): GateEffect {
   if (isDouble) return { stat: 'heroes', op: 'mul', value: 2 };
+  // 1-1 的兩格永遠是「數量 +N」對「數量 -N」。好壞一眼看得出來,所以那一關練的是**手**
+  // (真的把史萊姆拉到那一格上面),不是判斷;判斷要等 1-2 裝備閘門登場才有得比。
+  if (!gearGates) return { stat: 'heroes', op: 'add', value: idealStep(gateDepth).addN };
   const roll = rng() * (GATE_WEIGHT_ADD + GATE_WEIGHT_GEAR);
   if (roll < GATE_WEIGHT_ADD) return { stat: 'heroes', op: 'add', value: idealStep(gateDepth).addN };
   return { stat: 'gear', op: 'add', value: 1 };
@@ -943,7 +987,9 @@ function pickDoubleGateDepths(rng: () => number, totalGates: number, wanted: num
 }
 
 function makeGateRow(rng: () => number, stage: number, gateDepth: number, isDouble: boolean): RunNode[] {
-  const good: GateEffect = pickGoodGate(rng, gateDepth, isDouble);
+  // 教學關的閘門種類是逐關開放的(見 game/laneTutorial.ts)。不是教學關就全開。
+  const gearGates = tutorialRulesFor(stage)?.gearGates ?? true;
+  const good: GateEffect = pickGoodGate(rng, gateDepth, isDouble, gearGates);
   const badRoll = rng();
   // 三種陷阱的痛法不一樣:x0.5 是一次腰斬(最痛)、裝備損壞打的是每人攻擊力、
   // 勇者 -N 是固定值(前期很痛、後期是零頭,自帶追趕)。舊版第三種是「血量 -30」,
@@ -951,7 +997,9 @@ function makeGateRow(rng: () => number, stage: number, gateDepth: number, isDoub
   // 最痛的那一種(腰斬)的比重隨關卡往上推,見 trapHalveWeightForStage。
   // 另外兩種按原本的比例分掉剩下的,所以三種都不會消失。
   const halve = trapHalveWeightForStage(stage);
-  const gearShare = (1 - halve) * 0.55;
+  // 裝備閘門還沒登場的那一關(1-1),陷阱側也不能出現「裝備損壞」——
+  // 玩家會被扣掉一個他還不知道存在的東西,那比扣人更難讀。
+  const gearShare = gearGates ? (1 - halve) * 0.55 : 0;
   const bad: GateEffect =
     badRoll < halve
       ? { stat: 'heroes', op: 'mul', value: 0.5 }
@@ -1310,6 +1358,9 @@ const ROCK_OFFSET_MAX = 0.84;
  * 顆數不跟著加的話密度就砍半,玩家在長關幾乎遇不到——「大約 2~3 顆」講的是密度不是總數。
  */
 export function rocksForStage(stage: number, rng: () => number): number {
+  // 石頭要等 1-4 才登場(見 game/laneTutorial.ts)。它跟閘門是相反的操作——
+  // 閘門要踩上去、石頭要避開——同時學兩種相反的規則正是新手最容易搞混的地方。
+  if (tutorialRulesFor(stage)?.rocks === false) return 0;
   const span = ROCKS_PER_RUN_MAX - ROCKS_PER_RUN_MIN;
   const base = ROCKS_PER_RUN_MIN + Math.round(rng() * span);
   const scale = wavesForStage(stage) / WAVES_PER_LEVEL;
@@ -1403,6 +1454,9 @@ export function applyRockHit(state: RunState): RowResolution {
  * 所以牠會在畫面上待很久——玩家有時間看清楚、有時間決定要不要硬吃。
  */
 export function isEliteRow(stage: number, rowIndex: number): boolean {
+  // 精英要等 1-5 才登場。牠是「同樣一波戰力壓縮成少少幾隻」,而那個對比要先看過
+  // 幾波正常的小怪才成立——第一次玩的人分不出「這波怪比較少」跟「這波比較弱」。
+  if (tutorialRulesFor(stage)?.elites === false) return false;
   if (!isEnemyRowIndex(rowIndex, stage) || isBossRow(stage, rowIndex)) return false;
   const waveIndex = Math.floor(rowIndex / enemyEveryForStage(stage));
   return waveIndex === Math.floor(wavesForStage(stage) / 2) - 1;
@@ -1493,6 +1547,8 @@ export function heroWaveEveryForStage(stage: number): number {
 
 /** 這一排是不是勇者波(精英與魔王優先,不重疊)。 */
 export function isHeroWaveRow(stage: number, rowIndex: number): boolean {
+  // 勇者波要等 1-4 才登場,跟石頭同一關——兩個教的是同一件事(閃開,不是選擇)。
+  if (tutorialRulesFor(stage)?.heroWaves === false) return false;
   if (!isEnemyRowIndex(rowIndex, stage) || isEliteRow(stage, rowIndex) || isBossRow(stage, rowIndex)) return false;
   const waveIndex = Math.floor(rowIndex / enemyEveryForStage(stage));
   return waveIndex > 0 && waveIndex % heroWaveEveryForStage(stage) === 0;
@@ -1693,6 +1749,23 @@ function makeEnemyRow(
  * 模擬用的是不含轉職/技能加成的基準值(baseAttackForStage),所以養成不會把敵人一起養大——
  * 用玩家的實際起跑值去算的話,轉職越高敵人越強,養成就完全白做了。
  */
+/**
+ * 這一關打完第 waveIndex 波之後給幾次場內技能選擇。
+ *
+ * 通則在 `runSkillPicksForWave`(laneRunSkills),這裡只多做一件事:
+ * **教學關的前兩關完全不給**(1-1、1-2 專心學拖曳與閘門)。
+ *
+ * ⚠ 這一支是**唯一**的入口:`createRun` 的理想路線、`hooks/useLaneRun` 的玩家側、
+ * `scripts/simRun.ts` 的模擬器三邊都要走它。少改一邊的後果不是「那一邊少了技能」,
+ * 而是**兩側的曲線岔開**——敵人照含技能的最佳路線算、玩家卻拿不到技能,
+ * 症狀會是「這關特別難」而不是「技能不見了」,查起來完全不像漏改了一行
+ * (CLAUDE.md 的「兩側必須同時算」記過兩次,這是第三次)。
+ */
+export function runSkillPicksForStage(stage: number, waveIndex: number, totalWaves: number): number {
+  if (tutorialRulesFor(stage)?.runSkills === false) return 0;
+  return runSkillPicksForWave(waveIndex, totalWaves);
+}
+
 export function createRun(seed: number, stage: number): RunRow[] {
   const rng = createRng(seed);
   // 挑怪物造型用獨立的亂數流。混用同一條的話,加一次抽選就會把後面所有閘門的內容整個位移,
@@ -1732,7 +1805,7 @@ export function createRun(seed: number, stage: number): RunRow[] {
       // 這一波之後玩家會拿到幾次選擇,理想路線照「每次都挑最能加戰力的」同步吃下去。
       // 人數與每人攻擊力分開乘,不是通通乘在戰力上:「勇者 +N」是固定值,
       // 人數被增殖拉高之後,後面每一格 +N 相對就變小了——合成一個數字會漏掉這層互動。
-      const picks = runSkillPicksForWave(waveIndex, totalWaves);
+      const picks = runSkillPicksForStage(stage, waveIndex, totalWaves);
       for (let k = 0; k < picks; k++) {
         const offers = runSkillOffersAt(idealSkills, seed, skillOrdinal, activeSkillCountForStage(stage));
         skillOrdinal += 1;

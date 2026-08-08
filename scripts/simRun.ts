@@ -8,10 +8,11 @@
 import {
   applyRockHit, bestLane, createRocks, createRun, initialRunState, isEnemyRowIndex, LANE_COUNT,
   laneCenterOffset, resolveRow, wavesForStage, worstLane, activeSkillCountForStage,
+  runSkillPicksForStage,
   type Lane, type RunRow, type RunStart, type RunState,
 } from '../game/laneRun';
 import {
-  applyRunSkillPick, bestRunSkillChoice, learnRunSkill, runSkillOffersAt, runSkillPicksForWave,
+  applyRunSkillPick, bestRunSkillChoice, learnRunSkill, runSkillOffersAt,
   type RunSkillState,
 } from '../game/laneRunSkills';
 
@@ -120,7 +121,7 @@ export function simulateRun(
     }
     // 打完一波就給技能,規則跟遊戲裡一模一樣。
     if (isEnemyRowIndex(row.index, stage)) {
-      const picks = runSkillPicksForWave(waveIndex, totalWaves);
+      const picks = runSkillPicksForStage(stage, waveIndex, totalWaves);
       waveIndex += 1;
       for (let k = 0; k < picks; k++) {
         // 選項綁 seed:createRun 的理想路線重播的是同一串,兩邊才對得起來。
