@@ -939,13 +939,9 @@ export function LaneRunner({
             蓋在跑道上而不是換一個畫面:玩家還看得到自己剛打完的那一波與現在的戰力,
             「這一場我缺什麼」才判斷得出來——切到獨立畫面就只剩三個抽象的名詞。 */}
         {skillOffers.length > 0 && state.phase === 'running' && (
-          // **跑圖沒有停**,所以這一層一定要 box-none:整片攔截觸控的話,面板開著的
-          // 那幾秒玩家就拖不動勇者了,而怪還在衝過來——那比暫停更糟。
-          // 只有三顆選項本身吃觸控,其餘位置照樣可以拖。
-          // 靠上放:下半部要留給勇者與正在逼近的東西,那是玩家真正在看的地方。
-          <View style={styles.skillOverlay} pointerEvents="box-none">
+          <View style={styles.resultOverlay}>
             <PixelFrame style={styles.resultCard}>
-              <Text style={styles.skillTitle}>清空一波!挑一個(跑圖繼續)</Text>
+              <Text style={styles.skillTitle}>清空一波!挑一個</Text>
               <Text style={styles.resultSummary}>
                 勇者 {compact(state.heroes)} · 戰力 {compact(attack)}
                 {pendingPicks > 1 ? ` · 還可以挑 ${pendingPicks} 個` : ''}
@@ -1203,15 +1199,6 @@ const styles = StyleSheet.create({
   feedbackGood: { color: '#5ec26a' },
   feedbackMiss: { color: '#8a8a95' },
   feedbackBad: { color: '#e05050' },
-  // 挑技能的浮層:靠上、不壓暗底下的畫面(跑圖還在跑,底下就是玩家要看的東西)。
-  skillOverlay: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: 8,
-    alignItems: 'center',
-    zIndex: 50,
-  },
   resultOverlay: {
     position: 'absolute',
     left: 0,

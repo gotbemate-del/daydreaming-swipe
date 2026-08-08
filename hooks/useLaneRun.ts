@@ -416,15 +416,12 @@ export function useLaneRun(
   const [lastStrike, setLastStrike] = useState<{ at: number; names: string[]; kills: number } | null>(null);
 
   /**
-   * 挑技能的時候**跑圖不停**。
+   * 挑技能的時候**跑圖暫停**。
    *
-   * 舊版是「開面板 = 暫停」,所以一場切成「打怪 / 選技能」兩段,玩家的原話是
-   * 「好像是在選技能而不是在玩遊戲」。現在兩件事交錯進行:面板浮在跑道上,
-   * 底下的怪照樣衝過來、閘門照樣要選——挑技能本身變成一個要在跑動中完成的動作。
-   *
-   * 這個旗標留著只是為了「已經沒得挑就別開空面板」,不再拿來停 interval。
+   * 中間試過不暫停(面板浮在跑道上、底下照樣跑),但那樣要同時做三件事:
+   * 讀三個選項、閃迎面而來的怪、還要選閘門。翻回暫停。
    */
-  const paused = false;
+  const paused = skillOffers.length > 0;
 
   /**
    * 前方**完全沒東西**的時候會不會加速趕路。
