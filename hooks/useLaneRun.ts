@@ -816,7 +816,12 @@ export function useLaneRun(
    * 戰力 + burnKills/chainRatio/pierceRatio,由 laneRun 的 extraKills 統一算。
    * 兩件事分開才不會「火燒得更漂亮 = 難度悄悄降了」。
    */
-  function applyOnHit(current: WaveRuntime, i: number, now: number, fx: RunSkillEffects, depth = 0) {
+  function applyOnHit(
+    current: WaveRuntime, i: number, now: number, fx: RunSkillEffects,
+    /** 打傷一隻。由 stepWave 傳進來——擊殺上限擋在那一支裡面(見它的說明)。 */
+    damage: (index: number, amount: number) => void,
+    depth = 0,
+  ) {
     // 冰・凍結:凍住的那一隻停在畫面上原地(見 WaveView.frozen)。
     if (fx.freezeChance > 0 && procRoll(current.rowIndex, i, current.hitCount + depth) < fx.freezeChance) {
       current.frozenUntil[i] = now + FREEZE_MS;
@@ -855,9 +860,9 @@ export function useLaneRun(
       let spread = 0;
       for (let j = i + 1; j < current.monsters.length && spread < fx.metalSpread; j++) {
         if (current.hitsOn[j] >= current.hitsPerUnit) continue;
-        current.hitsOn[j] += fx.metalSpreadDamage;
+        damage(j, fx.metalSpreadDamage);
         pushElementEvent('spread', j, now, i);
-        applyOnHit(current, j, now, fx, depth + 1);
+        applyOnHit(current, j, now, fx, damage, depth + 1);
         spread += 1;
       }
     }
@@ -868,10 +873,10 @@ export function useLaneRun(
       let from = i;
       for (let j = i + 1; j < current.monsters.length && hit < fx.chainTargets; j++) {
         if (current.hitsOn[j] >= current.hitsPerUnit) continue;
-        current.hitsOn[j] += 1;
+        damage(j, 1);
         pushElementEvent('chain', j, now, from);
         // 交互:電到的那一隻再吃一次燃燒擴散與凍結判定。
-        applyOnHit(current, j, now, fx, depth + 1);
+        applyOnHit(current, j, now, fx, damage, depth + 1);
         from = j;
         hit += 1;
       }
@@ -1004,18 +1009,6 @@ export function useLaneRun(
       }
     }
 
-    // 火・燃燒的持續傷害:每個 tick 把「這段時間燒掉的血」加進去。
-    // 5%/秒 表示光靠燒要 20 秒才燒得死一隻,而一整波只有 13~17 秒——所以它永遠不會
-    // 自己收掉一隻,只會把血條磨掉一截(那正是它跟雷疊起來也不會爆掉的原因)。
-    if (current.burningUntil.some((t) => t > now)) {
-      const tick = (BURN_DPS_RATIO * current.hitsPerUnit * TICK_MS) / 1000;
-      for (let i = 0; i < current.monsters.length; i++) {
-        if (current.burningUntil[i] > now) {
-          current.hitsOn[i] = Math.min(current.hitsPerUnit, current.hitsOn[i] + tick);
-        }
-      }
-    }
-
     // 打得掉幾隻每個 tick 重算:波次中途吃到閘門,攻擊力一變,能清掉的隻數就跟著變。
     // 前 kills 隻是「打得倒的」,後面那幾隻挨再多下也不會倒——那就是戰力壓不過的部分。
     // **額外擊殺走 laneRun 的 extraKills**,跟這一排結算用的是同一支函式:
@@ -1031,11 +1024,52 @@ export function useLaneRun(
     );
     // 打得倒的是「覆蓋到的那幾隻裡最前面的 kills 隻」,所以要照覆蓋順序判斷,
     // 不能用索引大小——沒被覆蓋的那幾隻夾在中間的話,索引比較不成立。
-    // 「這一隻**注定會倒**」——戰力算得掉它,只是可能還沒挨滿刀。
-    // 技能收掉的那幾隻一律算「注定會倒」(牠們的血量已經滿了),其餘照覆蓋順序取前 kills 隻。
+    // 技能收掉的那幾隻一律算「注定會倒」(牠們的血量已經滿了)。
     const willDie = (i: number) => current!.slain.has(i)
       || (current!.covered.has(i) && [...current!.covered].filter((k) => k < i).length < kills);
-    const isDown = (i: number) => willDie(i) && current!.hitsOn[i] >= current!.hitsPerUnit;
+    /**
+     * **血條滿了就是倒了,不再多一個「注定會倒」的條件。**
+     *
+     * 舊版是 `willDie(i) && 血滿`,於是打不倒的那幾隻會停在**滿血但還站著**的狀態:
+     * 玩家看著自己一直丟、血條早就滿了、怪卻一隻都沒少(使用者回報的「凍結後殺不死」
+     * 就是這個畫面——凍住只是讓牠們停在原地不再往前,把這件事變得明顯)。
+     *
+     * 擊殺總數仍然完全等於公式:上限搬到**傷害那一端**(見下面的 damage)。
+     * 同一個上限,症狀從「滿血的怪站著」變成「後面那幾下打不進去」——後者玩家讀得懂,
+     * 因為血條停在那裡就是「你的戰力只夠打到這裡」。
+     */
+    const isDown = (i: number) => current!.hitsOn[i] >= current!.hitsPerUnit;
+    // 這一波已經倒下幾隻。**每個 tick 只數一次**,之後靠 damage 自己累加——
+    // 一波最多 400 隻,而一個 tick 可能打進幾十下,每一下都重數一遍就是上萬次比較。
+    let downSoFar = current.hitsOn.reduce((n, h) => (h >= current!.hitsPerUnit ? n + 1 : n), 0);
+    /**
+     * 打傷一隻。**所有傷害來源都走這一支**(武器、燃燒、金的擴散、雷的連鎖)。
+     *
+     * 各走各的話會出現「武器打不動但燒得死」——而燃燒本來就不該自己收掉任何一隻
+     *(BURN_DPS_RATIO 那一整段說明就是為了這件事),那等於從後門把擊殺上限打開。
+     */
+    const damage = (i: number, amount: number) => {
+      if (amount <= 0) return;
+      if (current!.hitsOn[i] >= current!.hitsPerUnit) return;
+      if (downSoFar >= kills) return;
+      current!.hitsOn[i] = Math.min(current!.hitsPerUnit, current!.hitsOn[i] + amount);
+      // **打死了就算掃到。** 擴散與連鎖打得到射程外的那幾隻,而結算的擊殺數是被
+      // covered 夾住的——不補這一行的話,畫面上牠倒了、結算卻不算,兩邊就岔開了。
+      if (current!.hitsOn[i] >= current!.hitsPerUnit) {
+        current!.covered.add(i);
+        downSoFar += 1;
+      }
+    };
+
+    // 火・燃燒的持續傷害:每個 tick 把「這段時間燒掉的血」加進去。
+    // 5%/秒 表示光靠燒要 20 秒才燒得死一隻,而一整波只有 13~17 秒——所以它永遠不會
+    // 自己收掉一隻,只會把血條磨掉一截(那正是它跟雷疊起來也不會爆掉的原因)。
+    if (current.burningUntil.some((t) => t > now)) {
+      const tick = (BURN_DPS_RATIO * current.hitsPerUnit * TICK_MS) / 1000;
+      for (let i = 0; i < current.monsters.length; i++) {
+        if (current.burningUntil[i] > now) damage(i, tick);
+      }
+    }
 
     // --- 走到你身上的怪:**當場扣人** ---
     //
@@ -1061,7 +1095,8 @@ export function useLaneRun(
         //(waveKillCount)算的是**整段戰鬥打得掉幾隻**,那幾隻在公式裡是死的。
         // 兩邊不一致的後果實測過:第 1 關第一波、1 個勇者,第一隻怪一碰到就把你扣死,
         // 而改動前那一波是穩過的——等於難度被悄悄改掉了。
-        if (willDie(i)) continue;
+        // 已經倒下的當然不算漏接(牠可能是被擴散或連鎖收掉的,不在 willDie 的前幾名裡)。
+        if (willDie(i) || isDown(i)) continue;
         // 射程外的那幾隻「沒掃到」,它們不扣人也不給吸收(見 resolveEnemy 的 missed),
         // 所以也不能算進預付。
         if (!current.covered.has(i)) continue;
@@ -1162,10 +1197,10 @@ export function useLaneRun(
         const moved = { ...p, distance: p.distance + step };
         const target = current.monsters[p.targetIndex];
         if (target && moved.distance >= target.distance) {
-          current.hitsOn[p.targetIndex] += 1;
+          damage(p.targetIndex, 1);
           current.hitCount += 1;
           // 火/雷/冰:命中的那一刻就發生(燒到旁邊、連鎖、凍住)。
-          applyOnHit(current, p.targetIndex, now, fx);
+          applyOnHit(current, p.targetIndex, now, fx, damage);
           // 命中就跳一個傷害數字。是不是暴擊由「第幾排/第幾隻/第幾下」的雜湊決定,不是亂數——
           // 這個 tick 迴圈每 33ms 跑一次,用亂數的話同一下會一直重抽,數字會閃爍。
           // hitsOn 現在會有小數(燃燒是持續傷害),而雜湊要吃整數——
