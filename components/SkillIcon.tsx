@@ -74,6 +74,31 @@ function fallbackGlyph(color: string) {
   return <Circle cx={12} cy={12} r={7} fill={color} />;
 }
 
+/**
+ * 階級 = **同一個字形疊幾個**。一階一個、二階兩個、三階三個。
+ *
+ * 為什麼不是另外畫三張圖:同一族的三款是「同一件事的三個量級」,各畫一張互不相干的圖
+ * 反而讓玩家看不出它們是一家的——而「這是我投資過的那個元素」正是技能列上最該一眼認出的事。
+ * 為什麼不是角落的數字或小點:那要**讀**(而且在 30px 的圓上二點三點很難分),
+ * 疊起來則是用**份量**表示份量,不必讀就看得出哪一顆比較重。
+ * 順帶把右下角空出來還給等級。
+ *
+ * 每一層的 dx/dy 是「佔整顆圓的幾分之幾」,所以縮到 20px 也不會散開。
+ * 後面那幾層壓低透明度:全部同亮度的話三個疊起來會糊成一團看不出是幾個。
+ */
+const TIER_STACK: Record<1 | 2 | 3, { dx: number; dy: number; scale: number; opacity: number }[]> = {
+  1: [{ dx: 0, dy: -0.04, scale: 0.52, opacity: 1 }],
+  2: [
+    { dx: -0.12, dy: 0.03, scale: 0.42, opacity: 0.55 },
+    { dx: 0.09, dy: -0.11, scale: 0.44, opacity: 1 },
+  ],
+  3: [
+    { dx: -0.16, dy: 0.06, scale: 0.34, opacity: 0.45 },
+    { dx: 0.16, dy: -0.02, scale: 0.34, opacity: 0.65 },
+    { dx: 0, dy: -0.16, scale: 0.38, opacity: 1 },
+  ],
+};
+
 interface Props {
   id: RunSkillId;
   /** 主色。元素走 elementColor,被動走強調金。 */
@@ -119,13 +144,21 @@ export function SkillIcon({ id, color, size, level = 0, cooldown = 0, ready = 0 
           transform={`rotate(-90 ${size / 2} ${size / 2})`}
           opacity={cooling ? 0.85 : 1}
         />
-        {/* 字形。縮到圓內側,留出環的寬度。 */}
-        <G
-          transform={`translate(${size / 2 - (size * 0.52) / 2} ${size / 2 - (size * 0.52) / 2}) scale(${(size * 0.52) / 24})`}
-          opacity={cooling ? 0.4 : 1}
-        >
-          {(GLYPHS[elementOf(id)] ?? fallbackGlyph)(color)}
-        </G>
+        {/* 字形。縮到圓內側留出環的寬度,而**疊幾個就是第幾階**(見 TIER_STACK)。 */}
+        {TIER_STACK[skillTier(id)].map((layer, i) => {
+          const g = size * layer.scale;
+          const x = size / 2 - g / 2 + layer.dx * size;
+          const y = size / 2 - g / 2 + layer.dy * size;
+          return (
+            <G
+              key={i}
+              transform={`translate(${x} ${y}) scale(${g / 24})`}
+              opacity={(cooling ? 0.4 : 1) * layer.opacity}
+            >
+              {(GLYPHS[elementOf(id)] ?? fallbackGlyph)(color)}
+            </G>
+          );
+        })}
       </Svg>
 
       {/* 冷卻中壓一個秒數在正中央:有人要的是「還有幾秒」的精確值,環只給概略。 */}
@@ -136,36 +169,22 @@ export function SkillIcon({ id, color, size, level = 0, cooldown = 0, ready = 0 
       )}
 
       {/*
-        兩個角各講一件事,而且**兩件事不能混在同一個角落**:
-        右上 = 這一款練到幾級(會變的),右下 = 它是第幾階(不會變的)。
-        先前階級是左上角的小點、等級在右下——點數要數(二點還是三點在 30px 的圓上很難分),
-        而且左上那個位置在技能列上剛好被上一顆的等級圓擠到。現在兩邊都是數字,
-        位置固定,掃一眼就讀得完「火・三階・4 級」。
+        等級回到右下角。階級現在由**疊了幾個字形**講(見 TIER_STACK),角落不再需要第二顆數字——
+        兩顆數字並排的時候玩家得先想「哪個是等級哪個是階級」,那是每次掃技能列都要付一次的成本。
+        寫成 `Lv.N` 而不是裸數字:圓裡冷卻中會壓一個秒數,裸數字會跟它撞在一起。
       */}
       {level > 0 && (
         <View
           style={[
             styles.level,
-            { height: size * 0.42, borderRadius: size * 0.21, borderColor: color },
+            { height: size * 0.38, borderRadius: size * 0.19, borderColor: color },
           ]}
           pointerEvents="none"
         >
-          {/* **寫成 Lv.N 不是光一個數字。** 右下角同時有一個數字(階級),兩個裸數字並排的話
-              玩家得先想「哪個是等級哪個是階級」——加上 Lv. 兩個字母,兩顆的角色就自己講清楚了。 */}
-          <Text style={[styles.levelText, { fontSize: Math.round(size * 0.26) }]}>Lv.{level}</Text>
+          <Text style={[styles.levelText, { fontSize: Math.round(size * 0.24) }]}>Lv.{level}</Text>
         </View>
       )}
 
-      {/* 階級:右下角。**底色是元素色**(等級圓是暗底描邊),兩顆才不會被看成同一種東西。 */}
-      <View
-        style={[
-          styles.tier,
-          { minWidth: size * 0.42, height: size * 0.42, borderRadius: size * 0.21, backgroundColor: color },
-        ]}
-        pointerEvents="none"
-      >
-        <Text style={[styles.tierText, { fontSize: Math.round(size * 0.28) }]}>{skillTier(id)}</Text>
-      </View>
     </View>
   );
 }
@@ -177,17 +196,10 @@ const styles = StyleSheet.create({
   },
   seconds: { color: '#f2f2f2', fontWeight: '700' },
   level: {
-    position: 'absolute', right: -2, top: -2,
+    position: 'absolute', right: -2, bottom: -2,
     alignItems: 'center', justifyContent: 'center',
     backgroundColor: '#16161c', borderWidth: 1,
     paddingHorizontal: 3,
   },
   levelText: { color: '#f2f2f2', fontWeight: '700' },
-  tier: {
-    position: 'absolute', right: -2, bottom: -2,
-    alignItems: 'center', justifyContent: 'center',
-    paddingHorizontal: 2,
-  },
-  // 元素色是中間調的莫蘭迪色,壓深色字才讀得出來(白字在土色上幾乎看不見)。
-  tierText: { color: '#16161c', fontWeight: '700' },
 });
