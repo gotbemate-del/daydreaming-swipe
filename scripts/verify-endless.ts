@@ -10,7 +10,7 @@
 // 所以這份腳本盯的核心只有一句:**接力之後,領先幅度仍然是每一段都一樣。**
 
 import { simulateRun, pickBest, pickAccurate, type SimHandoff } from './simRun';
-import { ENEMY_POWER_RATIO, wavesForStage } from '../game/laneRun';
+import { ENDLESS_PRESSURE_STEP, ENEMY_POWER_RATIO, wavesForStage } from '../game/laneRun';
 import { TOTAL_STAGES } from '../game/save';
 import { MAX_RUN_SKILL_SLOTS, runSkillLevel } from '../game/laneRunSkills';
 
@@ -46,10 +46,11 @@ function chain(seed: number, from: number, segments: number, p: number) {
   return { segments: out, waves, handoff };
 }
 
-// ---- 1. 結構保證:接力之後,每一段的領先幅度仍然是 1 / ENEMY_POWER_RATIO ----
+// ---- 1. 起點正確、而且一段比一段薄 ----
 //
-// 這是整個模式的地基。第一段沒有交棒,第十段是接了九次的結果——兩者的領先幅度必須一樣,
-// 否則就是「兩條各走各的曲線」那個老問題的第 N 次現身(這個專案摔過好幾次)。
+// 第一段沒有交棒,所以它的領先幅度必須剛好是 1 / ENEMY_POWER_RATIO(= 一般關卡的規格)。
+// 之後每一段照 ENDLESS_PRESSURE_STEP 變薄——那是「接下去本身就是難度」的來源。
+// 兩件事要一起盯:起點歪了是交棒接錯,薄的速度不對是壓力沒生效。
 {
   const want = 1 / ENEMY_POWER_RATIO;
   const runs = [1, 2, 3].map((k) => chain(k * 31337, 12, 10, 1));
@@ -59,16 +60,21 @@ function chain(seed: number, from: number, segments: number, p: number) {
   check('每排都挑最好 -> 十段全部通關(接力之後結構保證仍然成立)',
     runs.every((r) => r.segments.length === 10 && r.segments.every((s) => s.cleared)),
     runs.map((r) => `${r.segments.filter((s) => s.cleared).length}/10`).join(' '));
-  check('領先幅度不隨段數漂移(第 1 段跟第 10 段一樣)',
-    lo > want * 0.8 && hi < want * 1.35,
-    `目標 ${want.toFixed(2)}x,實測 ${lo.toFixed(2)}~${hi.toFixed(2)}x`);
-  // 漂移的方向也要看:如果每一段都比前一段高一點,那就是玩家在慢慢超前敵人,
-  // 十段看不出來、一百段就變成散步(而這個模式本來就打得到一百段)。
+  check('第一段的領先幅度就是 1 / ENEMY_POWER_RATIO(交棒沒有把起點弄歪)',
+    Math.abs(runs[0].segments[0].margin - want) < want * 0.1,
+    `目標 ${want.toFixed(2)}x,實測 ${runs[0].segments[0].margin.toFixed(2)}x`);
+  // **緩衝要一段一段變薄,而且薄的速度剛好是 ENDLESS_PRESSURE_STEP。**
+  // 這是「接下去本身就是難度」的唯一證據:沒有它,第 30 段跟第 1 段一樣輕鬆,
+  // 關卡編號在跳但體感完全沒動。
   const first = runs.map((r) => r.segments[0].margin);
   const last = runs.map((r) => r.segments[9].margin);
-  const drift = Math.max(...last.map((v, i) => v / first[i]));
-  check('領先幅度沒有逐段累積(第 10 段 / 第 1 段 < 1.3)',
-    drift < 1.3, `最大 ${drift.toFixed(2)}x`);
+  const decay = last.map((v, i) => first[i] / v);
+  const wantDecay = Math.pow(ENDLESS_PRESSURE_STEP, 9);
+  check('緩衝逐段變薄,速度等於 ENDLESS_PRESSURE_STEP',
+    decay.every((d) => d > wantDecay * 0.9 && d < wantDecay * 1.1),
+    `第 1 段 / 第 10 段 = ${decay.map((d) => d.toFixed(2)).join(' ')}(應為 ${wantDecay.toFixed(2)})`);
+  check('壓力沒有反過來把第 10 段變輕鬆', Math.min(...last) < Math.min(...first), '');
+  void lo; void hi;
 }
 
 // ---- 2. 交棒真的有接:人數與戰力是連續的 ----
@@ -122,7 +128,27 @@ function chain(seed: number, from: number, segments: number, p: number) {
     good > mid * 2, `90% → ${mid.toFixed(1)} 段,95% → ${good.toFixed(1)} 段`);
 }
 
-// ---- 5. 數字不會爆掉:十二段之後仍然是看得懂的量級 ----
+// ---- 5. 天花板:連完美玩家也有終點 ----
+//
+// 這是這個模式最後一塊拼圖。沒有它的話「無限」是字面意義的無限——每一排都挑最好的人
+// 接 60 段(720 波)一次都不會死,分數只剩耐心在決定。
+//
+// 天花板由兩顆旋鈕合起來做出來:壓力(ENDLESS_PRESSURE_STEP)把緩衝一段一段磨薄,
+// 磨到 1 以下之後連完美玩家都清不完一波;而勇者波的武器傷害隨累計波數遞增
+//(hazardLossHeroes),清不完的那一刻就開始真的掉人。
+// **兩顆缺一不可**:只有壓力的話玩家會停在一個平衡點上(閘門的「勇者 +N」照理想深度給,
+// 自帶追趕),只有傷害的話完美玩家全清、一發都不用閃,照樣碰不到。
+{
+  const runs = Array.from({ length: 12 }, (_, i) => chain(i * 4813 + 7, 12, 60, 1));
+  const ended = runs.filter((r) => r.segments.some((s) => !s.cleared)).length;
+  const waves = runs.reduce((a, r) => a + r.waves, 0) / runs.length;
+  check('每排都挑最好的人也會結束(無限模式有天花板)',
+    ended === runs.length, `${ended}/${runs.length} 在 60 段之內結束,平均 ${waves.toFixed(0)} 波`);
+  check('天花板落在合理的長度(150~600 波)',
+    waves > 150 && waves < 600, `平均 ${waves.toFixed(0)} 波`);
+}
+
+// ---- 6. 數字不會爆掉:十二段之後仍然是看得懂的量級 ----
 //
 // 交棒是複利,所以這一項不是形式主義:一段 x100 的話十二段就是 10^24,
 // 畫面上會變成一串沒有意義的位數(而 compact() 也救不了)。

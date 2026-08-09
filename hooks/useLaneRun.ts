@@ -23,7 +23,7 @@ import {
   activeThrowers,
   ENEMY_THROW_INTERVAL_MS,
   HAZARD_WIDTH,
-  HAZARD_LOSS_HEROES,
+  hazardLossHeroes,
   THROWER_ROTATE_MS,
   waveLength,
   DEFAULT_RUN_START,
@@ -1171,7 +1171,9 @@ export function useLaneRun(
           setLastHazardAt(now);
           setState((prev) => {
             if (prev.phase !== 'running') return prev;
-            const hit = HAZARD_LOSS_HEROES;
+            // 一把武器換幾個人:照**整輪的累計波數**遞增(見 laneRun 的 hazardLossHeroes),
+            // 而且深段之後改吃比例——無限模式的隊伍是指數成長的,固定值在那裡等於沒扣。
+            const hit = hazardLossHeroes(enemyRow.nodes[0].enemy?.waveNumber ?? 0, prev.heroes);
             const heroes = Math.max(0, prev.heroes - hit);
             lostSoFarRef.current += hit;
             feedbackKeyRef.current += 1;

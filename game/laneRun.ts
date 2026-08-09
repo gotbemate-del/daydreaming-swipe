@@ -215,6 +215,11 @@ export interface EnemyEffect {
    * 「大」在這個模型裡的意思就是這個:牠一隻抵一群,擋不下來就是一次大額兌換。
    */
   leakCost?: number;
+  /**
+   * 這是整輪的第幾波(無限模式會一路累加,單場就是這一關的第幾波)。
+   * 勇者波的武器傷害照它遞增(見 hazardLossHeroes)。
+   */
+  waveNumber?: number;
 }
 
 export interface RunNode {
@@ -818,7 +823,38 @@ export function baseAttackForStage(stage: number): number {
  *
  * 現行曲線(一般小關):100% → 100%、95% → 73%、90% → 50%、85% → 31%、80% → 18%。
  */
-export const ENEMY_POWER_RATIO = 0.48;
+export const ENEMY_POWER_RATIO = 0.5;
+
+/**
+ * 無限模式每接一段,敵人相對變強幾成。
+ *
+ * ## 它做的事
+ *
+ * 容錯緩衝一段一段變薄:第 1 段 2.00x、第 10 段 1.16x、第 20 段 0.67x。
+ * 所以「接下去」本身就是難度,而不是只有關卡編號在跳。實測 95% 準確率的一輪
+ * 從 296 波縮到 227 波,曲線整條往前壓。
+ *
+ * ## 它**做不到**的事:給完美玩家一個終點(這一段是給下一個人看的)
+ *
+ * 模擬器裡的完美玩家(每一排都挑最好)**不會死**,接 60 段(720 波)一次都沒死。
+ * 原因不是壓力不夠,是「勇者 +N」照**理想路線的深度**給——那是刻意的追趕機制
+ *(落後的人拿到的 +N 相對自己是大補),而它會把任何「按比例扣人」的損失吸收掉,
+ * 最後停在一個平衡點上。三種做法都試過、都量過:
+ *   ① 只加壓力:step 1.0 → 1.16,完美玩家一樣 0/20 死(95% 從 296 波縮到 227 波)
+ *   ② 按「自己隊伍的百分之幾」扣:share 0.5~0.9 全部停在平衡點,0/20 死
+ *   ③ 按「理想隊伍的百分之幾」扣:做得出天花板(完美玩家 289 波),但落後的人
+ *      一波就被抹平——95% 準確率只剩 41 波(原本 296),那是懸崖不是斜坡
+ * 所以現在只留 ①。真要有天花板,得先動「+N 的追趕機制」本身,那是一次獨立的設計決定。
+ *
+ * 一般關卡完全不受影響:`depth` 只有無限模式的交棒會帶,單場永遠是 0。
+ */
+export const ENDLESS_PRESSURE_STEP = 1.03;
+
+/** 接了 depth 段之後,敵人戰力要再乘多少。 */
+export function endlessPressure(depth: number): number {
+  return Math.pow(ENDLESS_PRESSURE_STEP, Math.max(0, Math.floor(depth)));
+}
+
 
 /**
  * 第一大關刻意放寬。
@@ -1518,6 +1554,45 @@ export const HAZARD_WIDTH = 0.26;
 export const HAZARD_LOSS_HEROES = 1;
 
 /**
+ * 每多打一波,一把武器再多換掉幾個人。
+ *
+ * 「一把武器換一個人」在第 1 波是對的,到第 20 波就變成搔癢——那時候隊伍已經幾十人,
+ * 而勇者波每三波就來一次。這個係數讓**閃武器**這件事的份量跟著整輪的長度長:
+ * 第 10 波一下 6 個人、第 20 波 11 個人。
+ */
+export const HAZARD_LOSS_PER_WAVE = 0.5;
+
+/**
+ * 一把武器最多咬掉隊伍的幾成,以及每波往那個上限走多少。
+ *
+ * ## 為什麼固定值不夠、非要有比例的那一半
+ *
+ * 無限模式的隊伍是**指數成長**的:接到第 20 段時有 10^22 個人,而固定值再怎麼疊
+ * 也只是幾百個。**絕對值的損失遇上指數成長的分母等於沒有損失**——這正是那個模式
+ * 一直做不出天花板的原因(敵人調強、按比例扣人都試過,見 ENDLESS_PRESSURE_STEP)。
+ *
+ * 比例那一半刻意**從第 20 波之後才開始長**(SHARE_FROM_WAVE):一般小關最長就是 20 波,
+ * 所以主線的難度曲線完全不受它影響,長出來的部分全部落在「接下去」的那一段。
+ */
+export const HAZARD_SHARE_FROM_WAVE = 20;
+export const HAZARD_SHARE_PER_WAVE = 0.006;
+export const HAZARD_SHARE_CAP = 0.4;
+
+/**
+ * 這一下砸中要扣幾個人。**遊戲與模擬器共用同一支**——各寫一份的話,
+ * 量到的難度就不是玩家經歷的那件事(這個專案在 extraKills 上記過同一條)。
+ */
+export function hazardLossHeroes(waveNumber: number, heroes: number): number {
+  const waves = Math.max(0, Math.floor(waveNumber));
+  const flat = HAZARD_LOSS_HEROES + Math.floor(waves * HAZARD_LOSS_PER_WAVE);
+  const share = Math.min(
+    HAZARD_SHARE_CAP,
+    Math.max(0, waves - HAZARD_SHARE_FROM_WAVE) * HAZARD_SHARE_PER_WAVE,
+  );
+  return Math.max(flat, Math.ceil(Math.max(0, heroes) * share));
+}
+
+/**
  * 輪到的那幾個人多久丟一次(毫秒)。**放在這裡而不是 hook**,因為模擬器也要用它
  * 換算「一波會被打幾下」——兩邊各寫一份的話,難度曲線量到的就不是玩家經歷的那件事。
  *
@@ -1670,10 +1745,16 @@ export function bossSpeciesForStage(stage: number): WaveSpecies {
 
 function makeEnemyRow(
   rng: () => number, stage: number, rowIndex: number, idealAttack: number, idealHeroes: number,
+  /** 無限模式的壓力係數(見 endlessPressure)。單場永遠是 1。 */
+  ratioScale = 1,
+  /** 無限模式接了幾段(見 ENDLESS_PRESSURE_STEP)。單場永遠是 0。 */
+  endlessDepth = 0,
+  /** 這是整輪的第幾波(無限模式會累加)。勇者波的武器傷害照它遞增。 */
+  waveNumber = 0,
 ): RunNode[] {
   const boss = isBossRow(stage, rowIndex);
   const power = Math.max(1,
-    Math.round(idealAttack * enemyPowerRatioForStage(stage) * (boss ? BOSS_POWER_MULTIPLIER : 1)));
+    Math.round(idealAttack * enemyPowerRatioForStage(stage) * ratioScale * (boss ? BOSS_POWER_MULTIPLIER : 1)));
   if (boss) {
     const species = bossSpeciesForStage(stage);
     const enemy: EnemyEffect = {
@@ -1726,7 +1807,7 @@ function makeEnemyRow(
     name: species[0].name,
     units,
     ...(elite ? { elite: true, leakCost: ELITE_MASS, hitsPerUnit: ELITE_HITS } : {}),
-    ...(heroWave ? { heroWave: true, rowIndex } : {}),
+    ...(heroWave ? { heroWave: true, rowIndex, waveNumber } : {}),
     // 一波怪共用一個屬性(不是一隻一個)——三種造型同一個顏色,一眼就分得出這波是什麼。
     // **勇者波走另一條 salt**:對面是勇者不是怪,屬性另外抽,而且關卡前的提示不公開它,
     // 所以每三波就有一波沒辦法事先押注,只能靠通用技能扛。
@@ -1785,6 +1866,10 @@ export function runSkillPicksForStage(stage: number, waveIndex: number, totalWav
 export interface RunCarry {
   /** 之前已經吃過幾格閘門。接著往下數,idealStep 需要多長就長多長。 */
   gatesBefore: number;
+  /** 已經接過幾段。敵人的壓力照它遞增(見 endlessPressure)。 */
+  depth: number;
+  /** 已經打過幾波。勇者波的武器傷害照它遞增(見 hazardLossHeroes)。 */
+  wavesBefore: number;
   idealHeroes: number;
   idealPerHero: number;
   /** 最佳路線帶著的場內技能(等級會一路長,見 laneRunSkills 的無上限說明)。 */
@@ -1825,6 +1910,10 @@ function buildRun(seed: number, stage: number, carry?: RunCarry): { rows: RunRow
   let idealPerHero = carry ? carry.idealPerHero : baseAttackForStage(stage);
   // 閘門深度的位移。單場是 0,無限模式是「之前吃過幾格」。
   const depthBase = carry ? Math.max(0, Math.floor(carry.gatesBefore)) : 0;
+  // 無限模式:接了幾段就把敵人整體往上推幾成(單場沒有 carry,所以永遠是 1)。
+  const pressure = endlessPressure(carry ? carry.depth : 0);
+  // 這一輪到這一段為止已經打過幾波。勇者波的武器傷害照它遞增(見 hazardLossHeroes)。
+  const wavesBefore = carry ? Math.max(0, Math.floor(carry.wavesBefore)) : 0;
   // 先決定這一場的爆發格落在第幾格,再一路產生——每場保證固定次數,不靠運氣。
   const rows_ = rowsForStage(stage);
   const totalGates = rows_ - Math.floor(rows_ / enemyEveryForStage(stage));
@@ -1845,7 +1934,10 @@ function buildRun(seed: number, stage: number, carry?: RunCarry): { rows: RunRow
       rows.push({
         index: i,
         distance: distances[i],
-        nodes: makeEnemyRow(artRng, stage, i, idealHeroes * idealPerHero, idealHeroes),
+        nodes: makeEnemyRow(
+          artRng, stage, i, idealHeroes * idealPerHero, idealHeroes, pressure, carry ? carry.depth : 0,
+          wavesBefore + waveIndex + 1,
+        ),
       });
       // 理想玩家一定全清,所以一定吃到吸收——這條**必須**同步,不然玩家會越跑越超前敵人
       // (跟場內技能同一個道理,見 laneRunSkills 的「兩側必須同時算」)。
@@ -1891,6 +1983,8 @@ function buildRun(seed: number, stage: number, carry?: RunCarry): { rows: RunRow
     rows,
     carry: {
       gatesBefore: depthBase + totalGates,
+      depth: (carry ? carry.depth : 0) + 1,
+      wavesBefore: wavesBefore + totalWaves,
       idealHeroes,
       idealPerHero,
       skills: idealSkills,
@@ -2091,7 +2185,8 @@ export function resolveEnemy(
   if (heroWaveHazards.length > 0 && hitByHazard(at, heroWaveHazards)) {
     // 模擬器路徑:一波扣「期望被打中的次數」x 每下 1 個人。
     // 遊戲裡是逐發扣的(見 useLaneRun 的 EnemyShot),兩邊用同一組常數換算。
-    const hit = Math.max(0, expectedHazardHits(state.stage) * HAZARD_LOSS_HEROES);
+    const hit = Math.max(0,
+      expectedHazardHits(state.stage) * hazardLossHeroes(enemy.waveNumber ?? 0, state.heroes));
     if (hit <= 0) return resolveEnemy(state, { ...enemy, heroWave: false }, boost, at);
     const struck = { ...state, heroes: Math.max(0, state.heroes - hit) };
     if (struck.heroes <= 0) {
