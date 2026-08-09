@@ -146,11 +146,13 @@ export function SkillIcon({ id, color, size, level = 0, cooldown = 0, ready = 0 
         <View
           style={[
             styles.level,
-            { minWidth: size * 0.42, height: size * 0.42, borderRadius: size * 0.21, borderColor: color },
+            { height: size * 0.42, borderRadius: size * 0.21, borderColor: color },
           ]}
           pointerEvents="none"
         >
-          <Text style={[styles.levelText, { fontSize: Math.round(size * 0.28) }]}>{level}</Text>
+          {/* **寫成 Lv.N 不是光一個數字。** 右下角同時有一個數字(階級),兩個裸數字並排的話
+              玩家得先想「哪個是等級哪個是階級」——加上 Lv. 兩個字母,兩顆的角色就自己講清楚了。 */}
+          <Text style={[styles.levelText, { fontSize: Math.round(size * 0.26) }]}>Lv.{level}</Text>
         </View>
       )}
 
@@ -178,7 +180,7 @@ const styles = StyleSheet.create({
     position: 'absolute', right: -2, top: -2,
     alignItems: 'center', justifyContent: 'center',
     backgroundColor: '#16161c', borderWidth: 1,
-    paddingHorizontal: 2,
+    paddingHorizontal: 3,
   },
   levelText: { color: '#f2f2f2', fontWeight: '700' },
   tier: {
