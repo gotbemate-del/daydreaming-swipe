@@ -58,6 +58,7 @@ import {
   type CollectionScales,
   type RunSkillState, type RunSkillId, type RunSkillEffects, type ActiveTrigger, type ElementBooks,
 } from '../game/laneRunSkills';
+import { fxHitBoxes, fxHits } from '../game/laneRunFx';
 import type { RunStats } from '../game/quests';
 
 const TICK_MS = 33; // ~30fps
@@ -377,20 +378,14 @@ interface WaveRuntime {
   /** 這一波有哪幾隻曾經進到射程寬度內。擊殺數會被它的大小夾住(見 laneRun 的 FIRE_WIDTH)。 */
   covered: Set<number>;
   /**
-   * 主動技能已經算進 `fired.kills`、但**畫面上還沒有人倒下**的隻數。
+   * 被主動技能收掉的那幾隻。
    *
-   * 技能放出去的那一刻只有文字與特效,怪還好端端地站著——它們得等勇者一把一把把刀丟滿
-   * 才會消失,而那可能是好幾秒後的事(使用者回報的「只列出文字,怪沒有被消除」)。
-   * 這個欄位就是那筆**待兌現的擊殺**:每個 tick 找出「注定會倒但還沒倒」的那幾隻,
-   * 直接把它們的 hitsOn 補滿,當場消失。
-   *
-   * **它不改任何結算數字**:兌現的對象一律是 `willDie` 為真的那幾隻(擊殺數早就由
-   * waveKillCount + extraKills 算完了),補的只是「什麼時候看得到」。
-   * 一時兌現不完(技能比怪先到)就留著,等怪進射程再兌現。
+   * **一定要單獨記。** 畫面上誰倒下是照「覆蓋順序的前 kills 隻」判的(willDie),
+   * 而技能是**照範圍**打的——牠打死的可能是排在後面的那幾隻。不記的話那幾隻會出現
+   *「血量滿了但還站著」,而牠們正是特效剛剛炸過的位置,看起來就是技能沒作用。
+   * 隻數本身沒有多算:castArea 打死幾隻就往 fired.kills 加幾隻。
    */
-  vaporizing: number;
-  /** 上一次觸發的主動是哪個元素。blast 的顏色照它畫。 */
-  vaporizeElement?: RunSkillId;
+  slain: Set<number>;
 }
 
 // 一場跑圖就是一個 hook 實例:重跑、下一關都由外層換 key 重新掛載,不在 hook 裡自己 reset。
@@ -704,27 +699,90 @@ export function useLaneRun(
       if (!ready(a.id, a.cooldown)) continue;
       fired.push(a.name);
       firedIds.push(a.id);
-      if (a.kills) {
-        current.fired.kills += a.kills;
-        killsNow += a.kills;
-        // 待兌現的擊殺:下面幾行的 tick 會把「注定會倒但還沒倒」的那幾隻直接補滿血量,
-        // 讓怪在技能放出去的那一刻就消失,而不是只跳一行字。
-        current.vaporizing += a.kills;
-        current.vaporizeElement = elementOf(a.id);
-      }
+      // 清怪改成**範圍傷害**:名目的隻數換算成一池傷害,攤給特效碰得到的每一隻。
+      // 打死幾隻由結果決定,不是由名目決定(見 castArea)。
+      if (a.kills) killsNow += castArea(current, a.id, a.kills, now, travelled);
       if (a.heroes) heroesNow += Math.round(a.heroes);
       if (a.immune) current.fired.immune = true;
     }
     if (fired.length === 0) return;
-    // **橫幅上的隻數從 0 開始,由真的消失的那幾隻累加上去**(見下面兌現的那一段)。
-    // 先前這裡直接寫技能的名目隻數,而畫面上同時只有兩三隻怪——玩家看到的是
-    //「-7 隻」配上少掉 1 隻。名目的那筆沒有消失(它留在 fired.kills 裡,結算照算),
-    // 只是「現在看得到幾隻倒下」跟「這一波總共清掉幾隻」本來就是兩個數字。
-    strikeRef.current = { at: now, ids: firedIds, names: fired, kills: 0 };
+    // 橫幅寫的就是**這一下真的倒了幾隻**。名目隻數不再出現在任何地方:
+    // 範圍裡的怪不夠多的時候,多出來的傷害當場丟掉,不遞延到下一波。
+    strikeRef.current = { at: now, ids: firedIds, names: fired, kills: Math.round(killsNow) };
     setLastStrike(strikeRef.current);
     if (heroesNow > 0) {
       setState((prev) => (prev.phase === 'running' ? { ...prev, heroes: prev.heroes + heroesNow } : prev));
     }
+  }
+
+  /**
+   * 主動技能放出去:**把名目的隻數換成一池傷害,攤給特效碰得到的每一隻。**
+   *
+   * ## 為什麼是「一池傷害」而不是「直接指定幾隻倒下」
+   *
+   * 舊版是「這一下清掉 N 隻」,畫面上就挑 N 隻讓牠們消失——但特效明明是一大片,
+   * 卻只有前面幾隻有反應,而且範圍裡站著的那些完全不受影響。
+   * 現在的規則是:傷害池 = N 隻 x 每隻血量,平均攤給範圍內的每一隻,
+   * 攤滿血量的當場死、沒攤滿的留著半血繼續被勇者的武器補完。
+   *
+   * **總殺傷力沒有變**(池子還是那麼大),變的是它散給幾隻——所以平衡完全沒動,
+   * 而「一大片怪同時被打到、其中幾隻倒下」是看得出來的。
+   * 這正是「範圍越大打越多隻」這條的安全寫法:直接讓範圍決定隻數的話,
+   * 命中數會跟著波的密度長,而密度是跟著理想人數長的——那等於偷偷變成「整波的幾成」,
+   * 那條路 CLAUDE.md 明文禁過(百分比會跟敵人曲線平行長)。
+   *
+   * ## 打不完就丟掉,不遞延
+   *
+   * 範圍內的怪全部滿血了還有剩,那些傷害**直接消失**。舊版會把它留到這一波後面
+   * (甚至留到結算),於是「橫幅寫 7 隻、畫面少 1 隻」。現在橫幅寫的就是真的倒了幾隻。
+   *
+   * ## 回傳的是真的死了幾隻
+   *
+   * 那個數字會加進 `fired.kills`,讓**結算跟畫面用同一份數字**——這款在
+   *「跑圖途中的演出與這一排的結算只能有一份數字」上記過一條,這裡是同一條規則。
+   */
+  function castArea(
+    current: WaveRuntime, id: RunSkillId, kills: number, now: number, travelled: number,
+  ): number {
+    // 特效掃過的範圍:取三個時間點的聯集,代表「這一下掃過哪裡」而不是「某一格畫在哪裡」。
+    const boxes = [0.3, 0.6, 0.9].flatMap((t) => fxHitBoxes(id, t, offsetRef.current));
+    if (boxes.length === 0) return 0;
+    const targets: number[] = [];
+    for (let i = 0; i < current.monsters.length; i++) {
+      if (current.hitsOn[i] >= current.hitsPerUnit) continue; // 已經倒了
+      const ahead = current.monsters[i].distance - travelled;
+      if (ahead <= 0 || ahead > VISIBLE_AHEAD) continue; // 看不到的不算
+      if (!fxHits(boxes, current.monsters[i].offset, ahead / VISIBLE_AHEAD)) continue;
+      targets.push(i);
+    }
+    if (targets.length === 0) return 0;
+    // 傷害池:名目隻數 x 每隻血量。攤下去之後打死幾隻由結果決定。
+    let pool = kills * current.hitsPerUnit;
+    let dead = 0;
+    // 兩輪:第一輪平均攤,被血量上限退回來的部分第二輪再攤給還沒滿的那些。
+    for (let round = 0; round < 2 && pool > 0; round++) {
+      const alive = targets.filter((i) => current.hitsOn[i] < current.hitsPerUnit);
+      if (alive.length === 0) break;
+      const each = pool / alive.length;
+      for (const i of alive) {
+        const need = current.hitsPerUnit - current.hitsOn[i];
+        const give = Math.min(need, each);
+        current.hitsOn[i] += give;
+        pool -= give;
+        if (current.hitsOn[i] >= current.hitsPerUnit) {
+          dead += 1;
+          // 被技能收掉的那一隻:身上炸開一圈元素色的環(見 LaneRunner 的 blast)。
+          pushElementEvent('blast', i, now, undefined, elementOf(id));
+          // **打到就算掃到。** 不加進 covered 的話結算會把牠算成「沒掃到」,
+          // 於是畫面上牠倒了、結算卻不算——兩邊岔開就是這款最難查的那種 bug。
+          current.covered.add(i);
+          current.slain.add(i);
+        }
+      }
+    }
+    // 剩下的池子直接丟掉(不遞延)。
+    current.fired.kills += dead;
+    return dead;
   }
 
   /**
@@ -898,7 +956,7 @@ export function useLaneRun(
         leaked: 0,
         advance: 0,
         covered: new Set<number>(),
-        vaporizing: 0,
+        slain: new Set<number>(),
       };
       waveRef.current = current;
       projectilesRef.current = [];
@@ -948,40 +1006,10 @@ export function useLaneRun(
     // 打得倒的是「覆蓋到的那幾隻裡最前面的 kills 隻」,所以要照覆蓋順序判斷,
     // 不能用索引大小——沒被覆蓋的那幾隻夾在中間的話,索引比較不成立。
     // 「這一隻**注定會倒**」——戰力算得掉它,只是可能還沒挨滿刀。
-    const willDie = (i: number) => current!.covered.has(i)
-      && [...current!.covered].filter((k) => k < i).length < kills;
+    // 技能收掉的那幾隻一律算「注定會倒」(牠們的血量已經滿了),其餘照覆蓋順序取前 kills 隻。
+    const willDie = (i: number) => current!.slain.has(i)
+      || (current!.covered.has(i) && [...current!.covered].filter((k) => k < i).length < kills);
     const isDown = (i: number) => willDie(i) && current!.hitsOn[i] >= current!.hitsPerUnit;
-
-    // --- 主動技能的擊殺:**當場把怪收掉** ---
-    //
-    // 先前技能放出去只有一行字跟一團特效,怪照樣站在原地——它們要等勇者把刀一把一把丟滿
-    // 才會消失,而那常常是好幾秒後(使用者回報的「技能造成傷害時怪物沒有被消除」)。
-    // 這裡把那筆待兌現的擊殺換成畫面上的死亡:挑「注定會倒但還沒倒」的那幾隻,
-    // 直接把血量補滿,下一行的 down 就會是 true。
-    //
-    // **兌現的對象一律是 willDie**,所以擊殺總數、漏接數、吸收全部沒動——
-    // 這一段改的只有「什麼時候看得到」。兌現不完(技能比怪先進射程)就留在 vaporizing 裡,
-    // 等怪進了射程再收,一隻都不會憑空多也不會少。
-    if (current.vaporizing > 0) {
-      let cashed = 0;
-      for (const i of [...current.covered].sort((x, y) => x - y)) {
-        if (current.vaporizing <= 0) break;
-        if (!willDie(i) || isDown(i)) continue;
-        // 已經越過勇者的那幾隻畫不出來(posOf 會回 null),兌現在它們身上等於白花一格額度,
-        // 玩家看到的還是「技能放了但沒人倒」。留給前面看得見的那幾隻。
-        if (current.monsters[i].distance <= travelled) continue;
-        current.hitsOn[i] = current.hitsPerUnit;
-        pushElementEvent('blast', i, now, undefined, current.vaporizeElement);
-        current.vaporizing -= 1;
-        cashed += 1;
-      }
-      // 橫幅還在的話,把剛剛真的倒下的那幾隻加上去。文字與畫面因此一定對得起來:
-      // 寫幾隻就是這一刻少了幾隻,晚一點才兌現的那幾隻會在下一個 tick 自己補上去。
-      if (cashed > 0 && strikeRef.current !== null && now - strikeRef.current.at < STRIKE_BANNER_MS) {
-        strikeRef.current = { ...strikeRef.current, kills: strikeRef.current.kills + cashed };
-        setLastStrike(strikeRef.current);
-      }
-    }
 
     // --- 走到你身上的怪:**當場扣人** ---
     //
