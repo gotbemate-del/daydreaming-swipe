@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { Platform } from 'react-native';
 import { createAudioPlayer, type AudioPlayer } from 'expo-audio';
+import { elementOf, skillTier, type RunSkillId } from '../game/laneRunSkills';
 
 /**
  * 音效。`assets/sounds` 底下那幾份既有的短音,接進遊戲裡當回饋。
@@ -42,6 +43,26 @@ const SOURCES = {
   dead: require('../assets/sounds/event-common.wav'),
   /** 抽到地圖。生存模式開頭那一下。 */
   draw: require('../assets/sounds/event-rare.wav'),
+
+  // ---- 六元素主動技能的傷害音(產生檔,見 scripts/make-skill-sfx.py)----
+  //
+  // **只有二三階有**。一階是被動,效果掛在「每一次命中」上(燃燒擴散、連鎖閃電、
+  // 凍結判定),一波幾十上百次——每次播一聲會變成機關槍,那不是音效是噪音。
+  //
+  // 同族的二三階是**同一個音色**,三階更低更長。這跟圖示的「同族共用字形,
+  // 階級疊層數」是同一條規則:先一耳認出是哪一族,再分辨份量。
+  fire2: require('../assets/sounds/skills/fire2.wav'),
+  fire3: require('../assets/sounds/skills/fire3.wav'),
+  metal2: require('../assets/sounds/skills/metal2.wav'),
+  metal3: require('../assets/sounds/skills/metal3.wav'),
+  thunder2: require('../assets/sounds/skills/thunder2.wav'),
+  thunder3: require('../assets/sounds/skills/thunder3.wav'),
+  ice2: require('../assets/sounds/skills/ice2.wav'),
+  ice3: require('../assets/sounds/skills/ice3.wav'),
+  wood2: require('../assets/sounds/skills/wood2.wav'),
+  wood3: require('../assets/sounds/skills/wood3.wav'),
+  earth2: require('../assets/sounds/skills/earth2.wav'),
+  earth3: require('../assets/sounds/skills/earth3.wav'),
 } as const;
 
 export type SfxId = keyof typeof SOURCES;
@@ -90,4 +111,36 @@ export function useSfxVolume(value: number): void {
       if (p) p.volume = volume;
     }
   }, [value]);
+}
+
+/**
+ * 一款技能對應哪一個傷害音。**一階(被動)回 null**——見 SOURCES 裡的說明。
+ *
+ * 用 `elementOf` + `skillTier` 組出 key,不逐款寫死:18 款逐一列的話,
+ * 哪天多一個元素就會有人漏掉其中一階,而漏掉的症狀是「那一款沒聲音」,
+ * 沒有人會注意到(它跟「還沒輪到它放」長得一模一樣)。
+ * 組出來的 key 一定在表裡(六元素 x 二三階),`in` 只是型別上的保險。
+ */
+export function skillDamageSfx(id: RunSkillId): SfxId | null {
+  const tier = skillTier(id);
+  if (tier === 1) return null;
+  const key = `${elementOf(id)}${tier}`;
+  return key in SOURCES ? (key as SfxId) : null;
+}
+
+/**
+ * 一次觸發只播**一個**音。
+ *
+ * 主動是「冷卻好了就自己放」,而好幾款的冷卻可能在同一個 tick 一起到期——
+ * 六個音一起播會糊成一團,而且音量疊起來會爆(每個檔的峰值都是 0.72)。
+ * 挑階級最高的那一個:它的份量最重,也是玩家最想聽到的那一下。
+ */
+export function playSkillDamage(ids: RunSkillId[]): void {
+  let best: RunSkillId | null = null;
+  for (const id of ids) {
+    if (skillDamageSfx(id) === null) continue;
+    if (best === null || skillTier(id) > skillTier(best)) best = id;
+  }
+  const sfx = best === null ? null : skillDamageSfx(best);
+  if (sfx !== null) playSfx(sfx);
 }

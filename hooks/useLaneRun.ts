@@ -59,6 +59,7 @@ import {
   type RunSkillState, type RunSkillId, type RunSkillEffects, type ActiveTrigger, type ElementBooks,
 } from '../game/laneRunSkills';
 import type { RunStats } from '../game/quests';
+import { playSkillDamage } from './useSfx';
 
 const TICK_MS = 33; // ~30fps
 
@@ -720,6 +721,14 @@ export function useLaneRun(
     // 先前這裡直接寫技能的名目隻數,而畫面上同時只有兩三隻怪——玩家看到的是
     //「-7 隻」配上少掉 1 隻。名目的那筆沒有消失(它留在 fired.kills 裡,結算照算),
     // 只是「現在看得到幾隻倒下」跟「這一波總共清掉幾隻」本來就是兩個數字。
+    // 傷害音。**掛在這裡而不是畫面層**:特效是照 `lastStrike` 的時間戳畫的,
+    // 而那是 state ——它要下一次 render 才更新,聲音會比畫面慢一拍。
+    // 這裡是技能真正發動的那一行,聲音跟特效才對得起來(跟「投擲動作要跟真的
+    // 飛出去的那一把對上」是同一條規則)。
+    //
+    // 一次只播一個(見 playSkillDamage):好幾款的冷卻可能同時到期,六個音一起播
+    // 會糊成一團,而且峰值疊起來會爆。
+    playSkillDamage(firedIds);
     strikeRef.current = { at: now, ids: firedIds, names: fired, kills: 0 };
     setLastStrike(strikeRef.current);
     if (heroesNow > 0) {
