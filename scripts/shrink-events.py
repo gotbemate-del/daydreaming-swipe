@@ -13,6 +13,11 @@
 全部 604 張加起來約 5MB。**只有這個資料夾這樣做**:跑道上的角色與 UI 仍然是 PNG,
 它們是像素圖,一經有損壓縮邊緣就會糊掉(而那正是這款的美術identity)。
 
+## 為什麼要裁白邊
+
+一部分來源圖是漫畫格,四周帶著白色紙邊。畫框是要讓圖填滿的,白邊留著就會在框裡
+出現一條白帶,讀起來是「圖沒對齊」——而 `cover` 再怎麼填也去不掉,因為那是原圖的一部分。
+
 ## 為什麼全部收
 
 604 張裡有 570 張是職業專屬的(job-<職業>-<階>-<稀有度>)。雖然這款的主角永遠是史萊姆,
@@ -37,6 +42,72 @@ MAX_W = 320
 QUALITY = 78
 SRC_RE = re.compile(r'\.png$', re.IGNORECASE)
 
+# 邊界要多白、佔多少比例才算「白邊」。
+WHITE = 240
+WHITE_RATIO = 0.9
+
+
+def trim_white(img: Image.Image) -> Image.Image:
+    """把四邊的白框裁掉。
+
+    有一部分來源圖是**漫畫格**,四周帶著白色的紙邊。畫面上那個彩蛋框是要讓圖**填滿**的,
+    白邊留著就會在框裡出現一條白帶——玩家讀起來是「圖沒對齊」或「載壞了」,
+    而它其實是原圖的一部分,`cover` 再怎麼填也去不掉。
+
+    判斷方式是逐行/逐列看「有幾成的像素接近純白」,超過門檻就往內縮一格。
+    刻意保守(90%):畫面本身有大片白(雪地、白牆)的那幾張只會被削掉最外面一兩列。
+    """
+    rgb = img.convert('RGB')
+    w, h = rgb.size
+    px = rgb.load()
+
+    def row_white(y: int) -> bool:
+        n = sum(1 for x in range(w) if min(px[x, y]) >= WHITE)
+        return n / w >= WHITE_RATIO
+
+    def col_white(x: int) -> bool:
+        n = sum(1 for y in range(h) if min(px[x, y]) >= WHITE)
+        return n / h >= WHITE_RATIO
+
+    top, bottom, left, right = 0, h - 1, 0, w - 1
+    while top < bottom and row_white(top):
+        top += 1
+    while bottom > top and row_white(bottom):
+        bottom -= 1
+    while left < right and col_white(left):
+        left += 1
+    while right > left and col_white(right):
+        right -= 1
+    # 全白(或幾乎全白)的圖不要裁成一條線——那種情況原樣送出去。
+    if right - left < w * 0.3 or bottom - top < h * 0.3:
+        return img
+
+    # **有一部分來源圖是「一張紙上兩格漫畫」**:主圖之後隔一條白色的縫,再露出第二格的一角。
+    # 只裁外框的話那條縫與第二格會跟著被 cover 填進畫框裡,看起來就是「圖右邊有一條白帶」。
+    # 作法:從主圖的右半邊往右找第一條「整欄都白」的縫,切在那裡。
+    gutter = None
+    for x in range(left + int((right - left) * 0.4), right + 1):
+        n = sum(1 for y in range(top, bottom + 1) if min(px[x, y]) >= WHITE)
+        if n / (bottom - top + 1) >= WHITE_RATIO:
+            gutter = x
+            break
+    if gutter is not None and gutter - left >= (right - left) * 0.4:
+        right = gutter - 1
+
+    # 同一件事的橫向版本:有些來源圖在主圖**下面**壓了一條說明字帶(白底黑字)。
+    # 那條字帶在這款是多餘的——說明由 game/eventText.ts 給,而且它會被 cover 拉進畫框裡。
+    # 一樣找「整列都白」的那條縫,切在那裡。
+    hgutter = None
+    for y in range(top + int((bottom - top) * 0.6), bottom + 1):
+        n = sum(1 for x in range(left, right + 1) if min(px[x, y]) >= WHITE)
+        if n / (right - left + 1) >= WHITE_RATIO:
+            hgutter = y
+            break
+    if hgutter is not None and hgutter - top >= (bottom - top) * 0.6:
+        bottom = hgutter - 1
+
+    return img.crop((left, top, right + 1, bottom + 1))
+
 
 def main() -> None:
     DST.mkdir(parents=True, exist_ok=True)
@@ -50,6 +121,7 @@ def main() -> None:
         if img.mode != 'RGBA':
             img = img.convert('RGB')
             img = Image.merge('RGBA', (*img.split()[:3], Image.new('L', img.size, 255)))
+        img = trim_white(img)
         if img.width > MAX_W:
             h = round(img.height * MAX_W / img.width)
             img = img.resize((MAX_W, h), Image.LANCZOS)

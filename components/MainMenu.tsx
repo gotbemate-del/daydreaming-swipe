@@ -15,7 +15,7 @@ import { EVENT_ART, EVENT_KEYS } from './eventArt';
 import { eventCaption } from '../game/eventCaption';
 import { SkillIcon } from './SkillIcon';
 import {
-  COIN_ICON, GEAR_ICON, HERO_ASPECT, HERO_FRAME_MS, HERO_FRAMES, heroBoxHeight, LOCK_ICON, weaponArt,
+  COIN_ICON, GEAR_ICON, HERO_ASPECT, HERO_FRAMES, heroBoxHeight, LOCK_ICON, weaponArt,
   QUEST_ICON, TAB_ICONS,
   elementColor,
 } from './artAssets';
@@ -143,7 +143,6 @@ export function MainMenu({
   const eggH = Math.round(eggW * (compact ? 0.5 : 0.62));
   const heroW = compact ? HERO_WIDTH_COMPACT : HERO_WIDTH;
   const heroH = compact ? HERO_HEIGHT_COMPACT : HERO_HEIGHT;
-  const [heroStep, setHeroStep] = useState(0);
   /**
    * 點史萊姆:①換成噴刺那一格 ②翻出一張彩蛋圖。
    *
@@ -160,9 +159,15 @@ export function MainMenu({
   const [settings, setSettings] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   // 主角永遠是史萊姆,轉職不換造型。職業立繪只留在轉職選擇畫面(那裡是在介紹職業)。
-  // 平常只在**待機的兩格**之間循環;噴刺那一格留給點擊(見 poke)。
+  /**
+   * **平常就是站著不動的第一格,只有點下去才換成噴刺那一格。**
+   *
+   * 這款的主角只有兩格圖(待機 / 噴刺),而噴刺是「出手」的姿勢——讓它自己循環的話,
+   * 主畫面上沒有敵人卻每兩秒噴一次刺,讀起來是「他在打空氣」。停在第一格之後,
+   * 那一格就完全屬於玩家的點擊,而點擊同時翻出一張彩蛋圖:一個動作換一則內容。
+   */
   const throwing = poke.at > 0 && Date.now() - poke.at < POKE_POSE_MS;
-  const heroArt = throwing ? HERO_FRAMES[1] : HERO_FRAMES[heroStep % HERO_FRAMES.length];
+  const heroArt = throwing ? HERO_FRAMES[1] : HERO_FRAMES[0];
   // 教學關(1-1 ~ 1-5)才有。null 的時候整列不畫——不是教學關的人不需要多一行字,
   // 而多出來的那一行在 640 高的螢幕上正好會把「開始闖關」往下推。
   const tutorial = tutorialRulesFor(stage);
@@ -180,12 +185,6 @@ export function MainMenu({
           style: lastResult === 'cleared' ? styles.resultWin : styles.resultLose,
         }
       : null;
-
-  useEffect(() => {
-    // 待機:兩格慢慢換(HERO_FRAME_MS 是投擲用的節奏,待機要慢一倍才像呼吸)。
-    const id = setInterval(() => setHeroStep((s) => s + 1), HERO_FRAME_MS * 4);
-    return () => clearInterval(id);
-  }, []);
 
   /**
    * 投擲那一下的動畫。**主畫面沒有跑圖的 tick**,所以要自己開一個短的——
