@@ -134,7 +134,7 @@ export default function HomeScreen() {
 }
 
 function Game() {
-  const { save, loaded, update } = useSave();
+  const { save, loaded, update, reset } = useSave();
   const { stage, coins } = save;
   const job = toLaneJob(save.job);
 
@@ -584,6 +584,28 @@ function Game() {
           // 「開過設定沒」只有主介面這顆齒輪記得住(跑圖裡那顆在 LaneRunner 內部,
           // 而任務提示指的就是右上角這一顆)。
           onOpenSettings={() => bump({ settingsOpened: 1 })}
+          /**
+           * 重置存檔:存檔本身歸零之後,**這一層的暫存也要一起歸零**。
+           * 存檔只記跨場留下來的東西,而 mode / 生存模式的累計 / 上一場的結果
+           * 都活在這個元件的 state 裡——不清的話玩家會看到「進度回到 1-1,
+           * 但主介面還寫著上一輪的結算」。
+           */
+          onResetSave={() => {
+            reset();
+            setMode('normal');
+            setLastResult(null);
+            setDungeonNote(null);
+            setPromotionTier(null);
+            setSurvivalFrom(1);
+            setSurvivalStage(1);
+            setSurvivalStreak(0);
+            setSurvivalWaves(0);
+            setSurvivalCoins(0);
+            setSurvivalHandoff(null);
+            setJustFound([]);
+            setJustBooks(0);
+            setScreen('menu');
+          }}
           onCodex={() => {
             // 「看過圖鑑沒」是任務要問的事,而圖鑑本身沒有別的地方記得住這件事。
             bump({ codexViewed: 1 });

@@ -69,6 +69,11 @@ interface Props {
   dungeonNote: string | null;
   /** 右上角齒輪被點開了(任務要記這件事)。 */
   onOpenSettings: () => void;
+  /**
+   * 重置存檔。傳進設定面板,由那裡的兩段式確認執行(見 Settings 的 onResetSave)。
+   * **只有主介面有這一顆**——跑圖中重置等於在一場進行中的遊戲底下把地板抽掉。
+   */
+  onResetSave: () => void;
   onStart: () => void;
   onDungeons: () => void;
   onCodex: () => void;
@@ -78,7 +83,7 @@ interface Props {
 
 export function MainMenu({
   stage, job, coins, lastResult, books, bestSurvival, justFound, justBooks, audio, onChangeAudio, quest,
-  dungeonNote, onOpenSettings, onStart, onDungeons, onCodex, onSkills, onQuests,
+  dungeonNote, onOpenSettings, onResetSave, onStart, onDungeons, onCodex, onSkills, onQuests,
 }: Props) {
   const [heroStep, setHeroStep] = useState(0);
   const [settings, setSettings] = useState(false);
@@ -288,7 +293,12 @@ export function MainMenu({
       </ScrollView>
 
       {settings && (
-        <Settings audio={audio} onChangeAudio={onChangeAudio} onClose={() => setSettings(false)} />
+        <Settings
+          audio={audio}
+          onChangeAudio={onChangeAudio}
+          onClose={() => setSettings(false)}
+          onResetSave={() => { onResetSave(); setSettings(false); }}
+        />
       )}
     </View>
   );

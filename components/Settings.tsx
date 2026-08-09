@@ -42,16 +42,23 @@ interface Props {
   onQuit?: () => void;
   /** 生存模式:重來是整輪重來(不是這一關重來),文字要講清楚。 */
   survival?: boolean;
+  /**
+   * 重置存檔。**只有主介面才給**(跑圖中重置等於在一場進行中的遊戲底下把地板抽掉)。
+   *
+   * 跟另外兩顆一樣要按兩次,而且它是這個面板裡最不可逆的一顆——關卡、金幣、技能書、
+   * 圖鑑、轉職全部歸零,所以排在最後面。
+   */
+  onResetSave?: () => void;
 }
 
 export function Settings({
-  audio, onChangeAudio, onClose, paused = false, onRestart, onQuit, survival = false,
+  audio, onChangeAudio, onClose, paused = false, onRestart, onQuit, survival = false, onResetSave,
 }: Props) {
   /** 哪一顆正在等第二次確認。同時只會有一顆,按另一顆會把前一顆的確認狀態取消。 */
-  const [confirming, setConfirming] = useState<'restart' | 'quit' | null>(null);
+  const [confirming, setConfirming] = useState<'restart' | 'quit' | 'reset' | null>(null);
 
   const danger = (
-    kind: 'restart' | 'quit',
+    kind: 'restart' | 'quit' | 'reset',
     label: string,
     hint: string,
     run: () => void,
@@ -144,6 +151,15 @@ export function Settings({
             danger('quit', '放棄遊戲',
               survival ? '結束這一輪並看結算' : '回主介面,這一關不算過',
               onQuit)
+          )}
+          {/*
+            重置存檔。**只有主介面給**(paused = false):跑圖中重置等於在進行中的一場
+            底下把地板抽掉,而那一場的狀態全部活在 LaneRunner 這個實例裡。
+            排在最後一顆,理由跟另外兩顆一樣——玩家打開這個面板九成是要調音量。
+          */}
+          {!paused && onResetSave && (
+            danger('reset', '重置存檔', '關卡 / 金幣 / 技能書 / 圖鑑 / 轉職全部歸零',
+              onResetSave)
           )}
         </View>
       </PixelFrame>
