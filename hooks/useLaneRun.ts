@@ -835,12 +835,20 @@ export function useLaneRun(
     // 跟火的差別是**瞬間 vs 持續**:金當下就補傷害,火是點燃之後慢慢啃。
     // 跟雷一樣只在第一層觸發:連鎖電到的每一隻再各自擴散一次的話,
     // 一下命中可以補出十幾下——火的燃燒就是為此改成持續傷害的(CLAUDE.md 記過)。
+    //
+    // **擴散出去的那幾刀也算命中**,所以它們一樣會點燃、一樣會凍住(depth + 1)。
+    // 跟雷的連鎖走同一條路徑:兩款都是「把一次命中送到別隻身上」,那就沒有理由
+    // 其中一款帶著 on-hit 效果、另一款不帶——玩家帶了金又帶了冰,卻發現只有主目標會凍,
+    // 那讀起來就是「這兩款不能搭」,而元素之間本來就該互相加成。
+    // 安全性跟連鎖同一個理由:第二層不會再擴散(上面的 depth === 0),
+    // 而燃燒是持續傷害、不保證帶走任何一隻(BURN_DPS_RATIO),所以疊起來也不會爆。
     if (depth === 0 && fx.metalSpread > 0) {
       let spread = 0;
       for (let j = i + 1; j < current.monsters.length && spread < fx.metalSpread; j++) {
         if (current.hitsOn[j] >= current.hitsPerUnit) continue;
         current.hitsOn[j] += fx.metalSpreadDamage;
         pushElementEvent('spread', j, now, i);
+        applyOnHit(current, j, now, fx, depth + 1);
         spread += 1;
       }
     }
