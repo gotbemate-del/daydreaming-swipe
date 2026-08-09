@@ -72,12 +72,13 @@ interface Props {
   onStart: () => void;
   onDungeons: () => void;
   onCodex: () => void;
+  onSkills: () => void;
   onQuests: () => void;
 }
 
 export function MainMenu({
   stage, job, coins, lastResult, books, bestSurvival, justFound, justBooks, audio, onChangeAudio, quest,
-  dungeonNote, onOpenSettings, onStart, onDungeons, onCodex, onQuests,
+  dungeonNote, onOpenSettings, onStart, onDungeons, onCodex, onSkills, onQuests,
 }: Props) {
   const [heroStep, setHeroStep] = useState(0);
   const [settings, setSettings] = useState(false);
@@ -261,7 +262,9 @@ export function MainMenu({
       >
         {TAB_ICONS.map((tab) => {
           // 開放的兩個:副本(三種副本的選擇畫面)與裝備(圖鑑)。其餘八個維持鎖著。
-          const open = tab.id === 'dungeon' || tab.id === 'equipment';
+          // 開放的三個:副本(三種副本)、裝備(圖鑑)、技能(18 款 + 技能書進度)。
+          // 其餘七個維持鎖著(見檔頭的說明)。
+          const open = tab.id === 'dungeon' || tab.id === 'equipment' || tab.id === 'skill';
           return (
             <Pressable
               key={tab.id}
@@ -270,6 +273,7 @@ export function MainMenu({
               onPress={() => {
                 if (tab.id === 'dungeon') onDungeons();
                 else if (tab.id === 'equipment') onCodex();
+                else if (tab.id === 'skill') onSkills();
                 else setNotice(`${tab.label}尚未開放`);
               }}
             >
