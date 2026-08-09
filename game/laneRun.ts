@@ -930,28 +930,33 @@ interface IdealStep {
   addN: number;
 }
 
-const IDEAL_PATH: IdealStep[] = (() => {
-  // x2 現在是「每場固定幾次」,換算成每一格的期望比重才能往前推。
-  const wDouble = Math.min(1, DOUBLE_GATE_RATE);
-  const rest = 1 - wDouble;
-  const w = GATE_WEIGHT_ADD + GATE_WEIGHT_GEAR;
-  const [wAdd, wGear] = [rest * (GATE_WEIGHT_ADD / w), rest * (GATE_WEIGHT_GEAR / w)];
-  const out: IdealStep[] = [];
-  let heroes = 1;
-  let perHero = 1;
-  // 多算幾格當緩衝,免得之後把小關拉長就查表越界。
-  for (let g = 0; g <= MAX_ROWS_PER_RUN + 8; g++) {
-    const addN = Math.max(1, Math.round(heroes * HERO_ADD_RATIO));
-    out.push({ heroes, perHero, addN });
-    heroes = wDouble * (heroes * 2) + wAdd * (heroes + addN) + wGear * heroes;
-    perHero = wDouble * perHero + wAdd * perHero + wGear * (perHero * GEAR_STEP);
-  }
-  return out;
-})();
+/**
+ * 理想路線的表。**長度不固定,查到哪裡就算到哪裡**(見 idealStep)。
+ *
+ * 原本是一次算滿 `MAX_ROWS_PER_RUN + 8` 格的定長陣列,而查表越界會被夾在最後一格——
+ * 那對單場的關卡沒差(一關最多 20 格),但無限模式是**一路接下去的**:
+ * 接到第三段就會查到表外,`idealStep` 從此凍在同一格,於是「勇者 +N」不再跟著人數長、
+ * 敵人曲線也跟著凍住(CLAUDE.md 記過這件事,當時的結論是「所以不能延續」)。
+ * 現在改成需要多長就長多長,那條限制就不存在了。
+ */
+const IDEAL_PATH: IdealStep[] = [];
 
-/** 理想路線走過 g 格閘門之後的狀態。超出表格就用最後一格(不會發生,防呆用)。 */
+/** 理想路線走過 g 格閘門之後的狀態。表不夠長就當場往下算。 */
 function idealStep(gates: number): IdealStep {
-  return IDEAL_PATH[Math.min(Math.max(0, gates), IDEAL_PATH.length - 1)];
+  const want = Math.max(0, Math.floor(gates));
+  if (IDEAL_PATH.length === 0) IDEAL_PATH.push({ heroes: 1, perHero: 1, addN: 1 });
+  while (IDEAL_PATH.length <= want) {
+    // x2 現在是「每場固定幾次」,換算成每一格的期望比重才能往前推。
+    const wDouble = Math.min(1, DOUBLE_GATE_RATE);
+    const rest = 1 - wDouble;
+    const w = GATE_WEIGHT_ADD + GATE_WEIGHT_GEAR;
+    const [wAdd, wGear] = [rest * (GATE_WEIGHT_ADD / w), rest * (GATE_WEIGHT_GEAR / w)];
+    const last = IDEAL_PATH[IDEAL_PATH.length - 1];
+    const heroes = wDouble * (last.heroes * 2) + wAdd * (last.heroes + last.addN) + wGear * last.heroes;
+    const perHero = wDouble * last.perHero + wAdd * last.perHero + wGear * (last.perHero * GEAR_STEP);
+    IDEAL_PATH.push({ heroes, perHero, addN: Math.max(1, Math.round(heroes * HERO_ADD_RATIO)) });
+  }
+  return IDEAL_PATH[want];
 }
 
 /** 吃到一格好閘門,總戰力平均乘多少。給驗證腳本看趨勢用,不再拿來推敵人曲線。 */
@@ -1766,16 +1771,60 @@ export function runSkillPicksForStage(stage: number, waveIndex: number, totalWav
   return runSkillPicksForWave(waveIndex, totalWaves);
 }
 
-export function createRun(seed: number, stage: number): RunRow[] {
+/**
+ * 無限模式接力用的「上一段留下來的東西」。
+ *
+ * 無限模式是**一條接下去的跑圖**:人數、裝備、技能都不重來,所以敵人那一側也不能重來——
+ * 敵人戰力是照「這一場的最佳路線」算的,而最佳路線如果每一段都從 1 人重新滾,
+ * 第二段的敵人就會用「1 人起跑」的規格去對付一個已經滾出幾百人的玩家(整段變成散步)。
+ * 這個物件就是把最佳路線的狀態一起交棒過去。
+ *
+ * **閘門的深度也要接**(`gatesBefore`):「勇者 +N」的 N 是照深度查表的,
+ * 從 0 重新數的話第二段的 +N 會退回個位數,對已經滾出來的隊伍是零頭。
+ */
+export interface RunCarry {
+  /** 之前已經吃過幾格閘門。接著往下數,idealStep 需要多長就長多長。 */
+  gatesBefore: number;
+  idealHeroes: number;
+  idealPerHero: number;
+  /** 最佳路線帶著的場內技能(等級會一路長,見 laneRunSkills 的無上限說明)。 */
+  skills: RunSkillState[];
+}
+
+/**
+ * **技能選項的序號刻意不交棒。** 每一段有自己的 seed(每次掛載重抽),而選項是
+ * 「seed + 序號」決定的——序號接下去但 seed 換了,理想路線抽到的那一串就跟玩家看到的
+ * 不是同一串,結構保證當場失效(CLAUDE.md:「選項要綁 seed」那條的第二種踩法)。
+ * 兩邊都從 0 開始數,才會拿到同一串。
+ */
+
+export function createRun(seed: number, stage: number, carry?: RunCarry): RunRow[] {
+  return buildRun(seed, stage, carry).rows;
+}
+
+/**
+ * 跟 `createRun` 同一支,但把「這一段結束時最佳路線走到哪裡」一起回傳。
+ * 無限模式拿它交棒給下一段;單場模式用不到(所以 createRun 只回 rows)。
+ */
+export function createRunWithCarry(
+  seed: number, stage: number, carry?: RunCarry,
+): { rows: RunRow[]; carry: RunCarry } {
+  return buildRun(seed, stage, carry);
+}
+
+function buildRun(seed: number, stage: number, carry?: RunCarry): { rows: RunRow[]; carry: RunCarry } {
   const rng = createRng(seed);
   // 挑怪物造型用獨立的亂數流。混用同一條的話,加一次抽選就會把後面所有閘門的內容整個位移,
   // 已經驗證過的過關率(scripts/verify-lane-run.ts)全部要重跑——造型是外觀,不該動到數值。
   const artRng = createRng((seed ^ 0x9e3779b9) >>> 0);
   const rows: RunRow[] = [];
   const distances = rowDistances(stage);
-  // 最佳路線的模擬狀態。跟 RunState 一樣是「人數 x 每人攻擊力」,起手 1 人。
-  let idealHeroes = 1;
-  let idealPerHero = baseAttackForStage(stage);
+  // 最佳路線的模擬狀態。跟 RunState 一樣是「人數 x 每人攻擊力」,起手 1 人;
+  // 無限模式則從上一段接下去(carry)。
+  let idealHeroes = carry ? carry.idealHeroes : 1;
+  let idealPerHero = carry ? carry.idealPerHero : baseAttackForStage(stage);
+  // 閘門深度的位移。單場是 0,無限模式是「之前吃過幾格」。
+  const depthBase = carry ? Math.max(0, Math.floor(carry.gatesBefore)) : 0;
   // 先決定這一場的爆發格落在第幾格,再一路產生——每場保證固定次數,不靠運氣。
   const rows_ = rowsForStage(stage);
   const totalGates = rows_ - Math.floor(rows_ / enemyEveryForStage(stage));
@@ -1789,7 +1838,7 @@ export function createRun(seed: number, stage: number): RunRow[] {
   const totalWaves = wavesForStage(stage);
   let waveIndex = 0;
   let skillOrdinal = 0;
-  let idealSkills: RunSkillState[] = [];
+  let idealSkills: RunSkillState[] = carry ? carry.skills : [];
   for (let i = 0; i < rows_; i++) {
     const isEnemy = isEnemyRowIndex(i, stage);
     if (isEnemy) {
@@ -1824,7 +1873,9 @@ export function createRun(seed: number, stage: number): RunRow[] {
       continue;
     }
     const depth = gatesBeforeRow(i, stage);
-    const nodes = makeGateRow(rng, stage, depth, doubleDepths.has(depth));
+    // **爆發格照這一段自己的深度挑(depth),而 +N 照累計深度查表(depthBase + depth)。**
+    // 前者是「這一段裡的第幾格」,後者是「理想路線走到哪裡」——無限模式只有後者要接下去。
+    const nodes = makeGateRow(rng, stage, depthBase + depth, doubleDepths.has(depth));
     // 好的那格就是「不是陷阱」的那格——兩格固定一好一壞,所以這樣認得出來。
     const good = nodes.find((n) => n.gate && !isTrapGate(n.gate))!.gate!;
     if (good.stat === 'heroes') {
@@ -1836,7 +1887,15 @@ export function createRun(seed: number, stage: number): RunRow[] {
     }
     rows.push({ index: i, distance: distances[i], nodes });
   }
-  return rows;
+  return {
+    rows,
+    carry: {
+      gatesBefore: depthBase + totalGates,
+      idealHeroes,
+      idealPerHero,
+      skills: idealSkills,
+    },
+  };
 }
 
 export function runLength(stage: number): number {

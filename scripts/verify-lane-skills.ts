@@ -3,7 +3,7 @@
 // 「技能書與圖鑑放大得到元素與主動,但一格都碰不到理想路線」。
 import {
   maxRunSkillAttackMultiplier,
-  bookPowerScale, MAX_SKILL_BOOK_LEVEL, MAX_RUN_SKILL_LEVEL,
+  bookPowerScale, MAX_SKILL_BOOK_LEVEL, REFERENCE_RUN_SKILL_LEVEL,
   ACTIVE_SKILL_IDS, bestRunSkillChoice, learnRunSkill, runSkillOffersAt,
   runSkillEffects, ELEMENTS, type RunSkillState, type ElementBooks,
 } from '../game/laneRunSkills';

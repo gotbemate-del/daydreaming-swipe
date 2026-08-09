@@ -3,6 +3,7 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import { JobChoice } from '../components/JobChoice';
 import { LaneRunner } from '../components/LaneRunner';
+import type { RunHandoff } from '../hooks/useLaneRun';
 import { MainMenu } from '../components/MainMenu';
 import { isPromotionStage, runStartFor, tierAfter, type JobTier, type LaneJob } from '../game/laneJobs';
 import { useSave } from '../hooks/useSave';
@@ -166,6 +167,13 @@ function Game() {
    * 「只在第一關顯示一次的面板」都必須跨過那個邊界(見 LaneRunner 的 backdropOverride)。
    */
   const [survivalBackdrop, setSurvivalBackdrop] = useState<BackdropId>(BACKDROPS[0]);
+  /**
+   * 無限模式的交棒:**上一段結束時的樣子**(人數、裝備、技能,以及敵人那一側的最佳路線)。
+   *
+   * 放在 app 層的理由跟地圖同一個:LaneRunner 每一段都換 key 重新掛載,而這一輪的
+   * 累積必須跨過那個邊界。null = 這一輪的第一段(從 1 個人開始滾)。
+   */
+  const [survivalHandoff, setSurvivalHandoff] = useState<RunHandoff | null>(null);
   const [mapDrawOpen, setMapDrawOpen] = useState(false);
 
   /**
@@ -321,6 +329,8 @@ function Game() {
       setSurvivalStreak(0);
       setSurvivalWaves(0);
       setSurvivalCoins(0);
+      // 整輪重來 = 交棒清掉,重新從 1 個人開始滾。
+      setSurvivalHandoff(null);
       setSurvivalBackdrop(drawBackdrop(null));
       setMapDrawOpen(true);
     }
@@ -341,7 +351,9 @@ function Game() {
     onRunFinish('dead', 0, 0, { goodGates: 0, misses: 0, runSkillPicks: 0, rocksDodged: 0 });
   }
 
-  function onRunFinish(result: 'cleared' | 'dead', earned: number, waves: number, stats: RunStats) {
+  function onRunFinish(
+    result: 'cleared' | 'dead', earned: number, waves: number, stats: RunStats, handoff?: RunHandoff,
+  ) {
     update((prev) => ({ ...prev, coins: prev.coins + earned }));
     const drops = rollRunDrops(result === 'cleared', mode);
     // 任務計數器。**每一場都記,副本也記**——任務問的是「你做過這件事沒有」,
@@ -376,6 +388,10 @@ function Game() {
       // 而無限副本的核心就是沒有整備的機會。
       setSurvivalStreak((n) => n + 1);
       setSurvivalStage((st) => Math.min(TOTAL_STAGES, st + 1));
+      // **交棒**:人數、裝備、技能,以及敵人那一側的最佳路線一起帶到下一段。
+      // 兩側一定要同時帶——只帶玩家側的話敵人會停在第一段的規格(整輪變散步),
+      // 只帶敵人側則是玩家每段從 1 個人開始面對長大的敵人(第二段就死)。
+      if (handoff) setSurvivalHandoff(handoff);
       setRunKey((k) => k + 1);
       return;
     }
@@ -447,6 +463,7 @@ function Game() {
       setSurvivalStreak(0);
       setSurvivalWaves(0);
       setSurvivalCoins(0);
+      setSurvivalHandoff(null);
     }
     setRunKey((k) => k + 1);
     setScreen('run');
@@ -584,6 +601,7 @@ function Game() {
     <View style={styles.screen}>
       <LaneRunner
         key={`${mode}-${mode === 'endless' ? survivalStage : stage}-${runKey}`}
+        handoff={mode === 'endless' ? survivalHandoff : null}
         stage={mode === 'endless' ? survivalStage : stage}
         job={job}
         start={runStartFor(job)}

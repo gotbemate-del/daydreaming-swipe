@@ -6,10 +6,10 @@
 // 只會有一份被記得更新,另外兩份會靜靜地量錯東西。
 
 import {
-  applyRockHit, bestLane, createRocks, createRun, initialRunState, isEnemyRowIndex, LANE_COUNT,
+  applyRockHit, bestLane, createRocks, createRunWithCarry, initialRunState, isEnemyRowIndex, LANE_COUNT,
   laneCenterOffset, resolveRow, wavesForStage, worstLane, activeSkillCountForStage,
   runSkillPicksForStage,
-  type Lane, type RunRow, type RunStart, type RunState,
+  type Lane, type RunCarry, type RunRow, type RunStart, type RunState,
 } from '../game/laneRun';
 import {
   applyRunSkillPick, bestRunSkillChoice, learnRunSkill, runSkillOffersAt,
@@ -25,8 +25,17 @@ export const pickRandom: LanePicker = (_s, _row, rng) => Math.floor(rng() * LANE
 export const pickAccurate = (p: number): LanePicker => (s, row, rng) =>
   (rng() < p ? bestLane(s, row) : worstLane(s, row));
 
+/** 生存模式一段接一段的交棒。跟遊戲裡的 RunHandoff 是同一件事,只是不含畫面的東西。 */
+export interface SimHandoff {
+  state: { heroes: number; perHero: number; gear: number; tradeRate: number };
+  skills: RunSkillState[];
+  ideal: RunCarry;
+}
+
 export interface SimResult {
   outcome: 'cleared' | 'dead';
+  /** 這一段結束時要交給下一段的東西(生存模式用)。 */
+  handoff: SimHandoff;
   state: RunState;
   /** 死在第幾排(活著回傳 -1) */
   deathRow: number;
@@ -55,6 +64,8 @@ export interface SimOptions {
    * 不然量出來的「每排都挑最好 → 100% 過關」會莫名其妙破掉。
    */
   rockHitRate?: number;
+  /** 生存模式:上一段交棒過來的東西。不給就是這一輪的第一段(從 1 個人開始滾)。 */
+  handoff?: SimHandoff;
   /**
    * 掃過整條跑道的比例(1 = 每一隻都拉到射程內)。
    *
@@ -72,15 +83,19 @@ export function simulateRun(
   pick: LanePicker,
   opts: SimOptions = {},
 ): SimResult {
-  const { start, sloppy = 0, rockHitRate = 0, sweep = 1 } = opts;
-  const rows = createRun(seed, stage);
+  const { start, sloppy = 0, rockHitRate = 0, sweep = 1, handoff } = opts;
+  const built = createRunWithCarry(seed, stage, handoff?.ideal);
+  const rows = built.rows;
   const rocks = createRocks(seed, stage);
-  let st = start ? initialRunState(stage, start) : initialRunState(stage);
+  // 生存(無限)模式:上一段的人數/裝備/技能原封不動接下去(見 laneRun 的 RunCarry)。
+  let st = handoff
+    ? { ...initialRunState(stage, start), ...handoff.state, stage }
+    : (start ? initialRunState(stage, start) : initialRunState(stage));
   let x = seed + 7;
   const rng = () => { x = (x * 1103515245 + 12345) & 0x7fffffff; return x / 0x7fffffff; };
 
   const totalWaves = wavesForStage(stage);
-  let skills: RunSkillState[] = [];
+  let skills: RunSkillState[] = handoff ? handoff.skills : [];
   let waveIndex = 0;
   let skillOrdinal = 0;
   const margins: SimResult['margins'] = [];
@@ -116,7 +131,7 @@ export function simulateRun(
     if (st.phase === 'dead') {
       return {
         outcome: 'dead', state: st, deathRow: row.index, margins, runSkills: skills,
-        rocks: rocks.length, rockHits,
+        rocks: rocks.length, rockHits, handoff: handoffOf(st, skills, built.carry),
       };
     }
     // 打完一波就給技能,規則跟遊戲裡一模一樣。
@@ -137,7 +152,15 @@ export function simulateRun(
   }
   return {
     outcome: 'cleared', state: st, deathRow: -1, margins, runSkills: skills,
-    rocks: rocks.length, rockHits,
+    rocks: rocks.length, rockHits, handoff: handoffOf(st, skills, built.carry),
+  };
+}
+
+function handoffOf(st: RunState, skills: RunSkillState[], ideal: RunCarry): SimHandoff {
+  return {
+    state: { heroes: st.heroes, perHero: st.perHero, gear: st.gear, tradeRate: st.tradeRate },
+    skills,
+    ideal,
   };
 }
 

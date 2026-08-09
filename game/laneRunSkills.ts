@@ -199,8 +199,23 @@ export interface RunSkillState {
   level: number;
 }
 
-/** 場內技能的基本上限。技能書只往上開元素與主動,見 runSkillLevelCap。 */
-export const MAX_RUN_SKILL_LEVEL = 5;
+/**
+ * **場內技能沒有等級上限。**
+ *
+ * 無限模式是一條不停下來的跑圖(波數一路累加、人數不重來),所以「升級」也不能有終點——
+ * 有上限的話跑到後段每一次三選一都只剩「換一款沒帶過的」,而 10 格滿了之後
+ * 那個選單就永遠開不出東西(舊版靠「4 格 x 5 級 = 20 次」剛好卡住長關的選擇次數,
+ * 那個算式在無限模式下必然溢出)。
+ *
+ * 敢無上限的理由跟技能書開到 100 級是同一條:**這些效果全部在理想路線之外**。
+ * 沒有任何技能會加戰力(`maxRunSkillAttackMultiplier() === 1`,verify 在盯),
+ * 清怪給的是固定隻數——對每一波全清的理想玩家價值是 0,敵人一格都不會跟著長。
+ * 而固定值在無限模式裡**自帶衰減**:人數是指數成長的,+20 隻在第 300 波是零頭。
+ *
+ * 這個常數留下來當「一般小關實際走得到的參考等級」:describe 的文案、
+ * verify 的對照都拿它當基準,但它**不再夾任何東西**。
+ */
+export const REFERENCE_RUN_SKILL_LEVEL = 5;
 
 /**
  * 技能書等級(0 = 還沒有)。生存模式掉的就是這個,是這款的第三層養成。
@@ -465,7 +480,7 @@ const COOLDOWN_SPEC: Partial<Record<RunSkillId, { base: number; perLevel: number
 export function skillCooldownSeconds(id: RunSkillId, level: number): number {
   const spec = COOLDOWN_SPEC[id];
   if (!spec) return 0;
-  const l = Math.max(0, Math.min(MAX_RUN_SKILL_LEVEL, Math.floor(level)));
+  const l = Math.max(0, Math.floor(level));
   if (l <= 0) return 0;
   return Math.max(spec.min, spec.base - spec.perLevel * l);
 }
@@ -498,7 +513,7 @@ export function hasCooldown(id: RunSkillId): boolean {
  * 級數 1~5 → 0 / 1 / 1 / 2 / 2 隻。
  */
 export function burnSpreadTargets(level: number): number {
-  return level > 0 ? Math.floor(Math.min(MAX_RUN_SKILL_LEVEL, level) / 2) : 0;
+  return level > 0 ? Math.floor(level / 2) : 0;
 }
 
 /**
@@ -515,7 +530,7 @@ export function burnSpreadTargets(level: number): number {
  * 級數 1~5 → 1 / 1 / 2 / 2 / 3 隻。
  */
 export function metalSpreadTargets(level: number): number {
-  return level > 0 ? 1 + Math.floor((Math.min(MAX_RUN_SKILL_LEVEL, level) - 1) / 2) : 0;
+  return level > 0 ? 1 + Math.floor((level - 1) / 2) : 0;
 }
 
 /**
@@ -546,15 +561,15 @@ export const BURN_DPS_RATIO = 0.05;
 export const BURN_DURATION_MS = 3000;
 /** 雷・連鎖:每幾下攻擊觸發一次連鎖閃電(0 = 沒點)。 */
 export function chainEveryHits(level: number): number {
-  return level > 0 ? Math.max(3, 9 - Math.min(MAX_RUN_SKILL_LEVEL, level)) : 0;
+  return level > 0 ? Math.max(3, 9 - level) : 0;
 }
 /** 雷・連鎖:一次電到幾隻。 */
 export function chainTargetCount(level: number): number {
-  return level > 0 ? 1 + Math.floor((Math.min(MAX_RUN_SKILL_LEVEL, level) - 1) / 2) : 0;
+  return level > 0 ? 1 + Math.floor((level - 1) / 2) : 0;
 }
 /** 冰・凍結:一次命中把那一隻凍住的機率(吃相剋,所以剋中時凍得住的機會明顯變高)。 */
 export function freezeChanceAt(level: number, matchup = 1): number {
-  return level > 0 ? Math.min(0.6, 0.1 * Math.min(MAX_RUN_SKILL_LEVEL, level) * matchup) : 0;
+  return level > 0 ? Math.min(0.6, 0.1 * level * matchup) : 0;
 }
 /** 凍住多久(毫秒)。畫面與邏輯共用,不要各寫一份。 */
 export const FREEZE_MS = 900;
@@ -567,7 +582,7 @@ export const FREEZE_MS = 900;
  * 土的識別度來自「整波一直慢下來」而不是「某幾隻完全停住」。
  */
 export function earthSlowRatio(level: number): number {
-  return level > 0 ? Math.min(0.5, PER_LEVEL.earthSlow * Math.min(MAX_RUN_SKILL_LEVEL, level)) : 0;
+  return level > 0 ? Math.min(0.5, PER_LEVEL.earthSlow * level) : 0;
 }
 
 // ---- 二三階:主動技能 ----
@@ -593,11 +608,11 @@ export function earthSlowRatio(level: number): number {
 
 /** 二階:每次清掉幾隻。等級提高的是量,不是頻率。 */
 export function tier2Kills(level: number): number {
-  return level > 0 ? 2 + Math.min(MAX_RUN_SKILL_LEVEL, level) : 0;
+  return level > 0 ? 2 + level : 0;
 }
 /** 三階:每次清掉幾隻。 */
 export function tier3Kills(level: number): number {
-  return level > 0 ? 5 + 2 * Math.min(MAX_RUN_SKILL_LEVEL, level) : 0;
+  return level > 0 ? 5 + 2 * level : 0;
 }
 
 /** 二三階各自的名字與一句話。用查表寫,因為 12 款的規則完全一樣、只有名字不同。 */
@@ -736,8 +751,9 @@ export function runSkillOffers(
   // 直接拿三階等於放棄那一族的集齊加成,除非後面再把一二階補回來。
   const pool = RUN_SKILLS
     .filter((spec) => !full || skills.some((s) => s.id === spec.id))
-    .map((spec) => ({ id: spec.id, level: runSkillLevel(skills, spec.id) + 1 }))
-    .filter((o) => o.level <= MAX_RUN_SKILL_LEVEL);
+    // **不再過濾「練滿了」的款式**:等級沒有上限,所以手上的每一款永遠都能再升一級。
+    // 這是無限模式的必要條件——10 格滿了之後,選單裡剩下的就只有「把帶著的練上去」。
+    .map((spec) => ({ id: spec.id, level: runSkillLevel(skills, spec.id) + 1 }));
   for (let i = pool.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];
@@ -886,7 +902,7 @@ export function runSkillEffects(
   let chainTargets = 0;
   const actives: ActiveTrigger[] = [];
   for (const s of skills) {
-    const level = Math.min(MAX_RUN_SKILL_LEVEL, Math.max(0, s.level));
+    const level = Math.max(0, s.level);
     // 八元素:每一款的規則都不一樣,而且全部只在「失誤了」才生效。
     // mx 是這一個元素對上這一波屬性的倍率(剋中放大、被剋削弱),逐元素各算各的。
     // 相剋(逐元素)乘上技能書的放大。兩者都只碰元素/主動,所以都不進理想路線。
@@ -988,7 +1004,9 @@ export function applyRunSkillPick(
  * 這個值會自己跳起來,verify 就會紅。
  */
 export function maxRunSkillAttackMultiplier(): number {
-  const maxed: RunSkillState[] = RUN_SKILLS.map((spec) => ({ id: spec.id, level: MAX_RUN_SKILL_LEVEL }));
+  // 等級沒有上限,所以這裡刻意用一個**遠高於實際走得到**的等級:
+  // 證明的是「不管練到幾級,技能對戰力的貢獻都是 0」,不是「練到 5 級為止是 0」。
+  const maxed: RunSkillState[] = RUN_SKILLS.map((spec) => ({ id: spec.id, level: 99 }));
   const e = runSkillEffects(maxed);
   return e.attackMultiplier * e.heroMultiplier;
 }
