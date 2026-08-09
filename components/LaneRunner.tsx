@@ -35,6 +35,7 @@ import {
 } from '../game/laneRunSkills';
 import {
   HIT_NUMBER_MS, ELEMENT_FX_MS, FEEDBACK_MS, useLaneRun,
+  STRIKE_BANNER_MS,
   type CarriedSkill, type ElementEvent, type HitNumber, type Projectile, type WaveView,
 } from '../hooks/useLaneRun';
 import type { RunStats } from '../game/quests';
@@ -76,6 +77,8 @@ const SPREAD_SIZE = 20;
 const SPREAD_BURST = 12;
 /** 技能列那一排圓的直徑。34 是「環看得出走到哪」與「一排塞得下 6 顆」的交界。 */
 const SKILL_ICON_SIZE = 34;
+/** 技能列擠到滿的時候縮到多小為止。再小的話等級的小圓就讀不出來了。 */
+const MIN_SKILL_ICON_SIZE = 20;
 // 只給 headY 當基準用(見下方 form 那段的說明):版面錨點固定用基本型,合體不會讓它位移。
 const HERO_HEIGHT = heroBoxHeight(HERO_BODY_HEIGHT);
 const HERO_BOTTOM = 10;
@@ -106,7 +109,7 @@ const BOSS_SIZE = 132;
 const ELITE_SIZE = 84;
 const PROJECTILE_SIZE = 30;
 /** 主動技能特效播多久。要看得到,但不能久到蓋住下一波。 */
-const STRIKE_FX_MS = 700;
+
 /**
  * 石頭畫多大。**刻意等於 MONSTER_SIZE**——判定寬度(laneRun 的 ROCK_WIDTH)就是照小怪的
  * 視覺尺寸定的,畫大一點會讓玩家以為擦到了卻沒事,畫小一點則反過來。
@@ -176,6 +179,8 @@ const FROST_COLOR = '#9fd8e8';
 const BURN_SIZE = 34;
 /** 凍結那一下炸開的圈多大。 */
 const FROST_BURST = 28;
+/** 技能收掉那一隻時炸開的環,起始直徑。比凍結那圈大一點——它代表的是「死亡」不是「狀態」。 */
+const BLAST_BURST = 34;
 /** 燃燒中的怪疊什麼顏色。跟 artAssets 的火屬性同色系但更亮(它要蓋過屬性染色)。 */
 const BURN_COLOR = '#e8814a';
 /** 土・遲滯疊在怪身上的咖啡色。跟 artAssets 的土屬性同色。 */
@@ -797,6 +802,58 @@ export function LaneRunner({
           </View>
         );
       }
+      // 技能收掉的那一隻:炸開一圈元素色的環,環一擴散那隻怪就不見了。
+      //
+      // **這一圈是「為什麼牠不見了」的說明。** 技能的擊殺先前只有一行字,怪要等勇者
+      // 把刀丟滿才消失;現在是當場消失,所以更需要一個落在**那一隻身上**的訊號——
+      // 跑道上方那一團 SkillFx 講的是「技能放了」,講不出「這幾隻是它收的」。
+      if (e.kind === 'blast') {
+        const r = BLAST_BURST + age * 34;
+        const color = elementColor(e.element) ?? '#e0a95c';
+        // 那一隻的剪影再放一次:縮小、淡出、整個染成元素色。
+        //
+        // **光有一圈環還不夠**:環是畫在「牠原本站的地方」,而牠在同一格就從畫面上不見了——
+        // 讀起來是「怪憑空消失,旁邊剛好有個圈」。補一張正在縮小的剪影,順序才看得懂:
+        // 先有這一隻、再有它被收掉。剪影只活 300ms(ELEMENT_FX_MS.blast),而且是純畫面:
+        // 牠在 hook 裡早就倒了,這裡畫的是已經發生的事(跟其他元素演出同一條規矩)。
+        const m = w.monsters[e.target];
+        const size = w.boss ? BOSS_SIZE : w.elite ? ELITE_SIZE : MONSTER_SIZE;
+        const species = m ? (w.species[m.speciesIndex] ?? w.species[0]) : null;
+        const ghostArt = species
+          ? (monsterAnim(species.id)?.frames[0] ?? monsterArt(species.id))
+          : null;
+        const ghost = size * (1 - age * 0.45);
+        return (
+          <View key={`fx-${e.id}`} pointerEvents="none">
+            {ghostArt !== null && !w.heroWave && (
+              <Image
+                source={ghostArt}
+                resizeMode="contain"
+                tintColor={color}
+                style={[
+                  styles.pixelArt,
+                  styles.floating,
+                  { left: to.x - ghost / 2, top: to.y - ghost / 2, width: ghost, height: ghost, opacity: 0.8 * (1 - age) },
+                ]}
+              />
+            )}
+            <View
+              style={[
+                styles.blastRing,
+                {
+                  left: to.x - r / 2,
+                  top: to.y - r / 2,
+                  width: r,
+                  height: r,
+                  borderRadius: r / 2,
+                  borderColor: color,
+                  opacity: 1 - age,
+                },
+              ]}
+            />
+          </View>
+        );
+      }
       if (e.kind === 'burn') {
         const r = BURN_SIZE * (1 - age * 0.5);
         return (
@@ -977,13 +1034,36 @@ export function LaneRunner({
    * 舊註解寫「不畫冷卻環是因為要多一個相依」——那個相依(react-native-svg)後來
    * 為了別的東西已經進來了,所以那個理由早就不成立。
    */
-  function renderSkillSlot(s: CarriedSkill) {
+  function renderSkillSlot(s: CarriedSkill, size: number) {
     const tint = elementColor(s.id) ?? '#e0a95c';
     return (
       <View key={s.id} accessibilityLabel={`技能 ${s.name} ${s.level}`} style={styles.skillSlot}>
-        <SkillIcon id={s.id} color={tint} size={SKILL_ICON_SIZE} level={s.level} cooldown={s.cooldown} ready={s.ready} />
+        <SkillIcon id={s.id} color={tint} size={size} level={s.level} cooldown={s.cooldown} ready={s.ready} />
       </View>
     );
+  }
+
+  /**
+   * 技能列**永遠只有一列**,所以圖示的大小是算出來的不是寫死的。
+   *
+   * 一場最多帶 10 款(MAX_RUN_SKILL_SLOTS),而寫死 34px 的話 390 寬的手機在第 10 款
+   * 就換行了——換行的那一顆掉到提示文字底下,看起來像「多出來一個不知道哪來的技能」,
+   * 而且底下那一列本來就貼著畫面下緣,小螢幕會被切掉。
+   *
+   * 算法:先照跑道寬扣掉間隔,再夾在可讀的上下限之間;真的擠不下就連間隔一起縮。
+   * 上限維持 34(帶得少的時候跟以前一模一樣),下限 20 是等級小圓還讀得出來的極限。
+   */
+  function skillBarMetrics(count: number) {
+    const MAX_GAP = 7;
+    const MIN_GAP = 3;
+    const width = trackWidth > 0 ? trackWidth : 0;
+    if (count <= 0 || width <= 0) return { size: SKILL_ICON_SIZE, gap: MAX_GAP };
+    for (const gap of [MAX_GAP, 5, MIN_GAP]) {
+      const size = Math.floor((width - gap * (count - 1)) / count);
+      if (size >= SKILL_ICON_SIZE) return { size: SKILL_ICON_SIZE, gap };
+      if (size >= MIN_SKILL_ICON_SIZE) return { size, gap };
+    }
+    return { size: MIN_SKILL_ICON_SIZE, gap: MIN_GAP };
   }
 
   return (
@@ -1129,7 +1209,7 @@ export function LaneRunner({
           文字留著但退到上方:特效告訴你「發生了什麼」,文字補上「清掉幾隻」,
           兩者位置錯開才不會在同一秒互相蓋住(那一刻畫面上還有「擊倒… +N 人」)。
         */}
-        {ready && lastStrike && Date.now() - lastStrike.at < STRIKE_FX_MS && (
+        {ready && lastStrike && Date.now() - lastStrike.at < STRIKE_BANNER_MS && (
           <>
             {lastStrike.ids.map((fxId) => (
               <SkillFx
@@ -1290,7 +1370,7 @@ export function LaneRunner({
         只有「還要 2 波」,那是玩家換算不成時間的單位;綁秒才有倒數可看,而看得到倒數
         才談得上「等一下再放」。被動沒有冷卻,只顯示名字與等級(見 CarriedSkill.cooldown)。
       */}
-      <View style={styles.skillBar}>
+      <View style={[styles.skillBar, { gap: skillBarMetrics(carriedSkills.length).gap }]}>
         {carriedSkills.length === 0
           // 教學關的前兩關**根本不給場內技能**(見 game/laneTutorial.ts),
           // 那兩關寫「打完一波就能挑技能」是騙人的——玩家會一路等到終點都等不到面板,
@@ -1302,7 +1382,7 @@ export function LaneRunner({
                 : '打完一波就能挑技能'}
             </Text>
           )
-          : carriedSkills.map(renderSkillSlot)}
+          : carriedSkills.map((s) => renderSkillSlot(s, skillBarMetrics(carriedSkills.length).size))}
       </View>
 
       {/* 「現在打到第幾波」是玩家判斷「還剩多久」的唯一依據——只寫總波數的話,
@@ -1563,15 +1643,18 @@ const styles = StyleSheet.create({
   chainBolt: { position: 'absolute', height: 2, backgroundColor: '#f2e6a0', borderRadius: 1, zIndex: 12 },
   /** 凍結:炸開的那一圈。 */
   frostBurst: { position: 'absolute', borderWidth: 2, borderColor: FROST_COLOR, zIndex: 12 },
+  // borderColor 由 blast 事件的元素決定,所以這裡只給厚度與層級。
+  blastRing: { position: 'absolute', borderWidth: 3, zIndex: 13 },
   /** 凍住期間罩在怪身上的框,讓「這一隻停住了」不只是顏色的差別。 */
   frostRing: { position: 'absolute', borderWidth: 1, borderColor: FROST_COLOR, borderRadius: 4, opacity: 0.8 },
   // ---- 技能列(畫面最下方,原本是廣告版位的位置)----
   skillBar: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    // **不准換行。** 換到第二列的那一顆會掉到提示文字底下(小螢幕直接被切掉),
+    // 而且那一列的高度是版面裡少數幾個固定值之一。擠不下就把圖示縮小,見 skillBarMetrics。
+    flexWrap: 'nowrap',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 7,
     minHeight: 40,
   },
   // overflow 不能設 hidden:等級的小圓刻意畫在圓的外緣上(right/bottom 是負的),
