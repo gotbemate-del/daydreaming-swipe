@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
   clampOffset,
-  createRun,
+  createRunWithCarry,
   fireIntervalMs,
   HITS_PER_MONSTER,
   initialRunState,
@@ -43,6 +43,7 @@ import {
   type Lane,
   type RunRock,
   type RunRow,
+  type RunCarry,
   type RunStart,
   type RunState,
   type WaveMonster,
@@ -179,6 +180,19 @@ export const ELEMENT_FX_MS: Record<ElementEvent['kind'], number> = {
 export const STRIKE_BANNER_MS = 700;
 
 /** 技能列上的一格。被動沒有冷卻(cooldown = 0),只顯示名字與等級。 */
+/**
+ * 生存(無限)模式一段接一段用的交棒包。**玩家側與理想路線側一起交**——
+ * 只交其中一邊,敵人曲線就會跟玩家岔開(這款在「兩側必須同時算」上摔過好幾次)。
+ */
+export interface RunHandoff {
+  /** 上一段結束時玩家的數值。 */
+  state: { heroes: number; perHero: number; gear: number; tradeRate: number };
+  /** 上一段結束時帶著的場內技能(等級一路長,沒有上限)。 */
+  skills: RunSkillState[];
+  /** 上一段結束時最佳路線走到哪裡(給 createRun)。 */
+  ideal: RunCarry;
+}
+
 export interface CarriedSkill {
   id: RunSkillId;
   name: string;
@@ -244,6 +258,12 @@ export interface LaneRunView {
    * 只有跑完那一刻要讀它,函式剛好對得上這個用法。
    */
   readStats: () => RunStats;
+  /**
+   * 交給下一段的東西(生存模式用)。**每次讀都是現在的樣子**——跟 readStats 一樣做成函式,
+   * 理由也一樣:它要在「跑完的那一刻」讀,而中途每個 tick 都掛一個新物件出去
+   * 等於每格都讓外層重畫一次。
+   */
+  readHandoff: () => RunHandoff;
   state: RunState;
   /** 已跑距離 */
   distance: number;
@@ -391,14 +411,30 @@ export function useLaneRun(
    *「畫面停住但怪還在往前推進」——關掉面板的瞬間人數突然少一截,查起來完全看不出原因。
    */
   externallyPaused = false,
+  /**
+   * 生存(無限)模式的交棒:**上一段結束時的樣子**。
+   *
+   * 沒有它的話每一段都從 1 人重新滾,而那正是舊版的「連續只是不中斷、數值仍然重來」。
+   * 有它之後人數、裝備、技能一路帶下去,敵人那一側也照同一份交棒接上
+   *(`handoff.ideal` 交給 createRun,見 laneRun 的 RunCarry)——兩側一定要同時接,
+   * 只接玩家側等於把敵人凍在第一段的規格,整輪變成散步。
+   */
+  handoff: RunHandoff | null = null,
 ): LaneRunView {
   // 這一場的 seed。閘門與技能選項都由它決定,敵人戰力也是照同一顆 seed 的最佳路線算的,
   // 所以 seed 必須留著——技能選項另外抽的話,玩家看到的選單就不是 createRun 假設的那一組。
   const [seed] = useState(() => Math.floor(Math.random() * 1e9));
-  const [rows] = useState<RunRow[]>(() => createRun(seed, stage));
+  // rows 與「這一段結束時理想路線走到哪」是同一次計算的兩個結果:各算一次的話
+  // 會出現兩條不一樣的最佳路線(而它們看起來都對)。
+  const [built] = useState(() => createRunWithCarry(seed, stage, handoff?.ideal));
+  const rows = built.rows;
   // 石頭走自己的亂數流,所以加減石頭不會位移閘門內容(見 createRocks)。
   const [rocks] = useState<RunRock[]>(() => createRocks(seed, stage));
-  const [state, setState] = useState<RunState>(() => initialRunState(stage, start));
+  const [state, setState] = useState<RunState>(() => (handoff
+    // 交棒:人數、每人攻擊力、裝備階、兌換率原封不動接下去,只有關卡編號換成這一段的。
+    // (起跑數值 start 在這裡不再套用一次——套了就等於每一段都再吃一次轉職獎勵。)
+    ? { ...initialRunState(stage, start), ...handoff.state, stage }
+    : initialRunState(stage, start)));
   const [distance, setDistance] = useState(0);
   const [feedback, setFeedback] = useState<RunFeedback | null>(null);
 
@@ -425,7 +461,7 @@ export function useLaneRun(
   const [lastShotAt, setLastShotAt] = useState(0);
   const [lastShotId, setLastShotId] = useState(0);
   const [elementEvents, setElementEvents] = useState<ElementEvent[]>([]);
-  const [runSkills, setRunSkills] = useState<RunSkillState[]>([]);
+  const [runSkills, setRunSkills] = useState<RunSkillState[]>(() => handoff?.skills ?? []);
   const [skillOffers, setSkillOffers] = useState<RunSkillState[]>([]);
   const [pendingPicks, setPendingPicks] = useState(0);
 
@@ -1324,6 +1360,16 @@ export function useLaneRun(
     rows,
     rocks,
     readStats,
+    readHandoff: () => ({
+      state: {
+        heroes: stateRef.current.heroes,
+        perHero: stateRef.current.perHero,
+        gear: stateRef.current.gear,
+        tradeRate: stateRef.current.tradeRate,
+      },
+      skills: runSkillsRef.current,
+      ideal: built.carry,
+    }),
     state,
     distance,
     heroOffset,

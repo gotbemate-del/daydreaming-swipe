@@ -26,7 +26,7 @@ import {
   simulateRun, type LanePicker,
 } from './simRun';
 import {
-  runSkillPicksForWave, totalRunSkillPicks, MAX_RUN_SKILL_LEVEL, RUN_SKILLS, maxRunSkillAttackMultiplier,
+  runSkillPicksForWave, totalRunSkillPicks, REFERENCE_RUN_SKILL_LEVEL, RUN_SKILLS, maxRunSkillAttackMultiplier,
   ELEMENT_SET_BONUS, hasElementSet, tier2Kills, tier3Kills,
   MAX_RUN_SKILL_SLOTS, runSkillEffects, skillCooldownSeconds, bestRunSkillChoice, runSkillOffersAt,
   ACTIVE_SKILL_IDS, ELEMENTS, runSkillSpec, ELEMENT_COUNTERS, COUNTER_BONUS, COUNTERED_PENALTY,
@@ -511,8 +511,8 @@ check('六個元素各三階,共 18 款', RUN_SKILLS.length === 18
 // 破一次例(土曾經是「每 N 秒擋一整波」)整條規則就沒人信了。
 check('一階一款都沒有冷卻,二三階每一款都有',
   RUN_SKILLS.every((sp) => (skillTier(sp.id) === 1)
-    ? skillCooldownSeconds(sp.id, MAX_RUN_SKILL_LEVEL) === 0
-    : skillCooldownSeconds(sp.id, MAX_RUN_SKILL_LEVEL) > 0));
+    ? skillCooldownSeconds(sp.id, REFERENCE_RUN_SKILL_LEVEL) === 0
+    : skillCooldownSeconds(sp.id, REFERENCE_RUN_SKILL_LEVEL) > 0));
 check('主動 = 二三階(12 款),而且六個元素各兩款',
   ACTIVE_SKILL_IDS.length === 12
   && ACTIVE_SKILL_IDS.every((id) => skillTier(id) > 1)
@@ -521,7 +521,7 @@ check('主動 = 二三階(12 款),而且六個元素各兩款',
 check('三階冷卻比二階長,但單次的量更大',
   ELEMENTS.every((el) => {
     const t2 = `${el}2` as RunSkillId, t3 = `${el}3` as RunSkillId;
-    const k = (id: RunSkillId) => runSkillEffects([{ id, level: MAX_RUN_SKILL_LEVEL }]).actives[0];
+    const k = (id: RunSkillId) => runSkillEffects([{ id, level: REFERENCE_RUN_SKILL_LEVEL }]).actives[0];
     return skillCooldownSeconds(t3, 5) > skillCooldownSeconds(t2, 5) && k(t3).kills! > k(t2).kills!;
   }),
   `二階 ${skillCooldownSeconds('fire2', 5)}s/${runSkillEffects([{ id: 'fire2', level: 5 }]).actives[0].kills} 隻`
@@ -564,16 +564,14 @@ check('一波的秒數在 3000 關之間幾乎不變(這是「冷卻可以綁秒
 // 這條是元素不會把敵人養大的保證。鋒刃/增殖 移除之後**沒有任何技能會加戰力**,
 // 所以現在證明的方式從「貪心會挑走鋒刃」變成更直接的一句:
 // 六款全部點滿,總戰力倍率仍然是 1 —— 理想路線上技能的份是 0,敵人一格都不會為它們長。
-// 一場能選幾次,不能超過「4 格 x 5 級」的容量——超過的話最後幾次會**開不出選項**,
-// 玩家看到的是一個空面板(而跑圖是暫停的,他會卡在那裡)。
-// 格數從 6 降到 4 之後容量剛好等於長關的選擇次數,一格餘裕都沒有:
-// 以後只要有人動 MAX_RUN_SKILL_SLOTS、MAX_RUN_SKILL_LEVEL 或波數,這一項會先紅。
+// **選項永遠開得出來。** 舊版是靠「格數 x 等級上限」的容量剛好蓋過長關的選擇次數,
+// 而等級上限拿掉之後(無限模式要能一路長)那個算式沒有意義了——手上的每一款
+// 永遠都能再升一級,所以只要帶著東西就一定抽得到選項。這一項改成直接證明它:
+// 走一段**比長關長得多**的選擇次數,每一次都要開得出三個選項。
 {
-  const capacity = MAX_RUN_SKILL_SLOTS * MAX_RUN_SKILL_LEVEL;
-  const longest = Math.max(...[1, 5, 10, 3000].map((st) => totalRunSkillPicks(wavesForStage(st))));
-  check('一場的選擇次數不超過技能容量(不然最後幾次會開出空面板)',
-    longest <= capacity, `最長 ${longest} 次 vs 容量 ${capacity}(${MAX_RUN_SKILL_SLOTS} 格 x ${MAX_RUN_SKILL_LEVEL} 級)`);
-  // 真的把最長的一場走完,證明每一次都開得出東西——上面那個算式對了不代表實作對了。
+  // 無限模式一輪可以打上百波,所以這裡刻意走 200 次(長關才 20 次)。
+  const longest = Math.max(200, ...[1, 5, 10, 3000].map((st) => totalRunSkillPicks(wavesForStage(st))));
+  // 真的走一遍,證明每一次都開得出東西——「不會用完」用想的沒有用,要走過才算。
   let carried: RunSkillState[] = [];
   let dry = -1;
   for (let i = 0; i < longest; i++) {
@@ -581,29 +579,29 @@ check('一波的秒數在 3000 關之間幾乎不變(這是「冷卻可以綁秒
     if (offers.length === 0) { dry = i; break; }
     carried = learnRunSkill(carried, bestRunSkillChoice(carried, offers));
   }
-  check('把最長的一場走完,每一次都開得出選項', dry === -1,
+  check('連續 200 次三選一都開得出選項(等級無上限,永遠有東西可以升)', dry === -1,
     dry === -1 ? `走完 ${longest} 次,最後帶著 ${carried.length} 格` : `第 ${dry + 1} 次開不出來`);
 }
 
 // 集齊同元素三階 → 那一族的主動傷害加成。放大的是傷害不是戰力,所以照樣不進理想路線。
 {
   const full = (el: RunSkillId): RunSkillState[] =>
-    [el, `${el}2` as RunSkillId, `${el}3` as RunSkillId].map((id) => ({ id, level: MAX_RUN_SKILL_LEVEL }));
+    [el, `${el}2` as RunSkillId, `${el}3` as RunSkillId].map((id) => ({ id, level: REFERENCE_RUN_SKILL_LEVEL }));
   const partial = (el: RunSkillId): RunSkillState[] => full(el).slice(0, 2);
   const killsOf = (sk: RunSkillState[], id: RunSkillId) =>
     runSkillEffects(sk).actives.find((a) => a.id === id)?.kills ?? 0;
   check('湊滿同元素三階 -> 那一族的主動傷害變大',
     ELEMENTS.every((el) => {
       const id = `${el}3` as RunSkillId;
-      return killsOf(full(el), id) > killsOf([...partial(el), { id, level: MAX_RUN_SKILL_LEVEL }].slice(0, 2).concat({ id, level: MAX_RUN_SKILL_LEVEL }), id) * 0.99;
+      return killsOf(full(el), id) > killsOf([...partial(el), { id, level: REFERENCE_RUN_SKILL_LEVEL }].slice(0, 2).concat({ id, level: REFERENCE_RUN_SKILL_LEVEL }), id) * 0.99;
     }));
   check('集齊加成剛好是 ELEMENT_SET_BONUS,而且只加在集齊的那一族',
-    Math.abs(killsOf(full('fire'), 'fire3') / (1 + ELEMENT_SET_BONUS) - tier3Kills(MAX_RUN_SKILL_LEVEL)) < 1e-9
-    && Math.abs(killsOf([...full('fire'), { id: 'ice2', level: MAX_RUN_SKILL_LEVEL }], 'ice2')
-      - tier2Kills(MAX_RUN_SKILL_LEVEL)) < 1e-9,
-    `火集齊 ${killsOf(full('fire'), 'fire3')} 隻 vs 基準 ${tier3Kills(MAX_RUN_SKILL_LEVEL)}`);
+    Math.abs(killsOf(full('fire'), 'fire3') / (1 + ELEMENT_SET_BONUS) - tier3Kills(REFERENCE_RUN_SKILL_LEVEL)) < 1e-9
+    && Math.abs(killsOf([...full('fire'), { id: 'ice2', level: REFERENCE_RUN_SKILL_LEVEL }], 'ice2')
+      - tier2Kills(REFERENCE_RUN_SKILL_LEVEL)) < 1e-9,
+    `火集齊 ${killsOf(full('fire'), 'fire3')} 隻 vs 基準 ${tier3Kills(REFERENCE_RUN_SKILL_LEVEL)}`);
   check('沒集齊就沒有加成(缺一階也不算)',
-    Math.abs(killsOf([...partial('fire'), { id: 'ice', level: 1 }], 'fire2') - tier2Kills(MAX_RUN_SKILL_LEVEL)) < 1e-9);
+    Math.abs(killsOf([...partial('fire'), { id: 'ice', level: 1 }], 'fire2') - tier2Kills(REFERENCE_RUN_SKILL_LEVEL)) < 1e-9);
   check('10 格剛好放得下三族(9 格)再多一格',
     MAX_RUN_SKILL_SLOTS === 10 && Math.floor(MAX_RUN_SKILL_SLOTS / 3) === 3);
   check('集齊加成沒有讓技能加到戰力(照樣不進敵人曲線)',
@@ -665,7 +663,7 @@ check('六個元素都存在,而且效果組合互不相同(不是同一個東�
   ELEMENTS.map((id) => runSkillSpec(id).name).join(' '));
 check('沒有任何元素會加戰力(所以六個都不進敵人曲線)',
   ELEMENTS.every((id) => {
-    const e = elemFx(id, MAX_RUN_SKILL_LEVEL);
+    const e = elemFx(id, REFERENCE_RUN_SKILL_LEVEL);
     return e.attackMultiplier === 1 && e.heroMultiplier === 1;
   }));
 // --- 火/雷/冰的「命中當下」規則 ---

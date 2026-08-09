@@ -75,22 +75,29 @@ function fallbackGlyph(color: string) {
 }
 
 /**
- * 階級標記:左上角的小點,二階兩點、三階三點。
+ * 階級 = **同一個字形疊幾個**。一階一個、二階兩個、三階三個。
  *
- * **為什麼三階共用一階的字形,只加點**:同一個元素的三款是「同一件事的三個量級」,
- * 各畫一張互不相干的圖反而讓玩家看不出它們是一家的——而「這是我投資過的那個元素」
- * 正是技能列上最該一眼認出的事(四格裡常常有兩格是同族)。
- * 點畫在左上是因為右下已經給等級了,而正中央是字形。
+ * 為什麼不是另外畫三張圖:同一族的三款是「同一件事的三個量級」,各畫一張互不相干的圖
+ * 反而讓玩家看不出它們是一家的——而「這是我投資過的那個元素」正是技能列上最該一眼認出的事。
+ * 為什麼不是角落的數字或小點:那要**讀**(而且在 30px 的圓上二點三點很難分),
+ * 疊起來則是用**份量**表示份量,不必讀就看得出哪一顆比較重。
+ * 順帶把右下角空出來還給等級。
+ *
+ * 每一層的 dx/dy 是「佔整顆圓的幾分之幾」,所以縮到 20px 也不會散開。
+ * 後面那幾層壓低透明度:全部同亮度的話三個疊起來會糊成一團看不出是幾個。
  */
-function tierPips(tier: 2 | 3, color: string) {
-  return (
-    <G fill={color}>
-      {Array.from({ length: tier }, (_, i) => (
-        <Circle key={i} cx={3.2 + i * 4.4} cy={3.2} r={1.7} />
-      ))}
-    </G>
-  );
-}
+const TIER_STACK: Record<1 | 2 | 3, { dx: number; dy: number; scale: number; opacity: number }[]> = {
+  1: [{ dx: 0, dy: -0.04, scale: 0.52, opacity: 1 }],
+  2: [
+    { dx: -0.12, dy: 0.03, scale: 0.42, opacity: 0.55 },
+    { dx: 0.09, dy: -0.11, scale: 0.44, opacity: 1 },
+  ],
+  3: [
+    { dx: -0.16, dy: 0.06, scale: 0.34, opacity: 0.45 },
+    { dx: 0.16, dy: -0.02, scale: 0.34, opacity: 0.65 },
+    { dx: 0, dy: -0.16, scale: 0.38, opacity: 1 },
+  ],
+};
 
 interface Props {
   id: RunSkillId;
@@ -98,7 +105,7 @@ interface Props {
   color: string;
   /** 圓的直徑。 */
   size: number;
-  /** 技能等級,畫在圓的右下角。0 或不給就不畫。 */
+  /** 技能等級,畫在圓的**右上角**。0 或不給就不畫。 */
   level?: number;
   /**
    * 冷卻:總秒數與「還要幾秒」。`cooldown` 是 0 表示被動——被動的環是**整圈實線**,
@@ -137,22 +144,21 @@ export function SkillIcon({ id, color, size, level = 0, cooldown = 0, ready = 0 
           transform={`rotate(-90 ${size / 2} ${size / 2})`}
           opacity={cooling ? 0.85 : 1}
         />
-        {/* 字形。縮到圓內側,留出環的寬度。 */}
-        <G
-          transform={`translate(${size / 2 - (size * 0.52) / 2} ${size / 2 - (size * 0.52) / 2}) scale(${(size * 0.52) / 24})`}
-          opacity={cooling ? 0.4 : 1}
-        >
-          {(GLYPHS[elementOf(id)] ?? fallbackGlyph)(color)}
-        </G>
-        {/* 階級標記畫在字形外面、用整個 viewBox 的座標,所以它不會跟著字形一起縮 */}
-        {skillTier(id) > 1 && (
-          <G
-            transform={`translate(${size * 0.13} ${size * 0.13}) scale(${(size * 0.36) / 24})`}
-            opacity={cooling ? 0.5 : 1}
-          >
-            {tierPips(skillTier(id) as 2 | 3, color)}
-          </G>
-        )}
+        {/* 字形。縮到圓內側留出環的寬度,而**疊幾個就是第幾階**(見 TIER_STACK)。 */}
+        {TIER_STACK[skillTier(id)].map((layer, i) => {
+          const g = size * layer.scale;
+          const x = size / 2 - g / 2 + layer.dx * size;
+          const y = size / 2 - g / 2 + layer.dy * size;
+          return (
+            <G
+              key={i}
+              transform={`translate(${x} ${y}) scale(${g / 24})`}
+              opacity={(cooling ? 0.4 : 1) * layer.opacity}
+            >
+              {(GLYPHS[elementOf(id)] ?? fallbackGlyph)(color)}
+            </G>
+          );
+        })}
       </Svg>
 
       {/* 冷卻中壓一個秒數在正中央:有人要的是「還有幾秒」的精確值,環只給概略。 */}
@@ -162,18 +168,23 @@ export function SkillIcon({ id, color, size, level = 0, cooldown = 0, ready = 0 
         </View>
       )}
 
-      {/* 等級:右下角的小圓。獨立畫在圓外緣上,才不會跟字形擠在一起。 */}
+      {/*
+        等級回到右下角。階級現在由**疊了幾個字形**講(見 TIER_STACK),角落不再需要第二顆數字——
+        兩顆數字並排的時候玩家得先想「哪個是等級哪個是階級」,那是每次掃技能列都要付一次的成本。
+        寫成 `Lv.N` 而不是裸數字:圓裡冷卻中會壓一個秒數,裸數字會跟它撞在一起。
+      */}
       {level > 0 && (
         <View
           style={[
             styles.level,
-            { minWidth: size * 0.42, height: size * 0.42, borderRadius: size * 0.21, borderColor: color },
+            { height: size * 0.38, borderRadius: size * 0.19, borderColor: color },
           ]}
           pointerEvents="none"
         >
-          <Text style={[styles.levelText, { fontSize: Math.round(size * 0.28) }]}>{level}</Text>
+          <Text style={[styles.levelText, { fontSize: Math.round(size * 0.24) }]}>Lv.{level}</Text>
         </View>
       )}
+
     </View>
   );
 }
@@ -188,7 +199,7 @@ const styles = StyleSheet.create({
     position: 'absolute', right: -2, bottom: -2,
     alignItems: 'center', justifyContent: 'center',
     backgroundColor: '#16161c', borderWidth: 1,
-    paddingHorizontal: 2,
+    paddingHorizontal: 3,
   },
   levelText: { color: '#f2f2f2', fontWeight: '700' },
 });

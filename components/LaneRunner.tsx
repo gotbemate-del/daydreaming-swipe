@@ -30,13 +30,14 @@ import { Settings, type AudioSettings } from './Settings';
 import { MapDrawToast } from './MapDrawToast';
 import { playSfx } from '../hooks/useSfx';
 import {
-  describeRunSkill, runSkillSpec, ELEMENT_COUNTERS, isActiveSkill, FREEZE_MS,
+  describeRunSkill, runSkillSpec, elementOf, ELEMENT_COUNTERS, isActiveSkill, FREEZE_MS,
   type CollectionScales, type RunSkillId, type ElementBooks,
 } from '../game/laneRunSkills';
 import {
   HIT_NUMBER_MS, ELEMENT_FX_MS, FEEDBACK_MS, useLaneRun,
   STRIKE_BANNER_MS,
   type CarriedSkill, type ElementEvent, type HitNumber, type Projectile, type WaveView,
+  type RunHandoff,
 } from '../hooks/useLaneRun';
 import type { RunStats } from '../game/quests';
 import { tutorialRulesFor } from '../game/laneTutorial';
@@ -304,11 +305,18 @@ interface Props {
    * waves 是這一關實際打完幾波——生存模式的分數是**累計波數**,而死在第 3 波跟
    * 死在第 9 波差很多,只回傳「過了沒」會把那個差別整個丟掉。
    */
-  onFinish: (result: 'cleared' | 'dead', coins: number, waves: number, stats: RunStats) => void;
+  onFinish: (
+    result: 'cleared' | 'dead', coins: number, waves: number, stats: RunStats, handoff: RunHandoff,
+  ) => void;
+  /**
+   * 生存(無限)模式:上一段結束時的樣子。給了就接著跑——人數、裝備、技能、敵人曲線
+   * 全部不重來(見 useLaneRun 的 RunHandoff)。第一段是 null。
+   */
+  handoff?: RunHandoff | null;
 }
 
 export function LaneRunner({
-  stage, job, start, onFinish, books = {}, survivalWavesBefore = null, collection = {},
+  stage, job, start, onFinish, books = {}, survivalWavesBefore = null, collection = {}, handoff = null,
   audio, onChangeAudio, backdropOverride = null, mapDraw = null, onRestart, onQuit,
 }: Props) {
   /**
@@ -329,9 +337,9 @@ export function LaneRunner({
   const [tipVisible, setTipVisible] = useState(tutorial !== null);
   // 抽地圖的面板也要停:它蓋在跑道上面,不停的話玩家在讀地圖名稱的那幾秒會漏掉第一排閘門。
   const drawing = mapDraw !== null;
-  const run = useLaneRun(stage, start, books, collection, settingsOpen || drawing);
+  const run = useLaneRun(stage, start, books, collection, settingsOpen || drawing, handoff);
   const {
-    state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers, rocks, readStats,
+    state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers, rocks, readStats, readHandoff,
     lastShotAt, lastShotId, feedback, steer, dragTo,
     runSkills, skillOffers, pendingPicks, chooseRunSkill, lastStrike, upcomingElements,
     enemyShots, lastHazardAt, enemyThrowAt, waveNumber, totalWaves,
@@ -374,7 +382,10 @@ export function LaneRunner({
   }, [state.phase]);
   useEffect(() => {
     if (!continuous || state.phase !== 'cleared') return;
-    const id = setTimeout(() => finishRef.current('cleared', state.coins, totalWaves, readStats()), HANDOFF_MS);
+    const id = setTimeout(
+      () => finishRef.current('cleared', state.coins, totalWaves, readStats(), readHandoff()),
+      HANDOFF_MS,
+    );
     return () => clearTimeout(id);
   }, [continuous, state.phase, state.coins]);
 
@@ -1035,7 +1046,10 @@ export function LaneRunner({
    * 為了別的東西已經進來了,所以那個理由早就不成立。
    */
   function renderSkillSlot(s: CarriedSkill, size: number) {
-    const tint = elementColor(s.id) ?? '#e0a95c';
+    // **同一族的三款一律同色**,所以查顏色要先把 id 換回它的一階(elementOf)。
+    // 直接拿 s.id 查的話,'fire2' / 'fire3' 在色表裡沒有 key —— 一二三階會退回強調金,
+    // 而那正是「湊滿同元素」最該一眼看出來的事(技能列上常常有兩三格同族)。
+    const tint = elementColor(elementOf(s.id)) ?? '#e0a95c';
     return (
       <View key={s.id} accessibilityLabel={`技能 ${s.name} ${s.level}`} style={styles.skillSlot}>
         <SkillIcon id={s.id} color={tint} size={size} level={s.level} cooldown={s.cooldown} ready={s.ready} />
@@ -1260,7 +1274,9 @@ export function LaneRunner({
                   accessibilityLabel={`場內技能 ${runSkillSpec(offer.id).name}`}
                   onPress={() => { playSfx('skill'); chooseRunSkill(offer); }}
                 >
-                  <Text style={styles.skillName}>
+                  {/* 選項的名字也照元素上色,跟技能列同一套顏色:
+                      挑的時候看到的顏色,就是等一下在技能列上要找的那個顏色。 */}
+                  <Text style={[styles.skillName, { color: elementColor(elementOf(offer.id)) ?? '#f2f2f2' }]}>
                     {runSkillSpec(offer.id).name} {offer.level > 1 ? `Lv.${offer.level}` : '新'}
                     {/* 這個元素在接下來幾波是強是弱,直接標出來——不標的話玩家得自己背相剋表。
                         被剋也要標:相剋是雙向的(剋中 x2.5、被剋 x2/3),只標好的一半
@@ -1309,6 +1325,7 @@ export function LaneRunner({
                   state.coins,
                   state.phase === 'cleared' ? totalWaves : waveNumber,
                   readStats(),
+                  readHandoff(),
                 )}
               >
                 <Text style={styles.againLabel}>{state.phase === 'cleared' ? '繼續' : '回主介面'}</Text>
@@ -1389,11 +1406,15 @@ export function LaneRunner({
           一場三分鐘裡完全不知道自己在哪個位置。 */}
       <View style={styles.hintRow}>
         <Text style={styles.hint}>
-        {stageLabel(stage)},第 {waveNumber} 波,共 {totalWaves} 波
-        {/* 生存模式:連勝數要一直看得到——它是這個模式唯一的分數,藏起來就沒有壓力了。 */}
+        {/*
+          **無限模式不寫關卡,只寫累計波數。**
+          它是一條不停下來的跑圖(人數、裝備、技能都不重來),而「3-10,第 5 波,共 20 波」
+          會讓玩家以為自己又進了一個新關卡、剛才那些會不會被收走——關卡編號在這個模式裡
+          只是難度的刻度,不是進度。分數本來就是波,那就只寫波。
+        */}
         {survivalWavesBefore !== null
-          ? ` · 生存累計 ${survivalWavesBefore + waveNumber} 波(死了就結束)`
-          : ' · 拖著史萊姆左右移動'}
+          ? `第 ${survivalWavesBefore + waveNumber} 波 · 一路打到死為止`
+          : `${stageLabel(stage)},第 ${waveNumber} 波,共 ${totalWaves} 波 · 拖著史萊姆左右移動`}
         </Text>
         {/* 齒輪 = 暫停 + 設定。放在提示列而不是跑道的角落:跑道上的按鈕會吃掉那一角的拖曳,
             而拖曳可以從畫面任何地方開始正是這款操作的前提(見 panResponder 的註解)。 */}
@@ -1442,14 +1463,30 @@ export function LaneRunner({
  *「勇者 154 · 裝備 5 階 · 戰力 115808」會換行,把下面整個跑道往下推。
  * 一萬以下照原樣印,玩家在前段看到的還是精確數字。
  */
+/**
+ * 大數字的縮寫。
+ *
+ * **單位要一路備到「京」,不能只到「億」。** 生存(無限)模式是一條接下去的跑圖,
+ * 戰力每十波大約長一個量級——只備到億的話,跑到第一百波畫面上會出現「10000000億」,
+ * 那串位數玩家一個都讀不出來,而 HUD 的欄寬也塞不下。
+ * 超過「垓」就退回科學記號:再往上取中文單位已經沒有人認得(秭、穰),
+ * 而那個階段玩家在乎的只剩「又多了一位數」。
+ */
+const COMPACT_UNITS: [number, string][] = [
+  [1e20, '垓'], [1e16, '京'], [1e12, '兆'], [1e8, '億'], [1e4, '萬'],
+];
+
 function compact(n: number): string {
-  if (n < 10000) return String(n);
-  if (n < 1e8) {
-    const wan = n / 1e4;
-    return (wan < 100 ? wan.toFixed(1) : String(Math.round(wan))) + '萬';
+  if (!Number.isFinite(n)) return '∞';
+  if (n < 1e4) return String(Math.round(n));
+  if (n >= 1e24) return n.toExponential(1);
+  for (const [unit, label] of COMPACT_UNITS) {
+    if (n >= unit) {
+      const x = n / unit;
+      return (x < 100 ? x.toFixed(1) : String(Math.round(x))) + label;
+    }
   }
-  const yi = n / 1e8;
-  return (yi < 100 ? yi.toFixed(1) : String(Math.round(yi))) + '億';
+  return String(Math.round(n));
 }
 
 const styles = StyleSheet.create({

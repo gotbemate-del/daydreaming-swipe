@@ -3,7 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import {
   bookBonus, bookLevelOf, describeRunSkill, ELEMENT_COUNTERS, ELEMENT_SET_BONUS, ELEMENTS,
-  elementOf, hasCooldown, MAX_RUN_SKILL_LEVEL, MAX_RUN_SKILL_SLOTS, MAX_SKILL_BOOK_LEVEL,
+  elementOf, hasCooldown, MAX_RUN_SKILL_SLOTS, MAX_SKILL_BOOK_LEVEL,
   RUN_SKILLS, runSkillSpec, skillCooldownSeconds, skillTier,
   type ElementBooks, type RunSkillId,
 } from '../game/laneRunSkills';
@@ -80,7 +80,7 @@ export function Skills({ books, collected, onDone }: Props) {
         <View style={styles.titleBox}>
           <Text style={styles.title}>技能</Text>
           <Text style={styles.subtitle}>
-            六元素 x 三階 · 一場最多帶 {MAX_RUN_SKILL_SLOTS} 格,每款最高 {MAX_RUN_SKILL_LEVEL} 級
+            六元素 x 三階 · 一場最多帶 {MAX_RUN_SKILL_SLOTS} 格,等級沒有上限
           </Text>
         </View>
         <Pressable accessibilityLabel="關閉技能" style={styles.closeButton} onPress={onDone}>
