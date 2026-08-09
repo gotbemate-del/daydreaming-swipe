@@ -35,6 +35,7 @@ import {
 } from '../game/laneRunSkills';
 import {
   HIT_NUMBER_MS, ELEMENT_FX_MS, FEEDBACK_MS, useLaneRun,
+  STRIKE_BANNER_MS,
   type CarriedSkill, type ElementEvent, type HitNumber, type Projectile, type WaveView,
 } from '../hooks/useLaneRun';
 import type { RunStats } from '../game/quests';
@@ -106,7 +107,7 @@ const BOSS_SIZE = 132;
 const ELITE_SIZE = 84;
 const PROJECTILE_SIZE = 30;
 /** 主動技能特效播多久。要看得到,但不能久到蓋住下一波。 */
-const STRIKE_FX_MS = 700;
+
 /**
  * 石頭畫多大。**刻意等於 MONSTER_SIZE**——判定寬度(laneRun 的 ROCK_WIDTH)就是照小怪的
  * 視覺尺寸定的,畫大一點會讓玩家以為擦到了卻沒事,畫小一點則反過來。
@@ -1158,7 +1159,7 @@ export function LaneRunner({
           文字留著但退到上方:特效告訴你「發生了什麼」,文字補上「清掉幾隻」,
           兩者位置錯開才不會在同一秒互相蓋住(那一刻畫面上還有「擊倒… +N 人」)。
         */}
-        {ready && lastStrike && Date.now() - lastStrike.at < STRIKE_FX_MS && (
+        {ready && lastStrike && Date.now() - lastStrike.at < STRIKE_BANNER_MS && (
           <>
             {lastStrike.ids.map((fxId) => (
               <SkillFx

@@ -172,6 +172,12 @@ export const ELEMENT_FX_MS: Record<ElementEvent['kind'], number> = {
   blast: 300,
 };
 
+/**
+ * 技能橫幅在畫面上停多久。**hook 與畫面共用同一個常數**:兌現的擊殺要不要累加到橫幅上
+ * 由它決定,而畫面照它決定還畫不畫——各留一份的話會出現「數字還在加,但橫幅已經不見了」。
+ */
+export const STRIKE_BANNER_MS = 700;
+
 /** 技能列上的一格。被動沒有冷卻(cooldown = 0),只顯示名字與等級。 */
 export interface CarriedSkill {
   id: RunSkillId;
@@ -500,6 +506,12 @@ export function useLaneRun(
   const runSkillsRef = useRef<RunSkillState[]>([]);
   runSkillsRef.current = runSkills;
   const [lastStrike, setLastStrike] = useState<{ at: number; ids: RunSkillId[]; names: string[]; kills: number } | null>(null);
+  /**
+   * 現在畫面上那一則技能橫幅。**要用 ref 不能只用 state**:兌現擊殺的那一段跟觸發技能的
+   * 那一段在同一個 tick 裡,state 要下一次 render 才更新,讀到的會是上一則。
+   * (這款在「掉落數量透過 setState 傳給同一個 tick 的結果訊息」上踩過同一個坑。)
+   */
+  const strikeRef = useRef<{ at: number; ids: RunSkillId[]; names: string[]; kills: number } | null>(null);
 
   /**
    * 挑技能的時候**跑圖暫停**。
@@ -668,7 +680,12 @@ export function useLaneRun(
       if (a.immune) current.fired.immune = true;
     }
     if (fired.length === 0) return;
-    setLastStrike({ at: now, ids: firedIds, names: fired, kills: Math.floor(killsNow) });
+    // **橫幅上的隻數從 0 開始,由真的消失的那幾隻累加上去**(見下面兌現的那一段)。
+    // 先前這裡直接寫技能的名目隻數,而畫面上同時只有兩三隻怪——玩家看到的是
+    //「-7 隻」配上少掉 1 隻。名目的那筆沒有消失(它留在 fired.kills 裡,結算照算),
+    // 只是「現在看得到幾隻倒下」跟「這一波總共清掉幾隻」本來就是兩個數字。
+    strikeRef.current = { at: now, ids: firedIds, names: fired, kills: 0 };
+    setLastStrike(strikeRef.current);
     if (heroesNow > 0) {
       setState((prev) => (prev.phase === 'running' ? { ...prev, heroes: prev.heroes + heroesNow } : prev));
     }
@@ -910,6 +927,7 @@ export function useLaneRun(
     // 這一段改的只有「什麼時候看得到」。兌現不完(技能比怪先進射程)就留在 vaporizing 裡,
     // 等怪進了射程再收,一隻都不會憑空多也不會少。
     if (current.vaporizing > 0) {
+      let cashed = 0;
       for (const i of [...current.covered].sort((x, y) => x - y)) {
         if (current.vaporizing <= 0) break;
         if (!willDie(i) || isDown(i)) continue;
@@ -919,6 +937,13 @@ export function useLaneRun(
         current.hitsOn[i] = current.hitsPerUnit;
         pushElementEvent('blast', i, now, undefined, current.vaporizeElement);
         current.vaporizing -= 1;
+        cashed += 1;
+      }
+      // 橫幅還在的話,把剛剛真的倒下的那幾隻加上去。文字與畫面因此一定對得起來:
+      // 寫幾隻就是這一刻少了幾隻,晚一點才兌現的那幾隻會在下一個 tick 自己補上去。
+      if (cashed > 0 && strikeRef.current !== null && now - strikeRef.current.at < STRIKE_BANNER_MS) {
+        strikeRef.current = { ...strikeRef.current, kills: strikeRef.current.kills + cashed };
+        setLastStrike(strikeRef.current);
       }
     }
 
@@ -1222,6 +1247,9 @@ export function useLaneRun(
             ? boostFor(current.heroWave, current.fired, fx, current.covered.size, current.advance)
             : boostFor(due.nodes[0].enemy?.heroWave === true, NO_FIRED, fx);
           if (runSkills.some((s) => s.level > 0 && ELEMENT_COUNTERS[s.id] === waveElement)) {
+            // 這一則不是主動技能,所以**不進 strikeRef**:進去的話下一隻被技能收掉的怪
+            // 會把隻數累加到「剋」上面,變成「剋 -1 隻」——那是另一件事的數字。
+            strikeRef.current = null;
             setLastStrike({ at: Date.now(), ids: [], names: ['剋'], kills: 0 });
           }
         }
