@@ -40,6 +40,8 @@ import {
   hitsRock,
   applyRockHit,
   withinFireWidth,
+  SQUAD_DX,
+  MAX_DRAWN_HEROES,
   type Lane,
   type RunRock,
   type RunRow,
@@ -297,6 +299,12 @@ export interface LaneRunView {
    */
   lastShotAt: number;
   lastShotId: number;
+  /**
+   * 這一發是隊伍裡第幾個人丟的(SQUAD_DX 的索引)。
+   * 畫面拿它決定**哪一隻噴刺**——一定要跟子彈的出發點是同一個索引,
+   * 各算各的話會看到 A 做動作、子彈從 B 那裡飛出來。
+   */
+  lastShotFrom: number;
   /** 這一場帶著的場內技能(跑完就沒了)。 */
   runSkills: RunSkillState[];
   /** 打完一波之後跳出來的選項。非空的時候跑圖是暫停的。 */
@@ -455,6 +463,7 @@ export function useLaneRun(
   const [hitNumbers, setHitNumbers] = useState<HitNumber[]>([]);
   const [lastShotAt, setLastShotAt] = useState(0);
   const [lastShotId, setLastShotId] = useState(0);
+  const [lastShotFrom, setLastShotFrom] = useState(0);
   const [elementEvents, setElementEvents] = useState<ElementEvent[]>([]);
   const [runSkills, setRunSkills] = useState<RunSkillState[]>(() => handoff?.skills ?? []);
   const [skillOffers, setSkillOffers] = useState<RunSkillState[]>([]);
@@ -1094,11 +1103,21 @@ export function useLaneRun(
         current.lastFireAt = now;
         projectileIdRef.current += 1;
         const id = projectileIdRef.current;
+        // **每一把從「畫面上那個人真正站的位置」飛出去。**
+        //
+        // 舊版是拿流水號湊一個 ±0.09 的假散開(`(id % 5) / 4 - 0.5`),跟隊形完全無關:
+        // 隊伍實際橫跨 ±0.164(見 SQUAD_DX),所以人一多就變成「一群人排開站著,
+        // 但子彈全從中間那一小段冒出來」——使用者回報的就是這個。
+        //
+        // 現在輪到的那一隻由 shooter 決定,起點就是他的 SQUAD_DX,而**畫面上噴刺的
+        // 也是同一隻**(shooter 一起回傳給畫面,見 lastShotFrom)。兩邊各算各的話,
+        // 會看到 A 做動作、子彈卻從 B 那裡飛出來。
+        const drawn = Math.max(1, Math.min(MAX_DRAWN_HEROES, Math.round(stateRef.current.heroes)));
+        const shooter = id % drawn;
+        const fromOffset = clampOffset(offsetRef.current + SQUAD_DX[shooter]);
         setLastShotAt(now);
         setLastShotId(id);
-        // 每一把從隊伍裡不同的人手上飛出去(依 id 散開),不是全部從同一個點噴出來。
-        const spread = Math.min(0.09, 0.02 * Math.min(stateRef.current.heroes, 6));
-        const fromOffset = clampOffset(offsetRef.current + ((id % 5) / 4 - 0.5) * 2 * spread);
+        setLastShotFrom(shooter);
         // 帶著幾個元素就輪流丟哪一個。這是元素在畫面上唯一的出口——
         // 沒帶元素的話武器就是原本的樣子,不會憑空多一層顏色。
         const mine = runSkillsRef.current.filter((s) => s.level > 0 && isElement(s.id));
@@ -1412,6 +1431,7 @@ export function useLaneRun(
     hitNumbers,
     lastShotAt,
     lastShotId,
+    lastShotFrom,
     runSkills,
     skillOffers,
     pendingPicks,
