@@ -16,6 +16,21 @@ import { MONSTER_ANIM, JOB_ANIM, type AnimArt } from './animFrames';
  * 黑色方塊(面板底是 #1d1d26,不是純黑,框會看得一清二楚)。但整片去黑會把眼睛也挖掉——
  * 眼睛就是黑的(2638 個像素)。所以是「從邊界做連通填充」只去掉背景那一片,內部的黑保留。
  */
+/**
+ * 彩蛋框的八片(兩根柱子各三段 + 上下卷軸)。組裝在 components/EasterEggFrame.tsx。
+ * 閘門的卷軸也是從同一組切出來的(見 GATE_SCROLL 與 scripts/make-gate-scroll.py)。
+ */
+export const EASTEREGG_FRAME: Record<string, ImageSourcePropType> = {
+  pillarL_top: require('../assets/sprites/ui/frames/easteregg/pillarL_top.png'),
+  pillarL_mid: require('../assets/sprites/ui/frames/easteregg/pillarL_mid.png'),
+  pillarL_bottom: require('../assets/sprites/ui/frames/easteregg/pillarL_bottom.png'),
+  pillarR_top: require('../assets/sprites/ui/frames/easteregg/pillarR_top.png'),
+  pillarR_mid: require('../assets/sprites/ui/frames/easteregg/pillarR_mid.png'),
+  pillarR_bottom: require('../assets/sprites/ui/frames/easteregg/pillarR_bottom.png'),
+  edge_top: require('../assets/sprites/ui/frames/easteregg/edge_top.png'),
+  edge_bottom: require('../assets/sprites/ui/frames/easteregg/edge_bottom.png'),
+};
+
 export const HERO_FRAMES: ImageSourcePropType[] = [
   require('../assets/sprites/hero/slime_idle.png'),
   require('../assets/sprites/hero/slime_spike.png'),

@@ -6,11 +6,15 @@ import { Settings, type AudioSettings } from './Settings';
 import { chapterOfStage, stageLabel, waveElementsForStage, wavesForStage } from '../game/laneRun';
 import { tutorialRulesFor } from '../game/laneTutorial';
 import type { QuestView } from '../game/quests';
-import { totalBookLevels, type ElementBooks } from '../game/laneRunSkills';
+import { totalBookLevels, type ElementBooks, type RunSkillId } from '../game/laneRunSkills';
+import { playSfx } from '../hooks/useSfx';
+import { EasterEggFrame } from './EasterEggFrame';
+import { EVENT_ART } from './eventArt';
+import { SkillIcon } from './SkillIcon';
 import {
-  COIN_ICON, GEAR_ICON, HERO_ASPECT, HERO_FRAME_MS, HERO_FRAMES, HERO_SEQUENCE, heroBoxHeight, LOCK_ICON,
+  COIN_ICON, GEAR_ICON, HERO_ASPECT, HERO_FRAME_MS, HERO_FRAMES, heroBoxHeight, LOCK_ICON, weaponArt,
   QUEST_ICON, TAB_ICONS,
-  elementColor, elementLabel,
+  elementColor,
 } from './artAssets';
 
 // 主介面。每一場闖關的起點與終點——通關或陣亡都回到這裡,再自己按下一次「開始闖關」。
@@ -29,7 +33,35 @@ import {
  * 主角「身體」的高度。要夠大才有「這是我的角色」的份量,但不能大到把開始按鈕擠出畫面。
  * 框比這個高一倍多(見 artAssets 的 HERO_BODY_RATIO),多出來的上半部是噴刺的空間。
  */
-const HERO_BODY_HEIGHT = 110;
+const HERO_BODY_HEIGHT = 76;
+/** 點一下之後噴刺那一格停多久。比投擲的出手間隔短,不然姿勢會卡住看起來像定格。 */
+const POKE_POSE_MS = 320;
+/** 那一把武器往上飛多遠(像素)。飛到彩蛋框的位置剛好淡完。 */
+const POKE_FLY = 90;
+/** 彩蛋框的尺寸。240 寬配 0.42 的柱子(35px)剛好,高度照事件圖的比例(約 3:2)。 */
+const EGG_W = 240;
+const EGG_H = 150;
+
+/**
+ * 這一關會出現哪些屬性(**同一個只留一次**)。
+ *
+ * 有魔王的那一個標記起來(它是最值得押的一格);勇者波的屬性是藏起來的,
+ * 全部併成最後那一個「?」——它們每一波都不一樣,列幾個都沒有資訊。
+ */
+function uniqueElements(
+  waves: { element: RunSkillId; hidden?: boolean; boss?: boolean }[],
+): { element: RunSkillId | null; boss: boolean }[] {
+  const out: { element: RunSkillId | null; boss: boolean }[] = [];
+  let hidden = false;
+  for (const w of waves) {
+    if (w.hidden) { hidden = true; continue; }
+    const found = out.find((o) => o.element === w.element);
+    if (found) { found.boss = found.boss || w.boss === true; continue; }
+    out.push({ element: w.element, boss: w.boss === true });
+  }
+  if (hidden) out.push({ element: null, boss: false });
+  return out;
+}
 const HERO_HEIGHT = heroBoxHeight(HERO_BODY_HEIGHT);
 const HERO_WIDTH = Math.round(HERO_HEIGHT * HERO_ASPECT);
 
@@ -86,10 +118,20 @@ export function MainMenu({
   dungeonNote, onOpenSettings, onResetSave, onStart, onDungeons, onCodex, onSkills, onQuests,
 }: Props) {
   const [heroStep, setHeroStep] = useState(0);
+  /**
+   * 點史萊姆:①換成噴刺那一格 ②翻出一張彩蛋圖。
+   *
+   * **投擲那一格不再自己播。** 主畫面沒有敵人,而角色每兩秒自己噴一次刺,讀起來是
+   *「他在打空氣」;改成點了才噴之後,那一格變成**玩家做的事**,而且剛好接上彩蛋:
+   * 一次點擊 = 一個動作 + 一張沒看過的圖。
+   */
+  const [poke, setPoke] = useState<{ at: number; art: number } | null>(null);
   const [settings, setSettings] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   // 主角永遠是史萊姆,轉職不換造型。職業立繪只留在轉職選擇畫面(那裡是在介紹職業)。
-  const heroArt = HERO_FRAMES[HERO_SEQUENCE[heroStep]];
+  // 平常只在**待機的兩格**之間循環;噴刺那一格留給點擊(見 poke)。
+  const throwing = poke !== null && Date.now() - poke.at < POKE_POSE_MS;
+  const heroArt = throwing ? HERO_FRAMES[1] : HERO_FRAMES[heroStep % HERO_FRAMES.length];
   // 教學關(1-1 ~ 1-5)才有。null 的時候整列不畫——不是教學關的人不需要多一行字,
   // 而多出來的那一行在 640 高的螢幕上正好會把「開始闖關」往下推。
   const tutorial = tutorialRulesFor(stage);
@@ -109,9 +151,23 @@ export function MainMenu({
       : null;
 
   useEffect(() => {
-    const id = setInterval(() => setHeroStep((s) => (s + 1) % HERO_SEQUENCE.length), HERO_FRAME_MS);
+    // 待機:兩格慢慢換(HERO_FRAME_MS 是投擲用的節奏,待機要慢一倍才像呼吸)。
+    const id = setInterval(() => setHeroStep((s) => s + 1), HERO_FRAME_MS * 4);
     return () => clearInterval(id);
   }, []);
+
+  /**
+   * 投擲那一下的動畫。**主畫面沒有跑圖的 tick**,所以要自己開一個短的——
+   * 沒有它的話武器不會動(只會出現一格),而噴刺的姿勢也會卡住不還原。
+   * 只在點下去之後的 POKE_POSE_MS 內跑,平常一格都不重畫。
+   */
+  const [pokeTick, setPokeTick] = useState(0);
+  useEffect(() => {
+    if (poke === null) return;
+    const id = setInterval(() => setPokeTick((t) => t + 1), 33);
+    const stop = setTimeout(() => clearInterval(id), POKE_POSE_MS + 40);
+    return () => { clearInterval(id); clearTimeout(stop); };
+  }, [poke]);
 
   // 提示自己消失。不做的話玩家連點幾個分頁,最後一句會一直留在畫面上像壞掉了。
   useEffect(() => {
@@ -161,15 +217,62 @@ export function MainMenu({
         </View>
       )}
 
-      {/* 中間:勇者站在正中央。這裡刻意什麼都不做——沒有跑道、沒有敵人,
-          就是一個站著的角色 + 一顆開始闖關。戰鬥全部發生在跑道畫面裡。 */}
+      {/*
+        中間:勇者站在正中央,旁邊是彩蛋框。
+
+        主畫面原本只有「一個站著的角色 + 一顆開始闖關」,中間一大片是空的。
+        彩蛋框把那片空白變成一個**可以按的東西**:點史萊姆 → 他噴一次刺 → 框裡翻出
+        一張沒看過的圖(34 張輪流抽)。它不影響任何數值,純粹是「這個遊戲還有東西可以看」。
+      */}
       <View style={styles.stage}>
         <View style={styles.ground} />
-        <Image
-          source={heroArt}
-          resizeMode="contain"
-          style={[styles.hero, { width: HERO_WIDTH, height: HERO_HEIGHT }]}
-        />
+        <Pressable
+          accessibilityLabel="戳一下史萊姆"
+          onPress={() => {
+            playSfx('click');
+            // **每次都換一張**:34 選 1 有機會抽回同一張,而玩家點下去看到一模一樣的圖,
+            // 第一個念頭是「壞了」——跟生存模式的重抽同一條規則。
+            setPoke((prev) => {
+              let art = Math.floor(Math.random() * EVENT_ART.length);
+              if (prev !== null && art === prev.art) art = (art + 1) % EVENT_ART.length;
+              return { at: Date.now(), art };
+            });
+          }}
+        >
+          <Image
+            source={heroArt}
+            resizeMode="contain"
+            style={[styles.hero, { width: HERO_WIDTH, height: HERO_HEIGHT }]}
+          />
+        </Pressable>
+        {/*
+          丟出去的那一把武器。往上飛(跟跑道上的方向一致——前方就是畫面上方),
+          飛到彩蛋框那裡剛好淡出,所以「點一下 → 丟一把 → 框裡出現一張圖」讀起來是一串因果。
+        */}
+        {throwing && (
+          <Image
+            source={weaponArt(job?.archetype ?? null, 1, poke!.art)}
+            resizeMode="contain"
+            style={[
+              styles.pokeWeapon,
+              {
+                bottom: HERO_HEIGHT * 0.62 + POKE_FLY * Math.min(1, (Date.now() - poke!.at) / POKE_POSE_MS),
+                opacity: 1 - Math.min(1, (Date.now() - poke!.at) / POKE_POSE_MS),
+              },
+            ]}
+          />
+        )}
+        {poke !== null && (
+          <View style={styles.eggWrap} pointerEvents="none">
+            <EasterEggFrame width={EGG_W} height={EGG_H}>
+              <Image
+                source={EVENT_ART[poke.art]}
+                resizeMode="contain"
+                style={{ width: EGG_W - 76, height: EGG_H - 34 }}
+              />
+            </EasterEggFrame>
+          </View>
+        )}
       </View>
 
       {/*
@@ -180,21 +283,20 @@ export function MainMenu({
       */}
       <View style={styles.briefRow}>
         <Text style={styles.briefLabel}>本關屬性</Text>
+        {/*
+          **同一個屬性只列一次。** 十波裡常常有四五波是同一個元素,一字排開會變成
+          「金 金 金 木 金」——玩家真正要的資訊是「這一關會出現哪些屬性」(押注用),
+          出現幾次不影響他的決定,而重複的字反而把那一列擠滿。
+          有魔王的那個屬性標一圈金框(那是最值得押的一格),有勇者波就在最後補一個「?」。
+        */}
         <View style={styles.briefChips}>
-          {waveElementsForStage(stage).map((w, i) => (
-            <View
-              key={i}
-              style={[
-                styles.briefChip,
-                w.hidden
-                  ? styles.briefChipHidden
-                  : { borderColor: elementColor(w.element), backgroundColor: `${elementColor(w.element)}33` },
-                w.boss && styles.briefChipBoss,
-              ]}
-            >
-              <Text style={[styles.briefChipText, !w.hidden && { color: elementColor(w.element) }]}>
-                {w.hidden ? '?' : elementLabel(w.element)}
-              </Text>
+          {uniqueElements(waveElementsForStage(stage)).map((w) => (
+            <View key={w.element ?? '?'} style={[styles.briefChip, w.boss && styles.briefChipBoss]}>
+              {w.element === null
+                // 「?」也畫成圓的:一整列裡只有它是方的,看起來像壞掉的那一格,
+                // 而它其實是有意義的一格(勇者波的屬性不公開)。
+                ? <View style={styles.briefUnknown}><Text style={styles.briefChipText}>?</Text></View>
+                : <SkillIcon id={w.element} color={elementColor(w.element) ?? '#e0a95c'} size={26} />}
             </View>
           ))}
         </View>
@@ -358,6 +460,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   briefChipHidden: { borderColor: '#3a3448', backgroundColor: '#2a2a35' },
+  briefUnknown: {
+    width: 26, height: 26, borderRadius: 13, borderWidth: 2, borderColor: '#3a3448',
+    backgroundColor: '#2a2a35', alignItems: 'center', justifyContent: 'center',
+  },
   /** 魔王那一格加一圈金框:整關最值得押注的就是它(關卡固定,屬性也固定)。 */
   briefChipBoss: { borderWidth: 2, borderColor: '#e0a95c' },
   briefChipText: { fontSize: 10, color: '#8a8a95' },
@@ -372,6 +478,13 @@ const styles = StyleSheet.create({
     borderTopColor: '#3d4a33',
   },
   hero: { marginBottom: 10 },
+  // 彩蛋框浮在勇者上方(不是推開他):主角的位置是主畫面的定錨,不該因為點了一下就跳。
+  eggWrap: { position: 'absolute', top: 8, alignSelf: 'center' },
+  // 投擲的武器:朝右上的圖(-45 度是這個專案的既有慣例,見 LaneRunner 的投射物)。
+  pokeWeapon: {
+    position: 'absolute', width: 30, height: 30, alignSelf: 'center', zIndex: 5,
+    transform: [{ rotate: '-45deg' }],
+  },
   // 像素圖不做平滑,放大之後才是硬邊的像素而不是糊掉的插值
   pixelArt: {},
 
