@@ -218,31 +218,84 @@ function render(
     );
   }
 
-  // ---- 木:二階荊棘往前爬,三階巨木往前撐開 ----
+  // ---- 木:二階荊棘一路往前竄,三階整片森林往前長出來 ----
+  //
+  // 這兩款原本就是「往上長」,方向沒錯,但讀起來是**植物在生長**不是打出去的招式:
+  // 荊棘是五條同時長、位置固定,巨木是一根長在勇者腳下——兩款都停在原地,
+  // 看不出「這一下是打向前面那群怪」。現在兩款都改成**由近而遠依序出現**,
+  // 跟冰錐同一個讀法:先冒出來的在腳邊,後冒出來的在前方,眼睛自然跟著往前走。
   if (el === 'wood') {
     if (tier === 2) {
+      // 荊棘:一節一節往前抽,每一節都朝前方甩出去(尾端再岔一根小刺)。
+      const n = 6;
       return (
-        <G opacity={a} stroke={color} strokeWidth={3} fill="none" strokeLinecap="round">
-          {Array.from({ length: 5 }, (_, i) => {
-            const x = ((i + 0.5) / 5) * w;
+        <G opacity={a} stroke={color} fill="none" strokeLinecap="round">
+          {Array.from({ length: n }, (_, i) => {
+            const at = i / n;
+            if (t < at * 0.75) return null;
+            const grow = Math.min(1, (t - at * 0.75) * 3.2);
+            const y0 = headY - reach * at;
+            const len = reach * 0.34 * grow;
             const dir = i % 2 === 0 ? 1 : -1;
-            const grow = reach * t;
+            const x = heroX + dir * (14 + i * 9);
+            const tipX = x + dir * 18;
+            const tipY = y0 - len;
             return (
-              <Path key={i} d={`M${x} ${headY} C${x + 22 * dir} ${headY - grow * 0.45} ${x - 18 * dir} ${headY - grow * 0.7} ${x + 8 * dir} ${headY - grow}`} />
+              <G key={i}>
+                <Path
+                  d={`M${x} ${y0} C${x + 26 * dir} ${y0 - len * 0.4} ${x - 14 * dir} ${y0 - len * 0.7} ${tipX} ${tipY}`}
+                  strokeWidth={3}
+                />
+                {/* 刺:朝前方岔出去的兩根,讓它讀起來有攻擊性而不是藤蔓 */}
+                <Path d={`M${tipX} ${tipY} l${9 * dir} 7`} strokeWidth={2} opacity={0.8} />
+                <Path d={`M${tipX} ${tipY} l${-7 * dir} 8`} strokeWidth={2} opacity={0.8} />
+              </G>
             );
           })}
         </G>
       );
     }
-    const trunkH = reach * t;
+    // 森羅:一整排巨木從近到遠**接連撞出地面**,把跑道整段長滿。
+    // (原本是勇者腳下長一根往上抽,那是「我這裡長了一棵樹」不是「前面被樹貫穿」。)
+    const n = 5;
     return (
       <G opacity={a}>
-        <Rect x={heroX - 16} y={headY - trunkH} width={32} height={trunkH} fill={color} opacity={0.85} rx={6} />
-        {Array.from({ length: 6 }, (_, i) => {
-          const y = headY - trunkH * ((i + 1) / 7);
-          const dir = i % 2 === 0 ? 1 : -1;
+        {Array.from({ length: n }, (_, i) => {
+          const at = i / n;
+          if (t < at * 0.7) return null;
+          const grow = Math.min(1, (t - at * 0.7) * 3);
+          const baseY = headY - reach * at;
+          const trunkH = reach * 0.3 * grow;
+          const x = heroX + (((i * 47) % 100) / 100 - 0.5) * w * 0.6;
+          const width = 26 - i * 2;
           return (
-            <Ellipse key={i} cx={heroX + dir * (30 + i * 9)} cy={y} rx={26} ry={11} fill={color} opacity={0.6} />
+            <G key={i}>
+              <Rect
+                x={x - width / 2}
+                y={baseY - trunkH}
+                width={width}
+                height={trunkH}
+                fill={color}
+                opacity={0.85}
+                rx={5}
+              />
+              {/* 樹冠:左右各兩片,長出來的那一刻才張開 */}
+              {Array.from({ length: 3 }, (_, k) => {
+                const dir = k % 2 === 0 ? 1 : -1;
+                const cy = baseY - trunkH * ((k + 1) / 4);
+                return (
+                  <Ellipse
+                    key={k}
+                    cx={x + dir * (18 + k * 7) * grow}
+                    cy={cy}
+                    rx={20 * grow}
+                    ry={9 * grow}
+                    fill={color}
+                    opacity={0.55}
+                  />
+                );
+              })}
+            </G>
           );
         })}
       </G>

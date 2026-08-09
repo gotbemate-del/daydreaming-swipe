@@ -77,6 +77,8 @@ const SPREAD_SIZE = 20;
 const SPREAD_BURST = 12;
 /** 技能列那一排圓的直徑。34 是「環看得出走到哪」與「一排塞得下 6 顆」的交界。 */
 const SKILL_ICON_SIZE = 34;
+/** 技能列擠到滿的時候縮到多小為止。再小的話等級的小圓就讀不出來了。 */
+const MIN_SKILL_ICON_SIZE = 20;
 // 只給 headY 當基準用(見下方 form 那段的說明):版面錨點固定用基本型,合體不會讓它位移。
 const HERO_HEIGHT = heroBoxHeight(HERO_BODY_HEIGHT);
 const HERO_BOTTOM = 10;
@@ -1032,13 +1034,36 @@ export function LaneRunner({
    * 舊註解寫「不畫冷卻環是因為要多一個相依」——那個相依(react-native-svg)後來
    * 為了別的東西已經進來了,所以那個理由早就不成立。
    */
-  function renderSkillSlot(s: CarriedSkill) {
+  function renderSkillSlot(s: CarriedSkill, size: number) {
     const tint = elementColor(s.id) ?? '#e0a95c';
     return (
       <View key={s.id} accessibilityLabel={`技能 ${s.name} ${s.level}`} style={styles.skillSlot}>
-        <SkillIcon id={s.id} color={tint} size={SKILL_ICON_SIZE} level={s.level} cooldown={s.cooldown} ready={s.ready} />
+        <SkillIcon id={s.id} color={tint} size={size} level={s.level} cooldown={s.cooldown} ready={s.ready} />
       </View>
     );
+  }
+
+  /**
+   * 技能列**永遠只有一列**,所以圖示的大小是算出來的不是寫死的。
+   *
+   * 一場最多帶 10 款(MAX_RUN_SKILL_SLOTS),而寫死 34px 的話 390 寬的手機在第 10 款
+   * 就換行了——換行的那一顆掉到提示文字底下,看起來像「多出來一個不知道哪來的技能」,
+   * 而且底下那一列本來就貼著畫面下緣,小螢幕會被切掉。
+   *
+   * 算法:先照跑道寬扣掉間隔,再夾在可讀的上下限之間;真的擠不下就連間隔一起縮。
+   * 上限維持 34(帶得少的時候跟以前一模一樣),下限 20 是等級小圓還讀得出來的極限。
+   */
+  function skillBarMetrics(count: number) {
+    const MAX_GAP = 7;
+    const MIN_GAP = 3;
+    const width = trackWidth > 0 ? trackWidth : 0;
+    if (count <= 0 || width <= 0) return { size: SKILL_ICON_SIZE, gap: MAX_GAP };
+    for (const gap of [MAX_GAP, 5, MIN_GAP]) {
+      const size = Math.floor((width - gap * (count - 1)) / count);
+      if (size >= SKILL_ICON_SIZE) return { size: SKILL_ICON_SIZE, gap };
+      if (size >= MIN_SKILL_ICON_SIZE) return { size, gap };
+    }
+    return { size: MIN_SKILL_ICON_SIZE, gap: MIN_GAP };
   }
 
   return (
@@ -1345,7 +1370,7 @@ export function LaneRunner({
         只有「還要 2 波」,那是玩家換算不成時間的單位;綁秒才有倒數可看,而看得到倒數
         才談得上「等一下再放」。被動沒有冷卻,只顯示名字與等級(見 CarriedSkill.cooldown)。
       */}
-      <View style={styles.skillBar}>
+      <View style={[styles.skillBar, { gap: skillBarMetrics(carriedSkills.length).gap }]}>
         {carriedSkills.length === 0
           // 教學關的前兩關**根本不給場內技能**(見 game/laneTutorial.ts),
           // 那兩關寫「打完一波就能挑技能」是騙人的——玩家會一路等到終點都等不到面板,
@@ -1357,7 +1382,7 @@ export function LaneRunner({
                 : '打完一波就能挑技能'}
             </Text>
           )
-          : carriedSkills.map(renderSkillSlot)}
+          : carriedSkills.map((s) => renderSkillSlot(s, skillBarMetrics(carriedSkills.length).size))}
       </View>
 
       {/* 「現在打到第幾波」是玩家判斷「還剩多久」的唯一依據——只寫總波數的話,
@@ -1625,10 +1650,11 @@ const styles = StyleSheet.create({
   // ---- 技能列(畫面最下方,原本是廣告版位的位置)----
   skillBar: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    // **不准換行。** 換到第二列的那一顆會掉到提示文字底下(小螢幕直接被切掉),
+    // 而且那一列的高度是版面裡少數幾個固定值之一。擠不下就把圖示縮小,見 skillBarMetrics。
+    flexWrap: 'nowrap',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 7,
     minHeight: 40,
   },
   // overflow 不能設 hidden:等級的小圓刻意畫在圓的外緣上(right/bottom 是負的),
