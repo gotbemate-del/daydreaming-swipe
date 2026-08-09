@@ -27,6 +27,7 @@ import {
 } from './simRun';
 import {
   runSkillPicksForWave, totalRunSkillPicks, REFERENCE_RUN_SKILL_LEVEL, RUN_SKILLS, maxRunSkillAttackMultiplier,
+  FIRE_TIER1_DAMAGE_PER_LEVEL,
   ELEMENT_SET_BONUS, hasElementSet, tier2Kills, tier3Kills,
   MAX_RUN_SKILL_SLOTS, runSkillEffects, skillCooldownSeconds, bestRunSkillChoice, runSkillOffersAt,
   ACTIVE_SKILL_IDS, ELEMENTS, runSkillSpec, ELEMENT_COUNTERS, COUNTER_BONUS, COUNTERED_PENALTY,
@@ -595,13 +596,30 @@ check('一波的秒數在 3000 關之間幾乎不變(這是「冷卻可以綁秒
       const id = `${el}3` as RunSkillId;
       return killsOf(full(el), id) > killsOf([...partial(el), { id, level: REFERENCE_RUN_SKILL_LEVEL }].slice(0, 2).concat({ id, level: REFERENCE_RUN_SKILL_LEVEL }), id) * 0.99;
     }));
+  // **樣本刻意用土不用火**:火一階另外還會放大火族的主動傷害
+  //(FIRE_TIER1_DAMAGE_PER_LEVEL),拿火當樣本的話這一項量到的是兩個加成的乘積。
   check('集齊加成剛好是 ELEMENT_SET_BONUS,而且只加在集齊的那一族',
-    Math.abs(killsOf(full('fire'), 'fire3') / (1 + ELEMENT_SET_BONUS) - tier3Kills(REFERENCE_RUN_SKILL_LEVEL)) < 1e-9
-    && Math.abs(killsOf([...full('fire'), { id: 'ice2', level: REFERENCE_RUN_SKILL_LEVEL }], 'ice2')
+    Math.abs(killsOf(full('earth'), 'earth3') / (1 + ELEMENT_SET_BONUS) - tier3Kills(REFERENCE_RUN_SKILL_LEVEL)) < 1e-9
+    && Math.abs(killsOf([...full('earth'), { id: 'ice2', level: REFERENCE_RUN_SKILL_LEVEL }], 'ice2')
       - tier2Kills(REFERENCE_RUN_SKILL_LEVEL)) < 1e-9,
-    `火集齊 ${killsOf(full('fire'), 'fire3')} 隻 vs 基準 ${tier3Kills(REFERENCE_RUN_SKILL_LEVEL)}`);
+    `土集齊 ${killsOf(full('earth'), 'earth3')} 隻 vs 基準 ${tier3Kills(REFERENCE_RUN_SKILL_LEVEL)}`);
   check('沒集齊就沒有加成(缺一階也不算)',
-    Math.abs(killsOf([...partial('fire'), { id: 'ice', level: 1 }], 'fire2') - tier2Kills(REFERENCE_RUN_SKILL_LEVEL)) < 1e-9);
+    Math.abs(killsOf([...partial('earth'), { id: 'ice', level: 1 }], 'earth2') - tier2Kills(REFERENCE_RUN_SKILL_LEVEL)) < 1e-9);
+  // 火一階的等級放大火族的主動傷害,而且**只放大火族**——它是為了補火一階
+  // 那幾個「升了沒感覺」的等級(burnSpreadTargets 是每兩級才多一隻)。
+  {
+    const withFire = (l: number): RunSkillState[] => [
+      { id: 'fire', level: l }, { id: 'fire3', level: REFERENCE_RUN_SKILL_LEVEL },
+      { id: 'ice3', level: REFERENCE_RUN_SKILL_LEVEL },
+    ];
+    const base = killsOf(withFire(0), 'fire3');
+    const lv5 = killsOf(withFire(5), 'fire3');
+    check('火一階每一級 -> 火族主動傷害 +1%',
+      Math.abs(lv5 / base - (1 + FIRE_TIER1_DAMAGE_PER_LEVEL * 5)) < 1e-9,
+      `0 級 ${base} 隻 -> 5 級 ${lv5} 隻`);
+    check('火一階不會放大別族的主動傷害',
+      Math.abs(killsOf(withFire(5), 'ice3') - killsOf(withFire(0), 'ice3')) < 1e-9);
+  }
   check('10 格剛好放得下三族(9 格)再多一格',
     MAX_RUN_SKILL_SLOTS === 10 && Math.floor(MAX_RUN_SKILL_SLOTS / 3) === 3);
   check('集齊加成沒有讓技能加到戰力(照樣不進敵人曲線)',

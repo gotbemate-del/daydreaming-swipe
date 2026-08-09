@@ -400,6 +400,30 @@ export const MAX_RUN_SKILL_SLOTS = 10;
  */
 export const ELEMENT_SET_BONUS = 0.5;
 
+/**
+ * 火・燃燒每一級,火族的主動傷害多幾成。
+ *
+ * ## 為什麼只有火有這一條
+ *
+ * 其他五款一階每一級都有東西:金加擴散比例、雷加連鎖比例、冰加兌換率與凍結機率、
+ * 木加補人、土加減速與少損失。**只有火是階梯式的**——`burnSpreadTargets` 是
+ * `floor(等級 / 2)`,所以 1、3、5 級升上去畫面上完全沒有差別(而燃燒本身是持續傷害,
+ * 幅度也不隨等級動)。這一條把那幾級補起來:火一階練得越高,火二三階打得越重。
+ *
+ * ## 為什麼安全
+ *
+ * 它乘的是**主動的清怪隻數**,跟 ELEMENT_SET_BONUS 同一個位置——不是戰力。
+ * 給戰力就會被貪心(`bestRunSkillChoice`)看到,敵人立刻跟著長;
+ * 乘在傷害上則對每一波全清的理想玩家等於 0,所以照樣不進理想路線
+ *(`maxRunSkillAttackMultiplier()` 仍然是 1,verify 在盯)。
+ */
+export const FIRE_TIER1_DAMAGE_PER_LEVEL = 0.01;
+
+/** 這一組技能裡,火・燃燒練到幾級(沒帶就是 0)。 */
+export function fireDamageBonus(skills: RunSkillState[]): number {
+  return 1 + FIRE_TIER1_DAMAGE_PER_LEVEL * Math.max(0, runSkillLevel(skills, 'fire'));
+}
+
 /** 這一組技能裡,某個元素的三階是不是都帶著了。 */
 export function hasElementSet(skills: RunSkillState[], element: RunSkillId): boolean {
   const tiers = skills.filter((s) => s.level > 0 && elementOf(s.id) === element).map((s) => skillTier(s.id));
@@ -652,9 +676,10 @@ export const RUN_SKILLS: RunSkillSpec[] = [
     describe: (l) => {
       const dps = `每秒 ${Math.round(BURN_DPS_RATIO * 100)}% 生命`;
       const spread = burnSpreadTargets(l);
+      const boost = `火系主動傷害 +${Math.round(FIRE_TIER1_DAMAGE_PER_LEVEL * l * 100)}%`;
       return spread > 0
-        ? `命中的那隻燒起來,火再蔓延到旁邊 ${spread} 隻(${dps})`
-        : `命中的那隻燒起來(${dps}),升級後火會蔓延`;
+        ? `命中的那隻燒起來,火再蔓延到旁邊 ${spread} 隻(${dps});${boost}`
+        : `命中的那隻燒起來(${dps}),升級後火會蔓延;${boost}`;
     },
   },
   {
@@ -926,7 +951,10 @@ export function runSkillEffects(
       // 集齊同元素三階 → 那一族的主動傷害額外加成(見 ELEMENT_SET_BONUS)。
       // 乘在傷害上不是給戰力:給戰力就會被貪心看到,敵人立刻跟著長。
       const set = hasElementSet(skills, elementOf(s.id)) ? 1 + ELEMENT_SET_BONUS : 1;
-      const kills = (tier === 2 ? tier2Kills(level) : tier3Kills(level)) * mx * set;
+      // 火・燃燒的等級再放大火族的主動傷害(見 FIRE_TIER1_DAMAGE_PER_LEVEL)。
+      // 只放大火族:那一條是為了補火一階那幾個「升了沒感覺」的等級。
+      const fam = elementOf(s.id) === 'fire' ? fireDamageBonus(skills) : 1;
+      const kills = (tier === 2 ? tier2Kills(level) : tier3Kills(level)) * mx * set * fam;
       actives.push({
         id: s.id,
         name: runSkillSpec(s.id).name,
