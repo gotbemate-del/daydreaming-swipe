@@ -826,6 +826,33 @@ export function baseAttackForStage(stage: number): number {
 export const ENEMY_POWER_RATIO = 0.5;
 
 /**
+ * 沒掃到的那幾隻,一隻算幾成的漏接。
+ *
+ * ## 為什麼不是 0(舊規則),也不是 1
+ *
+ * **0(完全不算)** 會讓「少掃」變成純賺:那幾隻既不扣人、又幾乎不影響吸收,
+ * 於是站著不動比認真掃更安全——實測掃描率 0.8 的過關率(84%)比全掃(72%)還高,
+ * 方向整個反了。
+ * **1(全額算)** 則是另一個極端:實測覆蓋率 95% 就從 98% 掉到 0% 過關,那是懸崖。
+ *
+ * 折中值讓兩邊都成立:少掃**同時**少賺(吸收照掃到的比例給)與付代價(這一條),
+ * 所以掃得越勤越好;而代價只有漏接的三分之一,所以掃不滿不會當場出局。
+ * **完美玩家掃得到整波**,所以這個係數對他是 0——理想路線一格都沒動。
+ */
+export const MISS_LEAK_RATIO = 0.25;
+
+/**
+ * 這一關「沒掃到」要不要算漏接。**教學關一律不算(0)。**
+ *
+ * 教學區的原則是「拿掉機制」不是「放水」:1-1 只教一件事——把史萊姆拉到那一格上面。
+ * 這時候還要求他同時把整條跑道掃過一遍,等於在第一關就考兩件事,而且失敗的原因
+ *(少收了幾個人)在畫面上完全看不出來。掃描的份量從 1-6 開始算。
+ */
+export function missLeakRatioForStage(stage: number): number {
+  return tutorialRulesFor(stage) !== null ? 0 : MISS_LEAK_RATIO;
+}
+
+/**
  * 無限模式每接一段,敵人相對變強幾成。
  *
  * ## 它做的事
@@ -1556,9 +1583,13 @@ export const HAZARD_LOSS_HEROES = 1;
 /**
  * 每多打一波,一把武器再多換掉幾個人。
  *
- * 「一把武器換一個人」在第 1 波是對的,到第 20 波就變成搔癢——那時候隊伍已經幾十人,
- * 而勇者波每三波就來一次。這個係數讓**閃武器**這件事的份量跟著整輪的長度長:
- * 第 10 波一下 6 個人、第 20 波 11 個人。
+ * **只在第 20 波之後才開始長**(HAZARD_SHARE_FROM_WAVE)。一般小關最長就是 20 波,
+ * 所以**闖關模式完全吃不到這一條**——它是生存模式專用的壓力來源。
+ *
+ * 兩個模式的難度要能分開調,這是其中一顆:闖關的難度只由 `ENEMY_POWER_RATIO` 與
+ * 三顆關卡旋鈕決定,生存模式在那之上再疊 `ENDLESS_PRESSURE_STEP` 與這一條。
+ * 混在一起的代價實測過——為了生存模式加的東西會把闖關一起弄硬,而玩家回報的
+ *「闖關過不了」就是那樣來的。
  */
 export const HAZARD_LOSS_PER_WAVE = 0.5;
 
@@ -1584,7 +1615,9 @@ export const HAZARD_SHARE_CAP = 0.4;
  */
 export function hazardLossHeroes(waveNumber: number, heroes: number): number {
   const waves = Math.max(0, Math.floor(waveNumber));
-  const flat = HAZARD_LOSS_HEROES + Math.floor(waves * HAZARD_LOSS_PER_WAVE);
+  // **闖關模式一律是 1**:遞增從第 20 波之後才開始(一般小關最長 20 波)。
+  const deep = Math.max(0, waves - HAZARD_SHARE_FROM_WAVE);
+  const flat = HAZARD_LOSS_HEROES + Math.floor(deep * HAZARD_LOSS_PER_WAVE);
   const share = Math.min(
     HAZARD_SHARE_CAP,
     Math.max(0, waves - HAZARD_SHARE_FROM_WAVE) * HAZARD_SHARE_PER_WAVE,
@@ -2221,7 +2254,9 @@ export function resolveEnemy(
   //
   // 現在 leaked 只算**打得到卻沒打掉的**(戰力壓不過的那部分),那才是真正的失誤。
   const leaked = Math.max(0, covered - kills);
+  // 沒掃到的那幾隻:照 MISS_LEAK_RATIO 折算成漏接(牠們一樣走到你身上,只是你根本沒開火)。
   const missed = Math.max(0, enemy.units - covered);
+  const missLeak = missed * missLeakRatioForStage(state.stage);
   const next = { ...state };
   // 打倒的怪有一部分加入隊伍。放在「漏 0」那條路徑上而不是照 kills 給:
   // 半殘的一波已經在扣人了,再補回來會讓「擋不住」這件事變得模糊。
@@ -2237,15 +2272,27 @@ export function resolveEnemy(
   // 現在是:掃不到的那幾隻**不扣你人,但會讓這一波不算全清**,所以整波的吸收都拿不到。
   // 懲罰因此是「成長變慢」而不是「當場掉人」——斜坡不是懸崖,而且方向是對的:
   // 掃得越勤,滾出來的隊伍越大。
-  const sweptAll = covered >= enemy.units;
-  if ((leaked === 0 && sweptAll) || boost.immune) {
-    const joined = absorbedFrom(kills, enemy.leakCost) + rallied;
+  // **吸收照掃到的比例給,不是全有全無。**
+  //
+  // 舊規則是「整波都掃到才給吸收」,而那是一道**懸崖**:實測掃描率 0.95 的玩家過關率
+  // 從 72% 掉到 55%、0.90 掉到 32%、0.80 直接 0%——**連每一格都選對的人都過不了關**
+  //(使用者回報的「闖關模式無法通關」)。原因是吸收是成長的主要來源,而敵人曲線
+  // 假設每一波都全清全收;少收一次就一路落後,二十波複利下來就是死。
+  //
+  // 改成比例之後方向仍然是對的(這一點是關鍵,舊註解記過反過來的那次教訓):
+  // **掃得越少拿得越少**,所以「站著不動」永遠不會變成最優解;而完美玩家掃到 100%,
+  // 拿到的跟以前一模一樣——理想路線一格都沒動,結構保證原封不動。
+  const sweepRatio = enemy.units > 0 ? Math.min(1, covered / enemy.units) : 1;
+  if ((leaked === 0 && missLeak < 1) || boost.immune) {
+    const joined = Math.round(absorbedFrom(kills, enemy.leakCost) * (boost.immune ? 1 : sweepRatio)) + rallied;
     next.coins += enemy.reward;
     next.heroes += joined;
     return {
       state: next,
       message: joined > 0
-        ? `擊倒${enemy.name} +${joined} 人`
+        // 沒掃滿就把比例寫出來:玩家要知道「少收的那幾個是因為沒掃到」,
+        // 不然他只會看到「怎麼這次只 +3 人」,而那是他唯一能改的操作。
+        ? `擊倒${enemy.name} +${joined} 人${sweepRatio < 0.999 ? `(掃到 ${Math.round(sweepRatio * 100)}%)` : ''}`
         : `擊倒${enemy.name} +${enemy.reward} 金幣`,
       heroDelta: joined,
       attackDelta: joined * next.perHero,
@@ -2266,7 +2313,7 @@ export function resolveEnemy(
   // 實際命中累積出來的,而敵人曲線是照 waveKillCount 這條**公式**校準的,
   // 兩者本來就會有零頭差。讓公式當權威,難度曲線就一格都不會動
   //(模擬器不給 leakAdvance,所以它走的路徑跟以前完全一樣)。
-  const total = leakLoss(leaked, cost, next.tradeRate, boost.lossCut);
+  const total = leakLoss(leaked + missLeak, cost, next.tradeRate, boost.lossCut);
   const advance = Math.max(0, Math.floor(boost.leakAdvance ?? 0));
   const lost = total - advance;
   const before = totalAttack(next);
