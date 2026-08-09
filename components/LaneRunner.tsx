@@ -30,7 +30,7 @@ import { Settings, type AudioSettings } from './Settings';
 import { MapDrawToast } from './MapDrawToast';
 import { playSfx } from '../hooks/useSfx';
 import {
-  describeRunSkill, runSkillSpec, ELEMENT_COUNTERS, isActiveSkill, FREEZE_MS,
+  describeRunSkill, runSkillSpec, elementOf, ELEMENT_COUNTERS, isActiveSkill, FREEZE_MS,
   type CollectionScales, type RunSkillId, type ElementBooks,
 } from '../game/laneRunSkills';
 import {
@@ -1035,7 +1035,10 @@ export function LaneRunner({
    * 為了別的東西已經進來了,所以那個理由早就不成立。
    */
   function renderSkillSlot(s: CarriedSkill, size: number) {
-    const tint = elementColor(s.id) ?? '#e0a95c';
+    // **同一族的三款一律同色**,所以查顏色要先把 id 換回它的一階(elementOf)。
+    // 直接拿 s.id 查的話,'fire2' / 'fire3' 在色表裡沒有 key —— 一二三階會退回強調金,
+    // 而那正是「湊滿同元素」最該一眼看出來的事(技能列上常常有兩三格同族)。
+    const tint = elementColor(elementOf(s.id)) ?? '#e0a95c';
     return (
       <View key={s.id} accessibilityLabel={`技能 ${s.name} ${s.level}`} style={styles.skillSlot}>
         <SkillIcon id={s.id} color={tint} size={size} level={s.level} cooldown={s.cooldown} ready={s.ready} />
@@ -1260,7 +1263,9 @@ export function LaneRunner({
                   accessibilityLabel={`場內技能 ${runSkillSpec(offer.id).name}`}
                   onPress={() => { playSfx('skill'); chooseRunSkill(offer); }}
                 >
-                  <Text style={styles.skillName}>
+                  {/* 選項的名字也照元素上色,跟技能列同一套顏色:
+                      挑的時候看到的顏色,就是等一下在技能列上要找的那個顏色。 */}
+                  <Text style={[styles.skillName, { color: elementColor(elementOf(offer.id)) ?? '#f2f2f2' }]}>
                     {runSkillSpec(offer.id).name} {offer.level > 1 ? `Lv.${offer.level}` : '新'}
                     {/* 這個元素在接下來幾波是強是弱,直接標出來——不標的話玩家得自己背相剋表。
                         被剋也要標:相剋是雙向的(剋中 x2.5、被剋 x2/3),只標好的一半
