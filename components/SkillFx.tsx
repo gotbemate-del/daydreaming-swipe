@@ -1,5 +1,6 @@
 import Svg, { Circle, Ellipse, G, Path, Polygon, Rect } from 'react-native-svg';
 
+import { fxReach, fxSpread } from '../game/laneRunFx';
 import { elementOf, skillTier, type RunSkillId } from '../game/laneRunSkills';
 import { elementColor } from './artAssets';
 
@@ -74,8 +75,9 @@ function render(
   color: string, w: number, h: number, heroX: number, headY: number,
 ) {
   const el = elementOf(id);
-  /** 這一次要打多遠(往上)。三階打到底,二階打到跑道中段。 */
-  const reach = (tier === 2 ? 0.5 : 0.86) * h;
+  // **打多遠、扇形多寬都從 game/laneRunFx 拿**:判定用的是同一組數字。
+  // 各留一份的話會出現「看起來打到了但沒反應」——這款最不能有的那種 bug。
+  const reach = fxReach(tier) * h;
   /** 目前推進到的 y。 */
   const frontY = headY - reach * t;
 
@@ -120,7 +122,7 @@ function render(
   // 先前是繞著勇者轉一圈——那是「護體」不是「攻擊」,而金的兩款都是傷害。
   if (el === 'metal') {
     const n = tier === 2 ? 7 : 13;
-    const spread = tier === 2 ? 0.5 : 0.95; // 扇形的半角(弧度)
+    const spread = fxSpread(tier); // 扇形的半角(弧度),判定共用
     return (
       <G opacity={a}>
         {Array.from({ length: n }, (_, i) => {
