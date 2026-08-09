@@ -340,7 +340,7 @@ export function LaneRunner({
   const run = useLaneRun(stage, start, books, collection, settingsOpen || drawing, handoff);
   const {
     state, distance, heroOffset, upcoming, wave, projectiles, hitNumbers, rocks, readStats, readHandoff,
-    lastShotAt, lastShotId, feedback, steer, dragTo,
+    lastShotAt, lastShotId, lastShotFrom, feedback, steer, dragTo,
     runSkills, skillOffers, pendingPicks, chooseRunSkill, lastStrike, upcomingElements,
     enemyShots, lastHazardAt, enemyThrowAt, waveNumber, totalWaves,
     elementEvents, carriedSkills,
@@ -492,7 +492,10 @@ export function LaneRunner({
   if (lastShotId !== lastSeenShotRef.current) {
     lastSeenShotRef.current = lastShotId;
     if (lastShotId > 0 && units.length > 0) {
-      const shooter = lastShotId % units.length;
+      // **用 hook 給的 shooter,不要在這裡自己再算一次。**
+      // 子彈的出發點是照 SQUAD_DX[lastShotFrom] 算的,畫面這邊各算一份的話,
+      // 會看到 A 做出投擲動作、子彈卻從 B 那裡飛出來。
+      const shooter = Math.min(units.length - 1, Math.max(0, lastShotFrom));
       const until = spikeUntilRef.current.slice();
       until.length = units.length;
       until[shooter] = lastShotAt + HERO_SPIKE_MS;
@@ -1020,11 +1023,22 @@ export function LaneRunner({
       transform: [{ rotate: '-45deg' }],
     };
     const art = weaponArt(job?.archetype ?? null, state.gear, p.id);
+    // 自動化測試要量「子彈是不是從各自的位置飛出來」,得抓得到武器本人並知道它的出發點。
+    // 靠圖寬去猜會抓到小怪或石頭(尺寸會撞),CLAUDE.md 已經記過兩次同一個坑。
+    const label = `武器 ${p.fromOffset.toFixed(3)}`;
     if (!tint) {
-      return <Image key={p.id} source={art} resizeMode="contain" style={[styles.pixelArt, styles.floating, box]} />;
+      return (
+        <Image
+          key={p.id}
+          source={art}
+          resizeMode="contain"
+          accessibilityLabel={label}
+          style={[styles.pixelArt, styles.floating, box]}
+        />
+      );
     }
     return (
-      <View key={p.id} pointerEvents="none">
+      <View key={p.id} pointerEvents="none" accessibilityLabel={label}>
         <Image source={art} resizeMode="contain" style={[styles.pixelArt, styles.floating, box]} />
         <Image
           source={art}
@@ -1357,7 +1371,10 @@ export function LaneRunner({
               // 自動化測試要量「拖曳有沒有真的生效」,就得先抓得到勇者本人。
               // 靠 `track img` 的第一張會抓到石頭或小怪(牠們畫在前面),量出來的 x 永遠不動,
               // 於是機器人看起來在拖、其實一步都沒動——CLAUDE.md 記過的那個坑。
-              accessibilityLabel={i === drawn.length - 1 ? '勇者隊伍' : undefined}
+              // 每一隻都標,而且帶自己的隊形索引:自動化測試要量「子彈是不是從各自的位置
+              // 飛出來的」,就得同時抓得到每一隻站哪裡。只標最前面那一隻的話量不到隊伍寬度。
+              // drawn 是由後往前畫的(reverse),所以索引要換算回 SQUAD_DX 的順序。
+              accessibilityLabel={`勇者隊伍 ${drawn.length - 1 - i}`}
               style={[
                 styles.hero,
                 styles.pixelArt,
