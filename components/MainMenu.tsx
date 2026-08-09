@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, Text, View, type TextStyle } from 'react-native';
+import {
+  Image, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View, type TextStyle,
+} from 'react-native';
 
 import { jobTitle, type LaneJob } from '../game/laneJobs';
 import { Settings, type AudioSettings } from './Settings';
@@ -9,7 +11,8 @@ import type { QuestView } from '../game/quests';
 import { totalBookLevels, type ElementBooks, type RunSkillId } from '../game/laneRunSkills';
 import { playSfx } from '../hooks/useSfx';
 import { EasterEggFrame } from './EasterEggFrame';
-import { EVENT_ART } from './eventArt';
+import { EVENT_ART, EVENT_KEYS } from './eventArt';
+import { eventCaption } from '../game/eventCaption';
 import { SkillIcon } from './SkillIcon';
 import {
   COIN_ICON, GEAR_ICON, HERO_ASPECT, HERO_FRAME_MS, HERO_FRAMES, heroBoxHeight, LOCK_ICON, weaponArt,
@@ -34,13 +37,28 @@ import {
  * 框比這個高一倍多(見 artAssets 的 HERO_BODY_RATIO),多出來的上半部是噴刺的空間。
  */
 const HERO_BODY_HEIGHT = 76;
+/**
+ * 矮螢幕(640/667)的版本。**這一組一定要有**:畫框掛在史萊姆頭上之後,
+ * 「框 + 說明 + 角色」疊起來大約 360——而 640 高的手機扣掉狀態列、屬性列、開始鍵與分頁列
+ * 只剩三百出頭,不縮的話畫框的上緣會被裁掉(而且完全沒有警告,只是「圖怎麼少一截」)。
+ * CLAUDE.md 的規矩:版面動過就要跨 640/667/780/844 四種高度量一次。
+ */
+const COMPACT_BELOW = 700;
+const HERO_BODY_COMPACT = 56;
 /** 點一下之後噴刺那一格停多久。比投擲的出手間隔短,不然姿勢會卡住看起來像定格。 */
 const POKE_POSE_MS = 320;
 /** 那一把武器往上飛多遠(像素)。飛到彩蛋框的位置剛好淡完。 */
 const POKE_FLY = 90;
+
+/** 分頁上寫什麼。轉職那一格改成任務(見分頁列的說明),其餘照素材表。 */
+function tabLabel(tab: { id: string; label: string }): string {
+  return tab.id === 'job' ? '任務' : tab.label;
+}
 /** 彩蛋框的尺寸。240 寬配 0.42 的柱子(35px)剛好,高度照事件圖的比例(約 3:2)。 */
 const EGG_W = 240;
 const EGG_H = 150;
+const EGG_W_COMPACT = 190;
+const EGG_H_COMPACT = 112;
 
 /**
  * 這一關會出現哪些屬性(**同一個只留一次**)。
@@ -64,6 +82,8 @@ function uniqueElements(
 }
 const HERO_HEIGHT = heroBoxHeight(HERO_BODY_HEIGHT);
 const HERO_WIDTH = Math.round(HERO_HEIGHT * HERO_ASPECT);
+const HERO_HEIGHT_COMPACT = heroBoxHeight(HERO_BODY_COMPACT);
+const HERO_WIDTH_COMPACT = Math.round(HERO_HEIGHT_COMPACT * HERO_ASPECT);
 
 /** 分頁圖示的邊長。一列五個,390 寬的手機上剛好不擠。 */
 const TAB_SIZE = 34;
@@ -117,6 +137,12 @@ export function MainMenu({
   stage, job, coins, lastResult, books, bestSurvival, justFound, justBooks, audio, onChangeAudio, quest,
   dungeonNote, onOpenSettings, onResetSave, onStart, onDungeons, onCodex, onSkills, onQuests,
 }: Props) {
+  // 矮螢幕整組縮一階(見 COMPACT_BELOW)。
+  const compact = useWindowDimensions().height < COMPACT_BELOW;
+  const eggW = compact ? EGG_W_COMPACT : EGG_W;
+  const eggH = compact ? EGG_H_COMPACT : EGG_H;
+  const heroW = compact ? HERO_WIDTH_COMPACT : HERO_WIDTH;
+  const heroH = compact ? HERO_HEIGHT_COMPACT : HERO_HEIGHT;
   const [heroStep, setHeroStep] = useState(0);
   /**
    * 點史萊姆:①換成噴刺那一格 ②翻出一張彩蛋圖。
@@ -125,12 +151,17 @@ export function MainMenu({
    *「他在打空氣」;改成點了才噴之後,那一格變成**玩家做的事**,而且剛好接上彩蛋:
    * 一次點擊 = 一個動作 + 一張沒看過的圖。
    */
-  const [poke, setPoke] = useState<{ at: number; art: number } | null>(null);
+  // **一進來就先掛一張。** 主畫面原本中間一大片是空的,而「點了才有東西」的設計
+  // 有一個問題:沒點過的人不知道可以點。開場就掛一張(`at: 0` = 不播投擲那一格),
+  // 畫面立刻有內容,而點下去換一張就是玩家自己發現的事。
+  const [poke, setPoke] = useState<{ at: number; art: number }>(
+    () => ({ at: 0, art: Math.floor(Math.random() * EVENT_ART.length) }),
+  );
   const [settings, setSettings] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   // 主角永遠是史萊姆,轉職不換造型。職業立繪只留在轉職選擇畫面(那裡是在介紹職業)。
   // 平常只在**待機的兩格**之間循環;噴刺那一格留給點擊(見 poke)。
-  const throwing = poke !== null && Date.now() - poke.at < POKE_POSE_MS;
+  const throwing = poke.at > 0 && Date.now() - poke.at < POKE_POSE_MS;
   const heroArt = throwing ? HERO_FRAMES[1] : HERO_FRAMES[heroStep % HERO_FRAMES.length];
   // 教學關(1-1 ~ 1-5)才有。null 的時候整列不畫——不是教學關的人不需要多一行字,
   // 而多出來的那一行在 640 高的螢幕上正好會把「開始闖關」往下推。
@@ -163,7 +194,7 @@ export function MainMenu({
    */
   const [pokeTick, setPokeTick] = useState(0);
   useEffect(() => {
-    if (poke === null) return;
+    if (poke.at === 0) return;
     const id = setInterval(() => setPokeTick((t) => t + 1), 33);
     const stop = setTimeout(() => clearInterval(id), POKE_POSE_MS + 40);
     return () => { clearInterval(id); clearTimeout(stop); };
@@ -224,54 +255,67 @@ export function MainMenu({
         彩蛋框把那片空白變成一個**可以按的東西**:點史萊姆 → 他噴一次刺 → 框裡翻出
         一張沒看過的圖(34 張輪流抽)。它不影響任何數值,純粹是「這個遊戲還有東西可以看」。
       */}
-      <View style={styles.stage}>
+      <View style={[styles.stage, compact && styles.stageCompact]}>
         <View style={styles.ground} />
-        <Pressable
-          accessibilityLabel="戳一下史萊姆"
-          onPress={() => {
-            playSfx('click');
-            // **每次都換一張**:34 選 1 有機會抽回同一張,而玩家點下去看到一模一樣的圖,
-            // 第一個念頭是「壞了」——跟生存模式的重抽同一條規則。
-            setPoke((prev) => {
-              let art = Math.floor(Math.random() * EVENT_ART.length);
-              if (prev !== null && art === prev.art) art = (art + 1) % EVENT_ART.length;
-              return { at: Date.now(), art };
-            });
-          }}
-        >
-          <Image
-            source={heroArt}
-            resizeMode="contain"
-            style={[styles.hero, { width: HERO_WIDTH, height: HERO_HEIGHT }]}
-          />
-        </Pressable>
+        {/*
+          **畫框在上、角色在下,用 flex 排,不要絕對定位。**
+          絕對定位的版本在 640 高的手機上會被 `overflow: hidden` 把畫框的上緣裁掉——
+          而那看起來只是「圖少了一截」,不像版面問題(CLAUDE.md 記過同一種症狀)。
+          交給 flex 之後,矮螢幕只要把兩者各縮一階就排得下(見 COMPACT_BELOW)。
+        */}
+        <View style={styles.stageColumn}>
+          <View style={styles.eggWrap} pointerEvents="none">
+            <EasterEggFrame width={eggW} height={eggH} scale={compact ? 0.34 : 0.42}>
+              <Image
+                source={EVENT_ART[poke.art]}
+                resizeMode="contain"
+                style={{ width: eggW - (compact ? 62 : 76), height: eggH - (compact ? 26 : 34) }}
+              />
+            </EasterEggFrame>
+            {/*
+              這一張是什麼。**沒有這一行的話翻出來的只是一張圖**——玩家看得到畫面,
+              卻不知道自己翻到了什麼、跟上一張差在哪。說明由檔名推(見 game/eventCaption)。
+            */}
+            <Text style={styles.eggCaption} numberOfLines={1}>
+              {eventCaption(EVENT_KEYS[poke.art])}
+            </Text>
+          </View>
+          <Pressable
+            accessibilityLabel="戳一下史萊姆"
+            onPress={() => {
+              playSfx('click');
+              // **每次都換一張**:抽回同一張的話玩家點下去看到一模一樣的圖,
+              // 第一個念頭是「壞了」——跟生存模式的重抽同一條規則。
+              setPoke((prev) => {
+                let art = Math.floor(Math.random() * EVENT_ART.length);
+                if (art === prev.art) art = (art + 1) % EVENT_ART.length;
+                return { at: Date.now(), art };
+              });
+            }}
+          >
+            <Image
+              source={heroArt}
+              resizeMode="contain"
+              style={[styles.hero, { width: heroW, height: heroH }]}
+            />
+          </Pressable>
+        </View>
         {/*
           丟出去的那一把武器。往上飛(跟跑道上的方向一致——前方就是畫面上方),
-          飛到彩蛋框那裡剛好淡出,所以「點一下 → 丟一把 → 框裡出現一張圖」讀起來是一串因果。
+          飛到畫框那裡剛好淡出,所以「點一下 → 丟一把 → 框裡換一張圖」讀起來是一串因果。
         */}
         {throwing && (
           <Image
-            source={weaponArt(job?.archetype ?? null, 1, poke!.art)}
+            source={weaponArt(job?.archetype ?? null, 1, poke.art)}
             resizeMode="contain"
             style={[
               styles.pokeWeapon,
               {
-                bottom: HERO_HEIGHT * 0.62 + POKE_FLY * Math.min(1, (Date.now() - poke!.at) / POKE_POSE_MS),
-                opacity: 1 - Math.min(1, (Date.now() - poke!.at) / POKE_POSE_MS),
+                bottom: heroH * 0.62 + POKE_FLY * Math.min(1, (Date.now() - poke.at) / POKE_POSE_MS),
+                opacity: 1 - Math.min(1, (Date.now() - poke.at) / POKE_POSE_MS),
               },
             ]}
           />
-        )}
-        {poke !== null && (
-          <View style={styles.eggWrap} pointerEvents="none">
-            <EasterEggFrame width={EGG_W} height={EGG_H}>
-              <Image
-                source={EVENT_ART[poke.art]}
-                resizeMode="contain"
-                style={{ width: EGG_W - 76, height: EGG_H - 34 }}
-              />
-            </EasterEggFrame>
-          </View>
         )}
       </View>
 
@@ -326,22 +370,15 @@ export function MainMenu({
         「還不行」,說不出「打到 1-10 就開」。可以領獎的時候整條變成金色:那是唯一
         會讓人去點它的訊號,做得不明顯等於沒做。
       */}
-      {quest !== null && (
-        <Pressable
-          accessibilityLabel={quest.claimable ? `領獎 ${quest.quest.name}` : `任務 ${quest.quest.name}`}
-          style={quest.claimable ? styles.questBannerReady : styles.questBanner}
-          onPress={onQuests}
-        >
-          <Image source={QUEST_ICON} resizeMode="contain" style={styles.questIcon} />
-          <View style={styles.questTextBox}>
-            <Text style={quest.claimable ? styles.questNameReady : styles.questName} numberOfLines={1}>
-              {quest.quest.name}
-              {quest.quest.target > 1 && !quest.claimable ? ` ${quest.progress}/${quest.quest.target}` : ''}
-            </Text>
-            <Text style={quest.claimable ? styles.questHintReady : styles.questHint} numberOfLines={1}>
-              {quest.claimable ? `可領取 ${quest.quest.coins} 金幣` : quest.quest.hint}
-            </Text>
-          </View>
+      {/*
+        任務橫幅移到分頁列了(轉職那一格)。這裡刻意留一行**只在有獎可領時**出現的提示——
+        徽章講得出「那裡有東西」,講不出「有什麼」,而「可以領 100 金幣」是會讓人去點的那句話。
+      */}
+      {quest?.claimable === true && (
+        <Pressable accessibilityLabel={`領獎 ${quest.quest.name}`} style={styles.questLine} onPress={onQuests}>
+          <Text style={styles.questLineText} numberOfLines={1}>
+            任務「{quest.quest.name}」可領取 {quest.quest.coins} 金幣 →
+          </Text>
         </Pressable>
       )}
 
@@ -371,24 +408,39 @@ export function MainMenu({
           // 開放的兩個:副本(三種副本的選擇畫面)與裝備(圖鑑)。其餘八個維持鎖著。
           // 開放的三個:副本(三種副本)、裝備(圖鑑)、技能(18 款 + 技能書進度)。
           // 其餘七個維持鎖著(見檔頭的說明)。
-          const open = tab.id === 'dungeon' || tab.id === 'equipment' || tab.id === 'skill';
+          // **轉職那一格換成任務。** 轉職不是玩家「去逛」的地方——它在通過第 5/30/80/160/260
+          // 大關的那一刻自己跳出來(見 app 層的 promotionTier),平常點進去沒有東西可做;
+          // 而任務相反,它是每天回來第一個要看的東西。原本任務是主畫面上的一條橫幅,
+          // 佔掉一整列而且只寫得下一個任務——搬進分頁列之後那一列讓給畫面,
+          // 「有獎可領」則用角落的一點紅來講(見 questBadge)。
+          const open = tab.id === 'dungeon' || tab.id === 'equipment' || tab.id === 'skill'
+            || tab.id === 'job';
           return (
             <Pressable
               key={tab.id}
               style={styles.tab}
-              accessibilityLabel={open ? tab.label : `${tab.label}(未開放)`}
+              accessibilityLabel={open ? tabLabel(tab) : `${tabLabel(tab)}(未開放)`}
               onPress={() => {
                 if (tab.id === 'dungeon') onDungeons();
                 else if (tab.id === 'equipment') onCodex();
                 else if (tab.id === 'skill') onSkills();
+                else if (tab.id === 'job') onQuests();
                 else setNotice(`${tab.label}尚未開放`);
               }}
             >
               <View style={styles.tabIconBox}>
-                <Image source={tab.art} resizeMode="contain" style={styles.tabIcon} />
+                <Image
+                  source={tab.id === 'job' ? QUEST_ICON : tab.art}
+                  resizeMode="contain"
+                  style={styles.tabIcon}
+                />
                 {!open && <Image source={LOCK_ICON} resizeMode="contain" style={styles.tabLock} />}
+                {/* 有獎可領:角落一點紅。徽章不寫數字——玩家只需要知道「那裡有東西」。 */}
+                {tab.id === 'job' && quest?.claimable === true && <View style={styles.questBadge} />}
               </View>
-              <Text style={[styles.tabLabel, open && styles.tabLabelOpen]}>{tab.label}</Text>
+              <Text style={[styles.tabLabel, open && styles.tabLabelOpen]}>
+                {tabLabel(tab)}
+              </Text>
             </Pressable>
           );
         })}
@@ -437,7 +489,8 @@ const styles = StyleSheet.create({
   stage: {
     width: '100%',
     flex: 1,
-    minHeight: 150,
+    // 畫框 + 說明 + 角色,三個加起來大約 330。
+    minHeight: 330,
     alignItems: 'center',
     justifyContent: 'flex-end',
     backgroundColor: '#1d1d26',
@@ -479,7 +532,17 @@ const styles = StyleSheet.create({
   },
   hero: { marginBottom: 10 },
   // 彩蛋框浮在勇者上方(不是推開他):主角的位置是主畫面的定錨,不該因為點了一下就跳。
-  eggWrap: { position: 'absolute', top: 8, alignSelf: 'center' },
+  // 掛在史萊姆頭頂**正上方**,不是釘在框的最上緣——釘上緣的話中間會空一大塊,
+  // 而主畫面「太空」正是要解掉的問題。
+  eggWrap: { alignItems: 'center' },
+  /** 框 + 角色排成一直,整組靠底(角色站在地面線上)。 */
+  stageColumn: { flex: 1, alignItems: 'center', justifyContent: 'flex-end', gap: 6, paddingTop: 8 },
+  /** 矮螢幕:整塊再讓出一點高度給下面的開始鍵。 */
+  stageCompact: { minHeight: 250 },
+  eggCaption: {
+    marginTop: 4, color: '#e0a95c', fontSize: 11, maxWidth: EGG_W,
+    textAlign: 'center', backgroundColor: '#16161cc0', paddingHorizontal: 6, borderRadius: 4,
+  },
   // 投擲的武器:朝右上的圖(-45 度是這個專案的既有慣例,見 LaneRunner 的投射物)。
   pokeWeapon: {
     position: 'absolute', width: 30, height: 30, alignSelf: 'center', zIndex: 5,
@@ -494,23 +557,7 @@ const styles = StyleSheet.create({
   dungeonNote: { color: '#e0a95c', fontSize: 12, fontWeight: '600' },
 
   // 任務橫幅。兩種狀態共用同一個高度,不然「變成可領獎」的瞬間整個版面會跳一下。
-  questBanner: {
-    width: '100%', flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: '#2a2a35', borderRadius: 8, borderWidth: 1, borderColor: '#3a3448',
-    paddingHorizontal: 10, paddingVertical: 6,
-  },
-  questBannerReady: {
-    width: '100%', flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: '#3a3448', borderRadius: 8, borderWidth: 1, borderColor: '#e0a95c',
-    paddingHorizontal: 10, paddingVertical: 6,
-  },
-  questIcon: { width: 18, height: 18 },
   // flexShrink 讓長提示自己截斷(numberOfLines),不會把整條橫幅撐寬。
-  questTextBox: { flexShrink: 1, flexGrow: 1 },
-  questName: { color: '#f2f2f2', fontSize: 12, fontWeight: '700' },
-  questNameReady: { color: '#e0a95c', fontSize: 12, fontWeight: '700' },
-  questHint: { color: '#8a8a95', fontSize: 11 },
-  questHintReady: { color: '#e0a95c', fontSize: 11 },
 
   startButton: {
     width: '100%',
@@ -534,4 +581,13 @@ const styles = StyleSheet.create({
   tabLock: { position: 'absolute', right: -2, bottom: -2, width: 15, height: 15, opacity: 1 },
   tabLabelOpen: { color: '#e0a95c' },
   tabLabel: { color: '#8a8a95', fontSize: 10 },
+  questLine: {
+    alignSelf: 'stretch', alignItems: 'center', paddingVertical: 4,
+    borderRadius: 6, borderWidth: 1, borderColor: '#e0a95c', backgroundColor: '#e0a95c22',
+  },
+  questLineText: { color: '#e0a95c', fontSize: 12, fontWeight: '700' },
+  questBadge: {
+    position: 'absolute', right: -2, top: -2, width: 10, height: 10, borderRadius: 5,
+    backgroundColor: '#e05050', borderWidth: 1, borderColor: '#16161c',
+  },
 });
