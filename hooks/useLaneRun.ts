@@ -62,6 +62,7 @@ import {
 } from '../game/laneRunSkills';
 import { fxHitBoxes, fxHits } from '../game/laneRunFx';
 import type { RunStats } from '../game/quests';
+import { playSkillDamage } from './useSfx';
 
 const TICK_MS = 33; // ~30fps
 
@@ -715,6 +716,14 @@ export function useLaneRun(
       if (a.immune) current.fired.immune = true;
     }
     if (fired.length === 0) return;
+    // 傷害音。**掛在這裡而不是畫面層**:特效是照 `lastStrike` 的時間戳畫的,
+    // 而那是 state ——它要下一次 render 才更新,聲音會比畫面慢一拍。
+    // 這裡是技能真正發動的那一行,聲音跟特效才對得起來(跟「投擲動作要跟真的
+    // 飛出去的那一把對上」是同一條規則)。
+    //
+    // 一次只播一個(見 playSkillDamage):好幾款的冷卻可能同時到期,六個音一起播
+    // 會糊成一團,而且峰值疊起來會爆。
+    playSkillDamage(firedIds);
     // 橫幅寫的就是**這一下真的倒了幾隻**。名目隻數不再出現在任何地方:
     // 範圍裡的怪不夠多的時候,多出來的傷害當場丟掉,不遞延到下一波。
     strikeRef.current = { at: now, ids: firedIds, names: fired, kills: Math.round(killsNow) };
