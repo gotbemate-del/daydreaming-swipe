@@ -1538,18 +1538,22 @@ const styles = StyleSheet.create({
   laneLines: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
   gate: {
     position: 'absolute',
-    borderRadius: 8,
-    // 卷軸是絕對定位的三張圖,不裁的話會蓋過圓角(四個角會冒出方的紙)。
-    overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
     paddingHorizontal: 2,
   },
-  // 底色留著當**圖還沒載進來時的墊底**:卷軸是三張 PNG,第一次進跑道那幾格會有一瞬間
-  // 只有框沒有內容,墊一層原本的深綠/深紅比露出後面的底圖乾淨。
-  gateGood: { backgroundColor: '#243a2a', borderColor: '#5ec26a' },
-  gateTrap: { backgroundColor: '#3a2323', borderColor: '#e05050' },
+  // **圓角方框整組拿掉了**(borderRadius / borderWidth / 底色 / overflow:hidden)。
+  //
+  // 那個框原本兼兩件事:圈出可踩的範圍,以及用綠/紅邊標好壞。卷軸上線之後它變成
+  // 一個疊在美術圖上的 UI 元件——圓角把卷軸的四個角切掉,而金色軸桿正好在上下兩端,
+  // 被裁掉之後那兩根就不像軸了。現在讓卷軸自己完整呈現。
+  //
+  // **好壞的訊號因此完全靠底下那層色紗**(gateWash)。這是閘門的第一要務,不能只剩文字:
+  // 一排只有一兩秒可以決定,玩家沒有時間讀字(CLAUDE.md 記過為什麼閘門不套 PixelFrame,
+  // 理由的後半就是「換成同一組像素框就得另外想辦法標好壞」)。
+  // 所以拿掉框的同時色紗要**加濃**,不然綠紅的差別會跟著框一起變弱。
+  gateGood: {},
+  gateTrap: {},
   // 卷軸三片。
   //
   // **寬高要寫死,不能用 left:0 + right:0 去撐。** react-native-web 的 Image 是靠
@@ -1567,10 +1571,12 @@ const styles = StyleSheet.create({
   },
   gateScrollTop: { position: 'absolute', left: 0, top: 0, width: '100%', height: SCROLL_ROD_H },
   gateScrollBottom: { position: 'absolute', left: 0, bottom: 0, width: '100%', height: SCROLL_ROD_H },
-  // 好壞的色層。0.34 是量出來的:再淡一點在小螢幕上分不出綠紅,再濃一點羊皮紙的紋理就沒了。
+  // 好壞的色層。**圓角方框拿掉之後這是唯一的訊號**,所以從 0.34 加濃到 0.42:
+  // 綠/紅的邊框原本也在幫忙標好壞,少了它色紗就得自己撐起來。
+  // 再濃就會把羊皮紙的紋理蓋掉(那是這次換美術的重點),所以停在 0.42。
   gateWash: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 },
-  gateWashGood: { backgroundColor: 'rgba(94,194,106,0.34)' },
-  gateWashTrap: { backgroundColor: 'rgba(224,80,80,0.34)' },
+  gateWashGood: { backgroundColor: 'rgba(94,194,106,0.42)' },
+  gateWashTrap: { backgroundColor: 'rgba(224,80,80,0.42)' },
   gateText: { color: '#f2f2f2', fontSize: 13, fontWeight: '700', textAlign: 'center' },
   floating: { position: 'absolute' },
   // 傷害數字。固定寬度 + 置中,數字位數變多才不會整串往左偏(left 是用「怪的位置 - 40」算的)。
