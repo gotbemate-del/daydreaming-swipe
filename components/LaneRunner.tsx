@@ -176,6 +176,8 @@ const FROST_COLOR = '#9fd8e8';
 const BURN_SIZE = 34;
 /** 凍結那一下炸開的圈多大。 */
 const FROST_BURST = 28;
+/** 技能收掉那一隻時炸開的環,起始直徑。比凍結那圈大一點——它代表的是「死亡」不是「狀態」。 */
+const BLAST_BURST = 34;
 /** 燃燒中的怪疊什麼顏色。跟 artAssets 的火屬性同色系但更亮(它要蓋過屬性染色)。 */
 const BURN_COLOR = '#e8814a';
 /** 土・遲滯疊在怪身上的咖啡色。跟 artAssets 的土屬性同色。 */
@@ -795,6 +797,33 @@ export function LaneRunner({
               />
             )}
           </View>
+        );
+      }
+      // 技能收掉的那一隻:炸開一圈元素色的環,環一擴散那隻怪就不見了。
+      //
+      // **這一圈是「為什麼牠不見了」的說明。** 技能的擊殺先前只有一行字,怪要等勇者
+      // 把刀丟滿才消失;現在是當場消失,所以更需要一個落在**那一隻身上**的訊號——
+      // 跑道上方那一團 SkillFx 講的是「技能放了」,講不出「這幾隻是它收的」。
+      if (e.kind === 'blast') {
+        const r = BLAST_BURST + age * 34;
+        const color = elementColor(e.element) ?? '#e0a95c';
+        return (
+          <View
+            key={`fx-${e.id}`}
+            pointerEvents="none"
+            style={[
+              styles.blastRing,
+              {
+                left: to.x - r / 2,
+                top: to.y - r / 2,
+                width: r,
+                height: r,
+                borderRadius: r / 2,
+                borderColor: color,
+                opacity: 1 - age,
+              },
+            ]}
+          />
         );
       }
       if (e.kind === 'burn') {
@@ -1563,6 +1592,8 @@ const styles = StyleSheet.create({
   chainBolt: { position: 'absolute', height: 2, backgroundColor: '#f2e6a0', borderRadius: 1, zIndex: 12 },
   /** 凍結:炸開的那一圈。 */
   frostBurst: { position: 'absolute', borderWidth: 2, borderColor: FROST_COLOR, zIndex: 12 },
+  // borderColor 由 blast 事件的元素決定,所以這裡只給厚度與層級。
+  blastRing: { position: 'absolute', borderWidth: 3, zIndex: 13 },
   /** 凍住期間罩在怪身上的框,讓「這一隻停住了」不只是顏色的差別。 */
   frostRing: { position: 'absolute', borderWidth: 1, borderColor: FROST_COLOR, borderRadius: 4, opacity: 0.8 },
   // ---- 技能列(畫面最下方,原本是廣告版位的位置)----

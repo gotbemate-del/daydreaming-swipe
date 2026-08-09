@@ -52,7 +52,7 @@ import {
   MISS_MESSAGE,
 } from '../game/laneRun';
 import {
-  applyRunSkillPick, ELEMENT_COUNTERS, isElement, learnRunSkill, runSkillEffects, runSkillOffersAt,
+  applyRunSkillPick, elementOf, ELEMENT_COUNTERS, isElement, learnRunSkill, runSkillEffects, runSkillOffersAt,
   runSkillSpec, hasCooldown, skillCooldownSeconds, FREEZE_MS, BURN_DPS_RATIO, BURN_DURATION_MS,
   type CollectionScales,
   type RunSkillState, type RunSkillId, type RunSkillEffects, type ActiveTrigger, type ElementBooks,
@@ -153,11 +153,13 @@ export interface EnemyShot {
  */
 export interface ElementEvent {
   id: number;
-  kind: 'burn' | 'chain' | 'freeze' | 'spread';
+  kind: 'burn' | 'chain' | 'freeze' | 'spread' | 'blast';
   /** 效果落在哪一隻(waveMonsters 的索引) */
   target: number;
   /** 連鎖:電從哪一隻跳過來 */
   from?: number;
+  /** 這一筆是哪個元素做的(blast 用它上色,一眼看得出是哪一款技能收掉的)。 */
+  element?: RunSkillId;
   bornAt: number;
 }
 
@@ -166,6 +168,8 @@ export const ELEMENT_FX_MS: Record<ElementEvent['kind'], number> = {
   burn: 420, chain: 220, freeze: FREEZE_MS,
   // 擴散是「一瞬間的碎刃」,比連鎖再短一點——它每一下命中都會發生,拖長會變成一片閃爍。
   spread: 180,
+  // 技能收掉的那一隻:炸開一圈再消失。要比擴散長,因為它同時是「這一隻不見了」的理由。
+  blast: 300,
 };
 
 /** 技能列上的一格。被動沒有冷卻(cooldown = 0),只顯示名字與等級。 */
@@ -346,6 +350,21 @@ interface WaveRuntime {
   advance: number;
   /** 這一波有哪幾隻曾經進到射程寬度內。擊殺數會被它的大小夾住(見 laneRun 的 FIRE_WIDTH)。 */
   covered: Set<number>;
+  /**
+   * 主動技能已經算進 `fired.kills`、但**畫面上還沒有人倒下**的隻數。
+   *
+   * 技能放出去的那一刻只有文字與特效,怪還好端端地站著——它們得等勇者一把一把把刀丟滿
+   * 才會消失,而那可能是好幾秒後的事(使用者回報的「只列出文字,怪沒有被消除」)。
+   * 這個欄位就是那筆**待兌現的擊殺**:每個 tick 找出「注定會倒但還沒倒」的那幾隻,
+   * 直接把它們的 hitsOn 補滿,當場消失。
+   *
+   * **它不改任何結算數字**:兌現的對象一律是 `willDie` 為真的那幾隻(擊殺數早就由
+   * waveKillCount + extraKills 算完了),補的只是「什麼時候看得到」。
+   * 一時兌現不完(技能比怪先到)就留著,等怪進射程再兌現。
+   */
+  vaporizing: number;
+  /** 上一次觸發的主動是哪個元素。blast 的顏色照它畫。 */
+  vaporizeElement?: RunSkillId;
 }
 
 // 一場跑圖就是一個 hook 實例:重跑、下一關都由外層換 key 重新掛載,不在 hook 裡自己 reset。
@@ -609,7 +628,20 @@ export function useLaneRun(
    * 「漏了幾隻」的結算,所以必須留在 boost 裡讓 resolveEnemy 一起算,
    * 兩邊都算一次就會變成雙倍。
    */
-  function fireActives(current: WaveRuntime, fx: RunSkillEffects, now: number) {
+  function fireActives(current: WaveRuntime, fx: RunSkillEffects, now: number, travelled: number) {
+    // **畫面上沒有怪就不放。** 規格本來就寫「冷卻好了**而且偵測到怪物**才自己放」,
+    // 而先前這裡沒有這個條件——技能在兩波之間的空檔照樣放,玩家看到的是一行字加一團特效、
+    // 一隻怪都沒少(使用者回報的「只列出文字」有一半是這樣來的)。
+    // 冷卻是這一刻才推進的,所以「等一下再放」不會少放:那筆擊殺留到有怪的時候才花掉。
+    //
+    // 這一段完全不碰難度:主動的固定擊殺本來就不進理想路線(模擬器根本不算它們),
+    // 所以放的時機只影響「玩家實際打掉幾隻」,敵人一格都不會跟著長。
+    const seesEnemy = current.monsters.some(
+      (m) => m.distance > travelled
+        && m.distance - travelled <= VISIBLE_AHEAD
+        && current.hitsOn[m.index] < current.hitsPerUnit,
+    );
+    if (!seesEnemy) return;
     const fired: string[] = [];
     const firedIds: RunSkillId[] = [];
     let killsNow = 0;
@@ -624,7 +656,14 @@ export function useLaneRun(
       if (!ready(a.id, a.cooldown)) continue;
       fired.push(a.name);
       firedIds.push(a.id);
-      if (a.kills) { current.fired.kills += a.kills; killsNow += a.kills; }
+      if (a.kills) {
+        current.fired.kills += a.kills;
+        killsNow += a.kills;
+        // 待兌現的擊殺:下面幾行的 tick 會把「注定會倒但還沒倒」的那幾隻直接補滿血量,
+        // 讓怪在技能放出去的那一刻就消失,而不是只跳一行字。
+        current.vaporizing += a.kills;
+        current.vaporizeElement = elementOf(a.id);
+      }
       if (a.heroes) heroesNow += Math.round(a.heroes);
       if (a.immune) current.fired.immune = true;
     }
@@ -702,11 +741,13 @@ export function useLaneRun(
     }
   }
 
-  function pushElementEvent(kind: ElementEvent['kind'], target: number, now: number, from?: number) {
+  function pushElementEvent(
+    kind: ElementEvent['kind'], target: number, now: number, from?: number, element?: RunSkillId,
+  ) {
     elementEventIdRef.current += 1;
     elementEventsRef.current = [
       ...elementEventsRef.current,
-      { id: elementEventIdRef.current, kind, target, from, bornAt: now },
+      { id: elementEventIdRef.current, kind, target, from, element, bornAt: now },
     ];
   }
 
@@ -804,6 +845,7 @@ export function useLaneRun(
         leaked: 0,
         advance: 0,
         covered: new Set<number>(),
+        vaporizing: 0,
       };
       waveRef.current = current;
       projectilesRef.current = [];
@@ -814,7 +856,7 @@ export function useLaneRun(
     // 這一波的技能效果。**每個 tick 重算**:波次中途選了新技能、或是吃到閘門讓戰力變了,
     // 畫面上能打倒幾隻就要立刻跟著變(相剋也在這一層逐元素結算完)。
     const fx = runSkillEffects(runSkillsRef.current, current.element, books, collection);
-    fireActives(current, fx, now);
+    fireActives(current, fx, now, travelled);
 
     // 凍住的那幾隻跟著玩家一起前進 = 畫面上停在原地不再逼近。
     // 怪的世界座標是固定的、往前跑的是玩家,所以「不動」只能用這個方式表達。
@@ -856,6 +898,29 @@ export function useLaneRun(
     const willDie = (i: number) => current!.covered.has(i)
       && [...current!.covered].filter((k) => k < i).length < kills;
     const isDown = (i: number) => willDie(i) && current!.hitsOn[i] >= current!.hitsPerUnit;
+
+    // --- 主動技能的擊殺:**當場把怪收掉** ---
+    //
+    // 先前技能放出去只有一行字跟一團特效,怪照樣站在原地——它們要等勇者把刀一把一把丟滿
+    // 才會消失,而那常常是好幾秒後(使用者回報的「技能造成傷害時怪物沒有被消除」)。
+    // 這裡把那筆待兌現的擊殺換成畫面上的死亡:挑「注定會倒但還沒倒」的那幾隻,
+    // 直接把血量補滿,下一行的 down 就會是 true。
+    //
+    // **兌現的對象一律是 willDie**,所以擊殺總數、漏接數、吸收全部沒動——
+    // 這一段改的只有「什麼時候看得到」。兌現不完(技能比怪先進射程)就留在 vaporizing 裡,
+    // 等怪進了射程再收,一隻都不會憑空多也不會少。
+    if (current.vaporizing > 0) {
+      for (const i of [...current.covered].sort((x, y) => x - y)) {
+        if (current.vaporizing <= 0) break;
+        if (!willDie(i) || isDown(i)) continue;
+        // 已經越過勇者的那幾隻畫不出來(posOf 會回 null),兌現在它們身上等於白花一格額度,
+        // 玩家看到的還是「技能放了但沒人倒」。留給前面看得見的那幾隻。
+        if (current.monsters[i].distance <= travelled) continue;
+        current.hitsOn[i] = current.hitsPerUnit;
+        pushElementEvent('blast', i, now, undefined, current.vaporizeElement);
+        current.vaporizing -= 1;
+      }
+    }
 
     // --- 走到你身上的怪:**當場扣人** ---
     //
