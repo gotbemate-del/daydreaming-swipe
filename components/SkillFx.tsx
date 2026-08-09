@@ -59,36 +59,56 @@ export function SkillFx({ id, t, width, height, heroX, headY }: Props) {
   );
 }
 
+/**
+ * 每一款特效都**往畫面上方打**。
+ *
+ * 跑道是往上跑的:勇者在最下面,怪從上面衝下來。所以「攻擊」在這個畫面上只有一個方向——
+ * 由下往上。先前有幾款是繞著勇者轉(金)、由上往下砸(土二階)、或橫著劃過跑道(土三階),
+ * 讀起來像是原地放的光,跟行進方向對不起來:玩家分不出那是打出去的還是打進來的
+ *(而「打進來」在這個畫面上是敵人的武器,那是要閃的東西,兩者不能長得像)。
+ *
+ * 共同的寫法:所有幾何都以勇者(heroX, headY)為原點,隨 t 往 `-y` 推進。
+ */
 function render(
   id: RunSkillId, tier: 1 | 2 | 3, t: number, a: number,
   color: string, w: number, h: number, heroX: number, headY: number,
 ) {
   const el = elementOf(id);
+  /** 這一次要打多遠(往上)。三階打到底,二階打到跑道中段。 */
+  const reach = (tier === 2 ? 0.5 : 0.86) * h;
+  /** 目前推進到的 y。 */
+  const frontY = headY - reach * t;
 
-  // ---- 火:二階腳邊炸開一圈,三階整條跑道燒起來 ----
+  // ---- 火:二階一團火球衝上去,三階整片火牆推上去 ----
   if (el === 'fire') {
     if (tier === 2) {
-      const r = 18 + t * Math.min(w * 0.55, 150);
+      // 火球:一路往上,尾巴拖在後面(所以看得出方向)。
+      const r = 16 + t * 26;
       return (
         <G opacity={a}>
-          <Circle cx={heroX} cy={headY} r={r} stroke={color} strokeWidth={6 * (1 - t) + 2} fill="none" />
-          <Circle cx={heroX} cy={headY} r={r * 0.62} stroke={color} strokeWidth={3} fill="none" opacity={0.6} />
+          <Path
+            d={`M${heroX - r * 0.7} ${frontY + r * 2.4} Q${heroX} ${frontY + r * 0.6} ${heroX + r * 0.7} ${frontY + r * 2.4} Z`}
+            fill={color}
+            opacity={0.45}
+          />
+          <Circle cx={heroX} cy={frontY} r={r} fill={color} opacity={0.85} />
+          <Circle cx={heroX} cy={frontY} r={r * 1.6} stroke={color} strokeWidth={3} fill="none" opacity={0.5} />
         </G>
       );
     }
-    // 煉獄:整條跑道由下往上竄的火舌,每一道相位錯開才不像一排柵欄。
+    // 煉獄:一道橫貫跑道的火牆往上推。火舌長在**牆的前緣**,所以前進方向一眼看得出來。
     return (
       <G opacity={a * 0.9}>
-        <Rect x={0} y={headY - h * 0.55} width={w} height={h * 0.55} fill={color} opacity={0.16} />
+        <Rect x={0} y={frontY} width={w} height={Math.max(0, headY - frontY)} fill={color} opacity={0.18} />
         {Array.from({ length: 9 }, (_, i) => {
           const x = ((i + 0.5) / 9) * w;
-          const lift = (0.45 + 0.55 * Math.abs(Math.sin(i * 2.1 + t * 6))) * h * 0.42;
+          const lift = (0.45 + 0.55 * Math.abs(Math.sin(i * 2.1 + t * 6))) * h * 0.16;
           return (
             <Path
               key={i}
-              d={`M${x - 13} ${headY} Q${x} ${headY - lift} ${x + 13} ${headY} Z`}
+              d={`M${x - 13} ${frontY + lift} Q${x} ${frontY - lift} ${x + 13} ${frontY + lift} Z`}
               fill={color}
-              opacity={0.75}
+              opacity={0.8}
             />
           );
         })}
@@ -96,49 +116,51 @@ function render(
     );
   }
 
-  // ---- 金:二階甩出碎刃,三階碎刃繞著隊伍轉一圈 ----
+  // ---- 金:碎刃射出去。二階一把扇形、三階一整片 ----
+  // 先前是繞著勇者轉一圈——那是「護體」不是「攻擊」,而金的兩款都是傷害。
   if (el === 'metal') {
-    const n = tier === 2 ? 7 : 12;
-    const spin = t * (tier === 2 ? 1.2 : 3.4);
-    const reach = (tier === 2 ? 0.34 : 0.5) * Math.min(w, h) * (0.35 + t * 0.85);
+    const n = tier === 2 ? 7 : 13;
+    const spread = tier === 2 ? 0.5 : 0.95; // 扇形的半角(弧度)
     return (
       <G opacity={a}>
         {Array.from({ length: n }, (_, i) => {
-          const ang = (i / n) * Math.PI * 2 + spin * Math.PI * 2;
-          const x = heroX + Math.cos(ang) * reach;
-          const y = headY + Math.sin(ang) * reach * 0.55;
+          const ang = -Math.PI / 2 + ((i / (n - 1)) - 0.5) * 2 * spread;
+          // 每一把的速度略有差異,整排才不像一條線平移。
+          const speed = 0.75 + ((i * 37) % 50) / 100;
+          const d = reach * t * speed;
+          const x = heroX + Math.cos(ang) * d;
+          const y = headY + Math.sin(ang) * d;
+          const deg = (ang * 180) / Math.PI + 90; // 刀尖朝飛行方向
           return (
-            <Polygon
-              key={i}
-              points={`${x},${y - 9} ${x + 4},${y} ${x},${y + 9} ${x - 4},${y}`}
-              fill={color}
-              opacity={0.9}
-            />
+            <G key={i} transform={`rotate(${deg} ${x} ${y})`}>
+              <Polygon points={`${x},${y - 11} ${x + 4},${y + 3} ${x},${y + 9} ${x - 4},${y + 3}`} fill={color} opacity={0.95} />
+              {/* 拖尾:看得出它是「射出去的」而不是「浮在那裡的」 */}
+              <Path d={`M${x} ${y + 9} L${x} ${y + 26}`} stroke={color} strokeWidth={2} opacity={0.35} />
+            </G>
           );
         })}
       </G>
     );
   }
 
-  // ---- 雷:二階一道落雷,三階連續落雷洗過整波 ----
+  // ---- 雷:落雷。雷本來就是從天上打下來,但**落點在前方**(跑道上半段)----
   if (el === 'thunder') {
     const bolts = tier === 2 ? 1 : 5;
     // 每 80ms 換一次形狀,看起來才像持續在打而不是一張靜止的圖。
     const flick = Math.floor(t * 8);
     // **折線幅度要夠大,不然它讀起來是雨不是雷。** 第一版是 ±10px 拉在 800px 的高度上,
     // 畫出來是五條近乎筆直的長線——實機截圖一看就知道不對。
-    // 現在是 ±34px、七段,而且只打在跑道**上半段**(閃電是從天上劈下來,
-    // 拉到腳邊就變成柵欄,還會蓋住閘門)。
     const SWAY = 34;
     const SEGMENTS = 7;
     return (
       <G opacity={a}>
         {Array.from({ length: bolts }, (_, i) => {
           const x = bolts === 1 ? heroX : ((i + 0.5) / bolts) * w;
-          const top = headY - h * 0.72;
-          const bottom = headY - h * 0.12;
+          const top = headY - h * 0.82;
+          // 打到的深度跟著 t 往下延伸一點,但**永遠停在勇者前方**:拉到腳邊就變成柵欄,
+          // 而且會跟「敵人丟過來的武器」混在一起。
+          const bottom = headY - h * (0.34 - 0.1 * t);
           const seed = i * 7 + flick * 13 + 1;
-          // 逐段左右擺:用 k 的奇偶決定方向,幅度再乘一個雜湊,才不會五條長得一樣。
           const jag = (k: number) => {
             if (k === 0 || k === SEGMENTS) return x;
             const swing = ((seed * (k + 3) * 2654435761) >>> 8) % SWAY;
@@ -159,52 +181,52 @@ function render(
     );
   }
 
-  // ---- 冰:二階冰錐從地面刺出,三階整片暴風雪 ----
+  // ---- 冰:二階冰錐一路往前刺出去,三階暴風雪往前吹 ----
   if (el === 'ice') {
     if (tier === 2) {
-      const rise = t * h * 0.3;
+      // 一排冰錐**依序**從勇者腳邊往前竄:越前面的越晚出現,所以看得出推進的方向。
+      const n = 6;
       return (
         <G opacity={a}>
-          {Array.from({ length: 6 }, (_, i) => {
-            const x = ((i + 0.5) / 6) * w;
-            const tall = rise * (0.6 + ((i * 7) % 5) / 8);
+          {Array.from({ length: n }, (_, i) => {
+            const at = i / n;
+            if (t < at * 0.8) return null;
+            const grow = Math.min(1, (t - at * 0.8) * 4);
+            const y = headY - reach * at;
+            const x = heroX + (((i * 53) % 100) / 100 - 0.5) * w * 0.5;
+            const tall = 34 * grow;
             return (
-              <Polygon key={i} points={`${x},${headY - tall} ${x + 9},${headY} ${x - 9},${headY}`} fill={color} opacity={0.85} />
+              <Polygon key={i} points={`${x},${y - tall} ${x + 10},${y} ${x - 10},${y}`} fill={color} opacity={0.9} />
             );
           })}
         </G>
       );
     }
+    // 暴風雪:雪片**往上飄**(玩家往前衝進暴風雪裡),整片壓在跑道前段。
     return (
       <G opacity={a}>
-        <Rect x={0} y={0} width={w} height={h} fill={color} opacity={0.14} />
-        {Array.from({ length: 22 }, (_, i) => {
-          const x = ((i * 53) % 100) / 100 * w + t * w * 0.5;
-          const y = ((i * 31) % 100) / 100 * h + t * h * 0.6;
+        <Rect x={0} y={frontY} width={w} height={Math.max(0, headY - frontY)} fill={color} opacity={0.16} />
+        {Array.from({ length: 26 }, (_, i) => {
+          const x = (((i * 53) % 100) / 100) * w;
+          const y0 = (((i * 31) % 100) / 100) * h;
+          const y = headY - ((y0 + t * h * 1.1) % h);
           return (
-            <Path
-              key={i}
-              d={`M${x % w} ${y % h} l14 9`}
-              stroke={color}
-              strokeWidth={2}
-              strokeLinecap="round"
-              opacity={0.8}
-            />
+            <Path key={i} d={`M${x} ${y} l6 14`} stroke={color} strokeWidth={2} strokeLinecap="round" opacity={0.85} />
           );
         })}
       </G>
     );
   }
 
-  // ---- 木:二階荊棘纏上來,三階巨木貫穿跑道 ----
+  // ---- 木:二階荊棘往前爬,三階巨木往前撐開 ----
   if (el === 'wood') {
     if (tier === 2) {
-      const grow = t * h * 0.34;
       return (
         <G opacity={a} stroke={color} strokeWidth={3} fill="none" strokeLinecap="round">
           {Array.from({ length: 5 }, (_, i) => {
             const x = ((i + 0.5) / 5) * w;
             const dir = i % 2 === 0 ? 1 : -1;
+            const grow = reach * t;
             return (
               <Path key={i} d={`M${x} ${headY} C${x + 22 * dir} ${headY - grow * 0.45} ${x - 18 * dir} ${headY - grow * 0.7} ${x + 8 * dir} ${headY - grow}`} />
             );
@@ -212,7 +234,7 @@ function render(
         </G>
       );
     }
-    const trunkH = t * h * 0.7;
+    const trunkH = reach * t;
     return (
       <G opacity={a}>
         <Rect x={heroX - 16} y={headY - trunkH} width={32} height={trunkH} fill={color} opacity={0.85} rx={6} />
@@ -227,36 +249,35 @@ function render(
     );
   }
 
-  // ---- 土:二階落石,三階地裂 ----
+  // ---- 土:二階石頭往前砸,三階地裂往前劈開 ----
   if (tier === 2) {
+    // 石頭是**丟出去的**:從勇者腳邊往前拋,越前面的越小(拋得越遠)。
+    // 先前是從天上往下掉,那個方向跟敵人丟過來的武器一樣,兩者不能長得像。
     return (
       <G opacity={a}>
         {Array.from({ length: 7 }, (_, i) => {
-          const x = ((i * 37) % 100) / 100 * w;
-          const y = headY - h * 0.7 + t * h * 0.7 + ((i * 17) % 40);
-          return <Circle key={i} cx={x} cy={Math.min(headY, y)} r={7 + (i % 3) * 3} fill={color} opacity={0.9} />;
+          const lane = ((i * 37) % 100) / 100 - 0.5;
+          const speed = 0.6 + ((i * 29) % 40) / 100;
+          const d = reach * t * speed;
+          const x = heroX + lane * w * 0.7 * t;
+          const y = headY - d;
+          return <Circle key={i} cx={x} cy={y} r={(7 + (i % 3) * 3) * (1 - t * 0.35)} fill={color} opacity={0.9} />;
         })}
       </G>
     );
   }
-  // 地裂:一條橫貫跑道的裂縫,越裂越開。
-  const open = 4 + t * 26;
+  // 地裂:裂縫從勇者腳下**往前**劈開(縱向),不是橫著劃過跑道。
+  const open = 4 + t * 22;
+  const segs = 6;
+  const crack = Array.from({ length: segs + 1 }, (_, k) => {
+    const y = headY - (reach * t * k) / segs;
+    const x = heroX + (k === 0 ? 0 : (k % 2 === 0 ? 1 : -1) * (10 + k * 6));
+    return `${k === 0 ? 'M' : 'L'}${x} ${y}`;
+  }).join(' ');
   return (
     <G opacity={a}>
-      <Path
-        d={`M0 ${headY} L${w * 0.2} ${headY - 12} L${w * 0.42} ${headY + 8} L${w * 0.63} ${headY - 10} L${w * 0.82} ${headY + 6} L${w} ${headY - 8}`}
-        stroke={color}
-        strokeWidth={open}
-        fill="none"
-        strokeLinecap="round"
-      />
-      <Path
-        d={`M0 ${headY} L${w * 0.2} ${headY - 12} L${w * 0.42} ${headY + 8} L${w * 0.63} ${headY - 10} L${w * 0.82} ${headY + 6} L${w} ${headY - 8}`}
-        stroke="#16161c"
-        strokeWidth={Math.max(1, open * 0.45)}
-        fill="none"
-        strokeLinecap="round"
-      />
+      <Path d={crack} stroke={color} strokeWidth={open} fill="none" strokeLinecap="round" />
+      <Path d={crack} stroke="#16161c" strokeWidth={Math.max(1, open * 0.45)} fill="none" strokeLinecap="round" />
     </G>
   );
 }

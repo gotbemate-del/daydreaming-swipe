@@ -808,23 +808,48 @@ export function LaneRunner({
       if (e.kind === 'blast') {
         const r = BLAST_BURST + age * 34;
         const color = elementColor(e.element) ?? '#e0a95c';
+        // 那一隻的剪影再放一次:縮小、淡出、整個染成元素色。
+        //
+        // **光有一圈環還不夠**:環是畫在「牠原本站的地方」,而牠在同一格就從畫面上不見了——
+        // 讀起來是「怪憑空消失,旁邊剛好有個圈」。補一張正在縮小的剪影,順序才看得懂:
+        // 先有這一隻、再有它被收掉。剪影只活 300ms(ELEMENT_FX_MS.blast),而且是純畫面:
+        // 牠在 hook 裡早就倒了,這裡畫的是已經發生的事(跟其他元素演出同一條規矩)。
+        const m = w.monsters[e.target];
+        const size = w.boss ? BOSS_SIZE : w.elite ? ELITE_SIZE : MONSTER_SIZE;
+        const species = m ? (w.species[m.speciesIndex] ?? w.species[0]) : null;
+        const ghostArt = species
+          ? (monsterAnim(species.id)?.frames[0] ?? monsterArt(species.id))
+          : null;
+        const ghost = size * (1 - age * 0.45);
         return (
-          <View
-            key={`fx-${e.id}`}
-            pointerEvents="none"
-            style={[
-              styles.blastRing,
-              {
-                left: to.x - r / 2,
-                top: to.y - r / 2,
-                width: r,
-                height: r,
-                borderRadius: r / 2,
-                borderColor: color,
-                opacity: 1 - age,
-              },
-            ]}
-          />
+          <View key={`fx-${e.id}`} pointerEvents="none">
+            {ghostArt !== null && !w.heroWave && (
+              <Image
+                source={ghostArt}
+                resizeMode="contain"
+                tintColor={color}
+                style={[
+                  styles.pixelArt,
+                  styles.floating,
+                  { left: to.x - ghost / 2, top: to.y - ghost / 2, width: ghost, height: ghost, opacity: 0.8 * (1 - age) },
+                ]}
+              />
+            )}
+            <View
+              style={[
+                styles.blastRing,
+                {
+                  left: to.x - r / 2,
+                  top: to.y - r / 2,
+                  width: r,
+                  height: r,
+                  borderRadius: r / 2,
+                  borderColor: color,
+                  opacity: 1 - age,
+                },
+              ]}
+            />
+          </View>
         );
       }
       if (e.kind === 'burn') {
