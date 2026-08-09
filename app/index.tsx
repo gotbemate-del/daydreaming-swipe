@@ -20,6 +20,7 @@ import {
 import { addBooks, totalBookLevels } from '../game/laneRunSkills';
 import { elementLabel } from '../components/artAssets';
 import { Codex } from '../components/Codex';
+import { Skills } from '../components/Skills';
 import { SurvivalResult } from '../components/SurvivalResult';
 import { DungeonSelect } from '../components/DungeonSelect';
 import { Quests } from '../components/Quests';
@@ -51,7 +52,7 @@ import { isBossStage } from '../game/laneRun';
 // 一場跑圖 = 一個 LaneRunner 實例,每次開始都換 key 重新掛載。跑圖裡有一整套跑到一半的
 // 狀態(波次、飛行中的武器、已結算的排、計時起點),在原地 reset 很容易漏掉其中一項,
 // 症狀是「上一場的怪出現在這一場」——重新掛載沒有這個問題。
-type Screen = 'menu' | 'run' | 'survivalOver' | 'codex' | 'dungeons' | 'quests';
+type Screen = 'menu' | 'run' | 'survivalOver' | 'codex' | 'dungeons' | 'quests' | 'skills';
 
 /**
  * 生存模式:**連續闖關,死了就結束。**
@@ -498,6 +499,14 @@ function Game() {
     );
   }
 
+  if (screen === 'skills') {
+    return (
+      <View style={styles.screen}>
+        <Skills books={save.books} collected={save.collected} onDone={() => setScreen('menu')} />
+      </View>
+    );
+  }
+
   if (screen === 'dungeons') {
     return (
       <View style={styles.screen}>
@@ -563,6 +572,7 @@ function Game() {
             bump({ codexViewed: 1 });
             setScreen('codex');
           }}
+          onSkills={() => { playSfx('click'); setScreen('skills'); }}
           onQuests={() => { playSfx('click'); setScreen('quests'); }}
           onDungeons={() => { playSfx('click'); setScreen('dungeons'); }}
         />

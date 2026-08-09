@@ -36,8 +36,15 @@ interface Props {
   onDone: () => void;
 }
 
-/** 職業分頁。501 格一次列完捲不完,而且玩家找東西時想的就是「我那一套」。 */
+/**
+ * 分頁。501 格一次列完捲不完,而且玩家找東西時想的就是「我那一套」。
+ *
+ * **「已擁有」排在最前面**,那是最常用的一個:圖鑑有 501 格而剛開始只收到十幾格,
+ * 想看看自己有什麼就得一路往下滑找那幾個亮著的——收集的樂趣是「我有這些」,
+ * 而預設的全部列表講的是「我沒有那些」。放第一個,開這一頁的第一眼就是自己的收藏。
+ */
 const TABS: { key: string; label: string }[] = [
+  { key: 'owned', label: '已擁有' },
   { key: 'all', label: '全部' },
   { key: 'physicalMelee', label: '物近' },
   { key: 'physicalRanged', label: '物遠' },
@@ -50,14 +57,20 @@ const TABS: { key: string; label: string }[] = [
 
 export function Codex({ collected, books, onDone }: Props) {
   const [bits] = useState(() => decodeCollection(collected));
-  const [tab, setTab] = useState('all');
+  // 預設就開在「已擁有」。第一次玩的人那一頁是空的,所以下面有一句話把他導去「全部」。
+  const [tab, setTab] = useState('owned');
 
   // 501 個條目各自的進度算一次就好(每格自己算的話捲動時會重算幾百次)。
   const rows = useMemo(() => CODEX_ENTRIES.map((entry) => entryProgress(bits, entry)), [bits]);
   const scales = useMemo(() => collectionScales(bits), [bits]);
   const shown = useMemo(
-    () => rows.filter((r) => tab === 'all'
-      || (tab === 'student' ? r.entry.archetype === null : r.entry.archetype === tab)),
+    () => rows.filter((r) => {
+      // 「已擁有」= 至少收到一片。用 own > 0 而不是 level > 0:湊不滿一級的那幾格
+      // 也是他收到的東西,不列出來的話玩家會覺得「我明明撿到了卻找不到」。
+      if (tab === 'owned') return r.own > 0;
+      if (tab === 'all') return true;
+      return tab === 'student' ? r.entry.archetype === null : r.entry.archetype === tab;
+    }),
     [rows, tab],
   );
 
@@ -123,6 +136,13 @@ export function Codex({ collected, books, onDone }: Props) {
         windowSize={5}
         columnWrapperStyle={styles.gridRow}
         contentContainerStyle={styles.gridInner}
+        // 空的時候要講「怎麼辦」而不是「沒有東西」。第一次開這一頁的人一定是空的,
+        // 而他需要知道的是「去跑一場就有了」。
+        ListEmptyComponent={
+          <Text style={styles.empty}>
+            {tab === 'owned' ? '還沒收到任何裝備 —— 跑完一場就會撿到,陣亡也撿得到' : '這個分類沒有東西'}
+          </Text>
+        }
         renderItem={({ item }) => {
           const art = itemIcon(item.entry.key);
           const tint = elementColor(item.entry.element);
@@ -193,6 +213,7 @@ const styles = StyleSheet.create({
 
   list: { width: '100%', flex: 1 },
   gridInner: { gap: 6, paddingVertical: 6 },
+  empty: { color: '#8a8a95', fontSize: 13, textAlign: 'center', paddingVertical: 28, paddingHorizontal: 20, lineHeight: 20 },
   gridRow: { gap: 6 },
   cell: {
     flex: 1,
