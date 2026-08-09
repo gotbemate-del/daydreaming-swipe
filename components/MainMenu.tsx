@@ -54,11 +54,8 @@ const POKE_FLY = 90;
 function tabLabel(tab: { id: string; label: string }): string {
   return tab.id === 'job' ? '任務' : tab.label;
 }
-/** 彩蛋框的尺寸。240 寬配 0.42 的柱子(35px)剛好,高度照事件圖的比例(約 3:2)。 */
-const EGG_W = 240;
-const EGG_H = 150;
-const EGG_W_COMPACT = 190;
-const EGG_H_COMPACT = 112;
+/** 主介面的最大寬度(跟 styles.wrapper 同一個值)。畫框照它夾住,桌機上才不會拉成一條。 */
+const WRAPPER_MAX_WIDTH = 520;
 
 /**
  * 這一關會出現哪些屬性(**同一個只留一次**)。
@@ -138,9 +135,12 @@ export function MainMenu({
   dungeonNote, onOpenSettings, onResetSave, onStart, onDungeons, onCodex, onSkills, onQuests,
 }: Props) {
   // 矮螢幕整組縮一階(見 COMPACT_BELOW)。
-  const compact = useWindowDimensions().height < COMPACT_BELOW;
-  const eggW = compact ? EGG_W_COMPACT : EGG_W;
-  const eggH = compact ? EGG_H_COMPACT : EGG_H;
+  const win = useWindowDimensions();
+  const compact = win.height < COMPACT_BELOW;
+  // **畫框跟畫面同寬**(扣掉左右各 12 的邊距,並照 MainMenu 的 maxWidth 夾住)。
+  // 高度照事件圖的比例回推,所以圖填滿之後不會被裁掉太多。
+  const eggW = Math.min(WRAPPER_MAX_WIDTH, win.width) - 24;
+  const eggH = Math.round(eggW * (compact ? 0.5 : 0.62));
   const heroW = compact ? HERO_WIDTH_COMPACT : HERO_WIDTH;
   const heroH = compact ? HERO_HEIGHT_COMPACT : HERO_HEIGHT;
   const [heroStep, setHeroStep] = useState(0);
@@ -265,18 +265,23 @@ export function MainMenu({
         */}
         <View style={styles.stageColumn}>
           <View style={styles.eggWrap} pointerEvents="none">
-            <EasterEggFrame width={eggW} height={eggH} scale={compact ? 0.34 : 0.42}>
+            <EasterEggFrame width={eggW} height={eggH} scale={compact ? 0.4 : 0.46}>
+              {/*
+                **填滿整個框**:`cover` + 撐滿的方框。用 `contain` 的話畫框裡會留一圈黑邊,
+                看起來像圖還沒載完;而這些事件圖的長寬比本來就接近框的比例,裁掉的很少。
+              */}
               <Image
                 source={EVENT_ART[poke.art]}
-                resizeMode="contain"
-                style={{ width: eggW - (compact ? 62 : 76), height: eggH - (compact ? 26 : 34) }}
+                resizeMode="cover"
+                style={{ width: '100%', height: '100%' }}
               />
             </EasterEggFrame>
             {/*
               這一張是什麼。**沒有這一行的話翻出來的只是一張圖**——玩家看得到畫面,
               卻不知道自己翻到了什麼、跟上一張差在哪。說明由檔名推(見 game/eventCaption)。
             */}
-            <Text style={styles.eggCaption} numberOfLines={1}>
+            {/* 彩蛋文字最長二十幾個字,**兩行**是它的自然長度——寫死一行會被切掉半句。 */}
+            <Text style={[styles.eggCaption, { maxWidth: eggW }]} numberOfLines={2}>
               {eventCaption(EVENT_KEYS[poke.art])}
             </Text>
           </View>
@@ -371,16 +376,10 @@ export function MainMenu({
         會讓人去點它的訊號,做得不明顯等於沒做。
       */}
       {/*
-        任務橫幅移到分頁列了(轉職那一格)。這裡刻意留一行**只在有獎可領時**出現的提示——
-        徽章講得出「那裡有東西」,講不出「有什麼」,而「可以領 100 金幣」是會讓人去點的那句話。
+        任務整個搬到分頁列了(轉職那一格 + 有獎可領時角落一點紅)。
+        **這裡連提示那一行都不留**:那一列每次只寫得下一個任務,而它換來的是
+        畫框可以跟畫面同寬——主畫面的中心本來就該是角色與那張圖,不是一條廣告。
       */}
-      {quest?.claimable === true && (
-        <Pressable accessibilityLabel={`領獎 ${quest.quest.name}`} style={styles.questLine} onPress={onQuests}>
-          <Text style={styles.questLineText} numberOfLines={1}>
-            任務「{quest.quest.name}」可領取 {quest.quest.coins} 金幣 →
-          </Text>
-        </Pressable>
-      )}
 
       <Pressable style={styles.startButton} accessibilityLabel="開始闖關" onPress={onStart}>
         <Text style={styles.startLabel}>開始闖關</Text>
@@ -530,7 +529,9 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: '#3d4a33',
   },
-  hero: { marginBottom: 10 },
+  // **往上收一截**:主角圖的上半部是留給噴刺的空白(見 heroBoxHeight),
+  // 待機時那一段是透明的,不收的話畫框與史萊姆之間會空出一大塊看起來像沒對齊。
+  hero: { marginBottom: 6, marginTop: -22 },
   // 彩蛋框浮在勇者上方(不是推開他):主角的位置是主畫面的定錨,不該因為點了一下就跳。
   // 掛在史萊姆頭頂**正上方**,不是釘在框的最上緣——釘上緣的話中間會空一大塊,
   // 而主畫面「太空」正是要解掉的問題。
@@ -540,8 +541,9 @@ const styles = StyleSheet.create({
   /** 矮螢幕:整塊再讓出一點高度給下面的開始鍵。 */
   stageCompact: { minHeight: 250 },
   eggCaption: {
-    marginTop: 4, color: '#e0a95c', fontSize: 11, maxWidth: EGG_W,
-    textAlign: 'center', backgroundColor: '#16161cc0', paddingHorizontal: 6, borderRadius: 4,
+    marginTop: 4, color: '#e0a95c', fontSize: 12,
+    textAlign: 'center', backgroundColor: '#16161cc0', paddingHorizontal: 8, paddingVertical: 2,
+    borderRadius: 4,
   },
   // 投擲的武器:朝右上的圖(-45 度是這個專案的既有慣例,見 LaneRunner 的投射物)。
   pokeWeapon: {

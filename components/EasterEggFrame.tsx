@@ -96,7 +96,12 @@ export function EasterEggFrame({ width, height, scale = 0.42, children }: Props)
       {pillar('L')}
       <View style={{ width: inner, height: total }}>
         {edge('edge_top')}
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+        {/*
+          內容區。**用 flex 撐滿,不要讓內容自己決定大小**——彩蛋圖要填滿整個框
+          (畫框裡留一圈黑邊看起來像圖沒載完),所以這裡給的是一個確定的方框,
+          圖用 `cover` 去填它(見 MainMenu)。
+        */}
+        <View style={{ flex: 1, alignSelf: 'stretch', overflow: 'hidden' }}>
           {children}
         </View>
         {edge('edge_bottom')}

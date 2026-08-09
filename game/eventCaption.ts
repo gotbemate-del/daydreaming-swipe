@@ -1,5 +1,6 @@
 import { getJobTitle } from './combat';
 import type { Archetype, JobBranch, JobTier } from './combat';
+import { EVENT_TEXT } from './eventText';
 
 /**
  * 彩蛋圖的說明。
@@ -36,8 +37,17 @@ const RARITY: Record<string, string> = {
   l: '傳說', legendary: '傳說',
 };
 
-/** `job-magicMelee-2A-r03` / `common-07` → 一句話。 */
+/**
+ * `job-magicMelee-2A-r03` / `common-07` → 那一則彩蛋要說的話。
+ *
+ * **本尊是 `EVENT_TEXT`**(從姊妹作抽出來的 604 則,見 scripts/import-event-text.py)——
+ * 那才是這張圖真正要講的東西。下面照檔名推的那一段只是**沒有文字時的退路**:
+ * 哪天多了一張圖而文字還沒補上,畫面上至少寫得出「這是哪個職業的第幾則」,
+ * 而不是一片空白(空白會被讀成「這張壞了」)。
+ */
 export function eventCaption(key: string): string {
+  const text = EVENT_TEXT[key];
+  if (text !== undefined) return text;
   const generic = /^(common|rare|epic|legendary)-(\d+)$/.exec(key);
   if (generic) {
     const [, rarity, n] = generic;
